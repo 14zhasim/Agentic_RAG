@@ -22,8 +22,7 @@ Code completion ~11 September; dissertation writing starts after; first draft su
 
 **Contribution:**
 
-- An agentic retrieval pipeline (RAG → Graph RAG) for extracting qualitative/numerical information from long financial documents (10-K/10-Q filings), evaluated against a direct-LLM-API baseline.
-- I'm currently reconsidering Experiment 3 (single-operation Excel agent) — I want to replace/extend it with **more document/RAG-centric architectures** rather than pure spreadsheet manipulation, to keep the thesis's core contribution concentrated on the retrieval/reasoning side rather than generic Excel tooling. Flag relevant RAG/agent architectures from literature that could substitute here.
+- An agentic retrieval pipeline (RAG → Structure-aware RAG -> Agentic RAG) for extracting qualitative/numerical information from long financial documents (10-K/10-Q filings), evaluated against a direct-LLM-API baseline.
 
 #### Current build-phase status
 
@@ -52,7 +51,6 @@ Plan for sys design:
 - **Input:** Natural-language finance question about a US public company + access to its filings.
 - **Output:** Free-text answer, scored for accuracy.
 - **Baseline:** Direct LLM API call, full context window, no RAG.
-- **Benchmark, Metrics** See 'Benchmark.md'
 - **Target:** Match or beat LLM-in-context-window performance while not being limited by context window size.
 
 ##### Experiment 2 — Structured embedding and retrieval
