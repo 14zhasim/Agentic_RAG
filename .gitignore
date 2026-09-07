@@ -1,4 +1,4 @@
-benchmarks/*/
+/benchmarks/lofin-hirec/
 __pycache__/
 *.pyc 
 .venv/
