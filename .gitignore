@@ -1,6 +1,7 @@
-/benchmarks/lofin-hirec/
+/benchmarks/
 __pycache__/
 *.pyc 
 .venv/
 .env
 EOF
+/docs/

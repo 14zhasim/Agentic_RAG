@@ -236,6 +236,10 @@ Retrieve - Elastic search
   - rrf
   - tune top-k
 
+Generate answer
+- decide model: GLM-5.3-flash, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
+- decide azure/openrouter/other service
+
 Reranking – cross encoder
 
 Agentic tooling

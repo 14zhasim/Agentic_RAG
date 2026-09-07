@@ -46,6 +46,8 @@ Might want to include MRR metric, and also token cost per query
 
 Clone both repos, `cat`/`head` the actual data files.
 
+Pin libraries in package manager (like uv)
+
 Extract questions + corresponding PDFs to meet this criteria:
 
 - Use FinanceBench dataset + questions - only 10Ks for now, add in 10Qs, 8Ks etc. later
@@ -54,18 +56,43 @@ Extract questions + corresponding PDFs to meet this criteria:
 Develop an all question pipeline:
 
 - use questions mentioned above
-- integrate FinanceBench 5 context conditions into our pipeline, for the retrieval metrics below
+- integrate FinanceBench 5 context conditions into our pipeline, for the retrieval metrics below (even if placeholders for parts that differ from ours, like how we plan to use different RAG pipeline)
 - configure results reporting:
   - for FinanceBench: report results segmented across generation method + cognitive skill
-  - with this segmentation, report: page recall, page precision, page MRR. 
+  - with this segmentation, report: page recall, page precision, page MRR.
 - use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric using RAGAS library (details below)
+  - decide the model to use and whether to use Azure/Openrouter
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
-  - consider doing again using LLM as judge to calculate Context Recall, Context Precision, Faithfulness, Correctness
+  - consider doing again using LLM as judge to calculate Context Recall, Context Precision, Faithfulness, Correctness. If too expensive, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
-Develop a testing pipeline:
+Develop a testing pipeline (for purpose of debugging pipeline works):
 
-- test on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+- smoke test (5-10 questions): check pipeline works
+- pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+
+## NEED TO ADD: Statistical power — what our sample sizes can actually support
+
+**Formula that matters:** margin of error on a proportion (95% CI) ≈ `1.96 × sqrt(p(1−p)/n)`. To detect a real difference `d` between two systems at 80% power (independent samples): `n ≈ 7.84 × [p1(1−p1) + p2(1−p2)] / d²` per arm.
+
+**What our current sample sizes allow:**
+
+| n                               | Margin of error | Reliably detects                                                            |
+| ------------------------------- | --------------- | --------------------------------------------------------------------------- |
+| 112 (FinanceBench, 10-K only)   | ±9.3pp          | Only large/dramatic effects (~20pp+ gap, or a heavily skewed McNemar split) |
+| 150 (FinanceBench, full subset) | ±8pp            | Same — marginally better, not meaningfully                                  |
+| 1,389 (LOFin-1.4k)              | ±2.6pp          | Realistic 5pp improvements                                                  |
+
+A 45% vs. 53% comparison at n=112–150 will likely have overlapping CIs — not statistically defensible even if the number looks better.
+
+**What size is ideal, and for which test:**
+
+- **Detecting a 5–10pp improvement, independent-samples comparison:** ~390–1,550 questions per arm. Neither FinanceBench subset gets there; LOFin-1.4k does for the 5pp case.
+- **Paired comparison (McNemar's, same questions through both pipeline variants — what we're actually doing):** power depends on _discordant_ pairs, not total n. At ~20–30% discordance, n=112–150 yields only ~25–45 discordant pairs — need ~200 for a modest (60/40) real effect. Only a dramatic (~75/25) split on disagreements would show up reliably.
+
+**Practical split:** use FinanceBench (112/150) for **qualitative failure-mode diagnosis** — which taxonomy category breaks, does the pattern make sense — not for confident "system A beats system B" claims. Use **LOFin for any quantitative significance claim.** Report bootstrap CIs alongside point accuracy everywhere, not accuracy alone.
+
+---
 
 ## FinanceBench `[VERIFIED] - Islam et al. (2023)`
 
@@ -147,7 +174,6 @@ Sourced from three places (Table 9, p.16674):
 - **Numeric (Table)**: "the answer is a number from a table or can be calculated from numbers in tables"
 - **Numeric (Text)**: "a number derived by extracting and combining numerical information from text instead of a table"
 - **Textual**: "a textual explanation"
-
 
 **Question metadata:**
 
