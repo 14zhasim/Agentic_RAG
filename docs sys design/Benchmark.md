@@ -50,23 +50,32 @@ Pin libraries in package manager (like uv)
 
 Extract questions + corresponding PDFs to meet this criteria:
 
-- Use FinanceBench dataset + questions - only 10Ks for now, add in 10Qs, 8Ks etc. later
+- Use FinanceBench dataset + questions - only 10Ks for now, add in 10Qs, 8Ks etc. later (150 qs -> 112 qs across 64 PDFs)
 - Use Hirec/Lofin dataset + questions - only for those where answer is > 1 pdf, cap say at 200 qs
+- Include full Hirec dataset to test for statistical significance
 
-Develop an all question pipeline:
+Validate the question set
+_- `financebench_id` is unique._
+_- Every selected question resolves to unambiguous document metadata._
+_- Every selected PDF exists._
+_- Evidence document names and zero-indexed page numbers are usable._
+_- The complete evidence list is retained for every question._
+_- Final counts are 112 questions and 64 PDFs._
+
+Develop testing set pipeline:
 
 - use questions mentioned above
-- integrate FinanceBench 5 context conditions into our pipeline, for the retrieval metrics below (even if placeholders for parts that differ from ours, like how we plan to use different RAG pipeline)
+- integrate FinanceBench 5 context conditions (below) into our pipeline, for the retrieval metrics below (even if placeholders for parts that differ from ours, like how we plan to use different RAG pipeline)
 - configure results reporting:
   - for FinanceBench: report results segmented across generation method + cognitive skill
   - with this segmentation, report: page recall, page precision, page MRR.
 - use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric using RAGAS library (details below)
-  - decide the model to use and whether to use Azure/Openrouter
+  - use Azure Foundry, use GPT-5.6 Luna due to accuracy/cost efficiency as per https://www.vals.ai/benchmarks/fabv2
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
   - consider doing again using LLM as judge to calculate Context Recall, Context Precision, Faithfulness, Correctness. If too expensive, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
-Develop a testing pipeline (for purpose of debugging pipeline works):
+Develop a validation set pipeline (for purpose of debugging pipeline works):
 
 - smoke test (5-10 questions): check pipeline works
 - pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
