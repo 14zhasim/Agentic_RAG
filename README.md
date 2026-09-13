@@ -1,171 +1,177 @@
-# Agentic RAG for Financial Statement Analysis
+# SEC RAG benchmark
 
-This repository contains the benchmark harness and experimental retrieval systems for evaluating agentic RAG over financial filings. The first implementation target is the open-source FinanceBench 10-K subset: 112 questions across 64 PDFs.
+This repository contains a plain-Python benchmark harness for evaluating RAG
+over financial filings. The current implementation prepares and validates the
+open-source FinanceBench 10-K subset: **112 questions across 64 PDFs**.
 
-The benchmark harness is plain Python rather than a notebook. This keeps configuration explicit, makes runs resumable, and allows the retrieval implementation to change without rewriting data preparation, generation, judging, metrics, or reporting.
+The harness currently supports:
 
-## Planned project structure
+- `closed_book`: question only;
+- `oracle`: FinanceBench gold evidence pages;
+- `long_context`: the complete relevant filing;
+- no-spend dry runs;
+- append-only answer checkpointing and resumption;
+- page recall, page precision and page MRR;
+- reports segmented by condition, question type and cognitive skill.
 
-The Python code lives inside the named `finrag_benchmark` package. A named package avoids ambiguous imports such as `from data import ...` and keeps project code separate from generated data and cloned reference repositories.
+`single_store` and `shared_store` are defined but require the future retriever.
+The Azure/RAGAS answer judge and HiREC/LOFin support are also deferred.
 
-```text
-pyproject.toml
-uv.lock
-.python-version
-.env.example
-
-configs/
-└── financebench.toml
-
-src/
-└── finrag_benchmark/
-    ├── cli.py
-    ├── runner.py
-    ├── data/
-    │   └── financebench.py
-    ├── generation/
-    │   ├── models.py
-    │   └── prompts.py
-    ├── conditions/
-    │   └── financebench.py
-    ├── retrieval/
-    │   ├── base.py
-    │   └── placeholder.py
-    └── evaluation/
-        ├── retrieval_metrics.py
-        ├── numeric_scorer.py
-        ├── judge.py
-        └── reporting.py
-
-data/
-└── financebench/
-    ├── financebench_open_source_10k.jsonl
-    ├── financebench_document_information_10k.jsonl
-    ├── manifest.json
-    └── pdfs/
-
-vectorstores/
-results/
-benchmarks/
-```
-
-The major boundaries are:
-
-- `data`: prepares, validates, and loads FinanceBench frin original repo, while preserving the schemas of its two source JSONL files.
-- `conditions`: constructs the context for each of the five FinanceBench testing conditions.
-- `retrieval`: defines the interface that baseline and future dissertation RAG implementations must satisfy.
-- `generation`: handles OpenRouter/GLM model calls and shared answer prompts.
-- `evaluation`: calculates retrieval metrics, numeric and LLM-judged answer scores, and summaries.
-- `runner`: coordinates jobs, retries, checkpointing, and resumption.
-- `cli`: exposes the commands run through `uv`.
-- `configs`: contains public run configuration such as model identifiers, conditions, retrieval depth, chunk settings, and prompt versions.
-- `data/financebench`: contains the deterministically prepared local dataset and selected PDFs. These generated files are not committed.
-- `vectorstores`: contains rebuildable retrieval indexes and is not committed.
-- `results`: contains separate, reproducible benchmark run directories.
-- `benchmarks`: contains read-only clones of the original benchmark repositories. New project code does not go here.
-
-The structure above describes the approved target architecture. See `docs sys design/Benchmark Progress.md` for what has and has not been implemented.
-
-## How the benchmark works
+## Project structure
 
 ```text
-prepare data
-    ↓
-validate 112 questions and 64 PDFs
-    ↓
-construct condition inputs for 5 testing conditions
-    ↓
-retrieve where applicable
-    ↓
-generate and checkpoint answers
-    ↓
-judge saved answers separately
-    ↓
-calculate and aggregate metrics
-    ↓
-write reports
+configs/financebench.toml          editable dataset, generation and run settings
+src/sec_rag_benchmark/
+├── data.py                        prepare, validate and load FinanceBench
+├── conditions.py                  construct the five context conditions
+├── generation.py                  prompt and OpenRouter/GLM request
+├── metrics.py                     retrieval metrics and report aggregation
+├── runner.py                      job loop, checkpoints and resumption
+└── cli.py                         terminal commands and orchestration
+tests/                             no-spend automated tests
+data/financebench/                 generated 10-K subset; ignored by Git
+results/                           generated benchmark runs; ignored by Git
+benchmarks/financebench/           read-only original FinanceBench clone
 ```
 
-The five FinanceBench conditions are:
+## Prerequisites
 
-- `closed_book`: the question without filing context.
-- `oracle`: the complete gold evidence pages supplied by FinanceBench.
-- `single_store`: retrieval restricted to the question's filing.
-- `shared_store`: retrieval over all 64 selected 10-Ks.
-- `long_context`: the complete relevant filing in page order.
+- Python 3.12;
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/);
+- Git;
+- an OpenRouter API key only when running paid generation.
 
-All conditions use the same answer-generation stage after constructing their different inputs. The retrieval implementation is replaceable, so future RAG systems can be compared without changing the surrounding benchmark.
+Install `uv` if it is not already available:
 
-Generation and judging are deliberately separate:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv --version
+```
 
-- A judge outage cannot discard generated answers.
-- The judge can be replaced or rerun without paying to regenerate answers.
-- Azure judge setup can remain deferred while generation is developed.
-- Closed-book, oracle, and long-context generation can run before the RAG retriever exists.
+## One-time setup
 
-The generation target is GLM-5.3-Flash through OpenRouter. The planned final-answer judge is GPT-5.6 Luna through a Direct-from-Azure Microsoft Foundry deployment. Both integrations use separate clients built from the pinned OpenAI Python SDK.
+From the repository root, clone FinanceBench if
+`benchmarks/financebench/` does not already exist:
 
-## CLI responsibilities
+```bash
+git clone https://github.com/patronus-ai/financebench.git benchmarks/financebench
+```
 
-The command-line interface will expose separate operations for:
+Create the local Python environment and install the exact locked dependencies:
 
-- Preparing FinanceBench data
-- Validating the prepared questions, metadata, evidence, and PDFs
-- Running selected context conditions
-- Judging previously generated answers
-- Calculating and writing reports
-- Performing a no-spend dry run
+```bash
+uv sync
+uv lock --check
+uv run pytest -q
+```
 
-Commands that do not call a model will not require an API key. Until a retriever or judge is configured, their corresponding paid operations will fail explicitly rather than creating placeholder results that look real.
+`pyproject.toml` contains the direct dependency pins and defines the
+`sec-rag-benchmark` command. `uv.lock` pins the complete dependency graph;
+`uv sync` recreates it inside the ignored `.venv/` directory.
 
-## Run artifacts
+## Prepare and validate FinanceBench
 
-Every benchmark run receives a unique directory:
+These commands make no model requests and spend no API credit:
+
+```bash
+uv run sec-rag-benchmark prepare --config configs/financebench.toml
+uv run sec-rag-benchmark validate --config configs/financebench.toml
+```
+
+Preparation filters the original source files to 10-Ks and creates the local
+112-question/64-PDF subset under `data/financebench/`. Validation checks the
+questions, metadata, evidence pages, PDFs and manifest.
+
+## Run a no-spend preflight
+
+Test the three currently executable conditions without creating an API client
+or spending credit:
+
+```bash
+uv run sec-rag-benchmark run --config configs/financebench.toml --dry-run
+```
+
+For a quick five-question check:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --conditions closed_book oracle long_context \
+  --limit 5 \
+  --dry-run
+```
+
+## Run paid generation
+
+Create an ignored `.env` file in the repository root:
+
+```text
+OPENROUTER_API_KEY=your-key-here
+```
+
+Load the file into the current terminal shell:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+The following command **sends paid OpenRouter requests**:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --conditions closed_book oracle long_context
+```
+
+The CLI creates a timestamped directory such as `results/20260913-143052/` and
+prints its path. Keep the path if you need to resume or report the run.
+
+## Resume and report a run
+
+Resume an interrupted run by passing its existing directory and the same
+conditions. Successful job IDs are skipped:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --conditions closed_book oracle long_context \
+  --run-dir results/20260913-143052
+```
+
+Create or refresh the reports without calling a model:
+
+```bash
+uv run sec-rag-benchmark report --run-dir results/20260913-143052
+```
+
+Each run directory contains:
 
 ```text
 results/<run-id>/
-├── config.toml
-├── predictions.jsonl
-├── judgments.jsonl
-├── summary.json
-├── summary.csv
-└── errors.jsonl
+├── config.toml        effective configuration for this run
+├── predictions.jsonl successful generated answers
+├── errors.jsonl      failed attempts, when present
+├── summary.json      machine-readable metrics and completion status
+└── summary.csv       spreadsheet-friendly segmented metrics
 ```
 
-The copied `config.toml` makes the run self-describing. It records model identifiers, prompts, provider selection, retrieval depth, chunk settings, context and output limits, and other hyperparameters.
+To see all available options:
 
-Predictions are saved after each question. Interrupted runs can resume without repeating successful calls. Judgments are saved separately from predictions. Transient throttling, timeout, and server errors are retried; permanent configuration and authentication failures stop clearly and are recorded.
-
-## Dependency management
-
-The project uses `uv`:
-
-- `.python-version` pins Python.
-- `pyproject.toml` records exact direct dependency versions.
-- `uv.lock` pins the complete transitive dependency graph.
-- Project commands run through `uv run`.
-- LangChain and Chroma are not installed merely because the original notebook used them. They are added only if the selected retrieval implementation requires them.
-- The pinned `openai` SDK can serve both the OpenRouter generator and Azure Foundry judge clients.
-
-## Credentials and local configuration
-
-Credentials live in an ignored `.env` file. The committed `.env.example` contains variable names with blank values and is safe to copy locally.
-
-Expected credentials include:
-
-```dotenv
-OPENROUTER_API_KEY=
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_ENDPOINT=
+```bash
+uv run sec-rag-benchmark --help
+uv run sec-rag-benchmark run --help
 ```
 
-VS Code can inject these values into newly created integrated terminals with:
+The `judge` command currently exits with an explicit not-implemented message.
 
-```json
-{
-  "python.terminal.useEnvFile": true,
-  "python.envFile": "${workspaceFolder}/.env"
-}
-```
+## Detailed documentation
 
-Never commit `.env`, print secret values into logs, or store credentials in run artifacts.
+- [`docs sys design/Benchmark.md`](docs%20sys%20design/Benchmark.md) contains the
+  benchmark requirements and methodology.
+- [`FinanceBench Implementation Guide.md`](docs%20sys%20design/benchmark/FinanceBench%20Implementation%20Guide.md)
+  explains the architecture, data shapes, pseudocode, code-reading order and
+  complete terminal workflow.
+- [`docs sys design/Benchmark Progress.md`](docs%20sys%20design/Benchmark%20Progress.md)
+  records implemented and deferred work.
