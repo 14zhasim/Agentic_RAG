@@ -210,6 +210,13 @@ identical across every filer, it\'s a far more robust signal than
 inferring headings from inconsistent CSS styling
 
 ---
+Understand benchmark code
+Check if benchmark accounts for failure points in RAG research doc.
+Then start building system design – using basic chatgpt notes, boot.dev, codebase retrieval parsing md (and maybeeee lit review stuff + claude convos).
+Then, identify failure points in architecture and if benchmark can help with this.
+
+_add metrics for cost per question on average_
+_
 
 Run benchmark at every change:
 
@@ -218,18 +225,19 @@ LlamaIndex to orchestrate pipeline
 Ingest files
 
 - Load doc
-- Chunk + metadata attribution / structure parsing
+- Chunk (+structure parsing) + metadata attribution of file-type, file name, company ticker, financial year
+  - BRAINSTORM HIERARCHICAL RETRIEVAL MORE TOO
   - different chunking methods
-  - different methods for keeping track of document structure to attach as metadata to a chunk (HiChunk)
-  - SLM to generate heading to attach as section heading to metadata (Fin-STAR)
   - table-aware chunking
+  - different methods for keeping track of document structure to attach as metadata to a chunk (HiChunk)
+    - SLM to generate heading to attach as section heading to metadata (Fin-STAR)
 - Build index for keyword search
 - Embed chunk
   - figure out best embedder model for this
 
 Retrieve - Elastic search
 
-- Metadata filtering
+- Metadata filtering: ADD AS TEST TO BENCHMAR: ACCURACY OF RETRIEVING CORRECT DOCUMENT!
 - Hybrid search
   - BM25
   - Semantic search
@@ -237,6 +245,7 @@ Retrieve - Elastic search
   - tune top-k
 
 Generate answer
+
 - decide model: GLM-5.3-flash with openrouter, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
 - decide azure/openrouter/other service
 
@@ -244,12 +253,49 @@ Reranking – cross encoder
 
 Agentic tooling
 
-- choose BM25 or semantic search + specific queries to use for each
-- query enhancement
-- query decomposition (core question)
-- HyDE (fake answer)
+- choose metadata filters before doing search
+- BM25 or semantic search + specific queries to use for each
+- query enhancement (+ HyDe - fake answer) 
+- query decomposition (identify core questions to answer)
 - feedback loop: multi-hop retrieval
 - calculator tool
 - verification agent (compare retrieved info vs generated answer)
 
 LLM (openai sdk) – answer generation
+
+
+TECH STACK:
+
+add instructions to create and active venv after creating uv project;include instructions for this inreadme.md
+
+TOML is a configuration/data format. pyproject.toml is a standardized Python project configuration file written in TOML. It can declare metadata, dependencies, build requirements, and tool configuration. Package-management/build tools such as uv, pip, Poetry, etc. read this information and perform actions such as resolving and installing dependencies and building the project. The resulting packages live in an environment, usually a virtual environment. The Python source files then import and use those installed packages.
+
+                         pyproject.toml
+                               │
+       ┌───────────────┬───────┼────────┬───────────────┐
+       ↓               ↓       ↓        ↓               ↓
+ Project Metadata   Runtime   Build    Dev          Tool Config
+                    Deps     System   Deps
+       │               │       │        │               │
+       │               │       │        │          ┌────┼────┐
+       │               │       │        │          ↓    ↓    ↓
+       │               │       │        │        pytest ruff mypy
+       │               │       │        │          │    │    │
+       ↓               ↓       ↓        ↓          ↓    ↓    ↓
+  name/version      pandas   uv_build  pytest    Testing Linting
+  description       openai      │        │       Type-checking
+  authors           pymupdf     │        │
+  etc.                │         │        │
+                      ↓         ↓        ↓
+              Run the app  Build app  Develop/test it
+
+
+
+Llamaindex for orchestration and specific functions e.g. baseline chunking methods
+
+OpenAI sdk - idk how to use concurrently with llamaindex. need to also check if comppatible for non-openAI models for the toolings i want to use
+
+Elastic search as compatible with all my retrieval methods + uses HNW
+need to consider others in bootdev doc
+
+

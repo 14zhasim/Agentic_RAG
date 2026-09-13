@@ -27,7 +27,7 @@ Code completion ~11 September; dissertation writing starts after; first draft su
 
 #### Current build-phase status
 
-Need to setup benchmark for my testing, as per instructions in Benchmark.md.
+Need to setup benchmark for my testing, as per instructions in `docs sys design/Benchmark.md`.
 
 I have done lit review and have all the contents needed to make sys design - just need to assemble it into proper design. I also haven't finalized the specific tool stack yet (e.g. LangChain vs. alternatives, Qdrant vs ElasticSearch vs. alternatives for the vector store, etc.) — treat tool-stack questions as open, not settled.
 
@@ -35,7 +35,7 @@ Plan for sys design:
 **Start building system design – using RAG research doc, boot.dev notes, codebase_retrieval_parsing md (and maybeeee lit review stuff + claude chat to query all my notes on them). Then, identify failure points in architecture and if benchmark can help with this. References for these resources**:
 
 - boot.dev notes: look at the md files /Users/zubairasim/rag-search-engine/course_notes
-  design/Benchmark.md
+  `docs sys design/Benchmark.md`
 - RAG research doc: /Users/zubairasim/Downloads/RAG\ research.docx
   Design\ Draft.md
 - retrieval parsing: <../../../Library/CloudStorage/OneDrive-Personal/Documents/Masters/MSc Computer Science Project/Implementation Notes/Lit review/CODEBASE_RETRIEVAL_PARSING_ANALYSIS.md
@@ -44,7 +44,7 @@ Plan for sys design:
 #### Experiments — what I'm building, how I benchmark, and details
 
 **Domain:** Corporate finance / equity research — SEC filings (10-K, 10-Q), financial statements, spreadsheets/financial models.
-**Benchmarking** consistent across all 3 experiments, visit 'Benchmark.md'
+**Benchmarking** consistent across all 3 experiments, visit `docs sys design/Benchmark.md`
 
 ##### Experiment 1 — Agentic RAG from long financial documents
 
@@ -52,7 +52,7 @@ Plan for sys design:
 - **Input:** Natural-language finance question about a US public company + access to its filings.
 - **Output:** Free-text answer, scored for accuracy.
 - **Baseline:** Direct LLM API call, full context window, no RAG.
-- **Benchmark, Metrics** See 'Benchmark.md'
+- **Benchmark, Metrics** See `docs sys design/Benchmark.md`
 - **Target:** Match or beat LLM-in-context-window performance while not being limited by context window size.
 
 ##### Experiment 2 — Structured embedding and retrieval
@@ -66,3 +66,15 @@ See the CS_Research_Matrix.xlsx + RAG research doc, basically want to index the 
 Reference deck: "Zubair_Research_Planning_Condense_v2" (converted to Zubair_Research_Planning_Condense_v2.md) contains the full slide-by-slide detail — benchmark leaderboards, task taxonomies, and source quotations — behind everything above, including the appendix material on Experiments 4 and 5.
 
 ##### Experiment 3 — agentic tooling, verification, looping
+
+## Understanding-first development workflow
+
+- Treat the user as the learner-owner of the system, not merely an approver.
+- Edit tracked user-authored requirements documents directly as living sources of truth, preserving their wording and logical flow; establish a clean or explicitly staged baseline first, then use Git diff/history for review and recovery instead of duplicate specifications.
+- Use a separate implementation guide for technical detail. Apply three explicit gates: architecture/libraries; files/data/interfaces; pseudocode/slices/tests.
+- Prefer the simplest architecture satisfying current requirements and identify deferred work explicitly.
+- Implement and test one vertical slice at a time. Show its uncommitted Git diff and as-built explanation, then wait for user approval before committing.
+- Explain libraries, file structure, data flow, persisted artifacts, public functions, and main-function-first helper call order at the user's current Python level.
+- Keep README files navigational and status-oriented. Requirements and design belong in the living source; implementation detail belongs in the guide.
+- Before coding, use the implementation guide to explain and approve the proposed solution from the top down: requirements traceability, system design and libraries, file/data/interface structure, then pseudocode, vertical slices, and tests.
+- After each implemented slice, update that same guide with the exact files and important functions, actual call/data flow and artifacts, corresponding tests, material plan/code discrepancies and their rationale, updated diagrams where needed, and a main-function-first order for reading the guide alongside the code. Integrate those file/function/test pointers into the topical sections they explain and order the sections to match the code-reading path; if a file must be previewed early or revisited later, say so in that section rather than creating a separate lookup table. Do not leave superseded planned behavior presented as current implementation.

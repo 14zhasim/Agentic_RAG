@@ -42,17 +42,67 @@ Might want to include MRR metric, and also token cost per query
 
 (sources for benchmark based off resources in lit review folder: pdf of the benchmark papers, info in matrix, their github repo - summarised under 'benchmarking.md')
 
+## Purpose and scope
+
+Build a reproducible, plain-Python evaluation harness for the open-source FinanceBench questions whose documents are classified as 10-Ks. The harness will reproduce FinanceBench's five context conditions, support replacement retrieval pipelines, calculate deterministic page-retrieval metrics, generate answers with GLM-5.3-Flash, and later judge those answers with GPT-5.6 Luna.
+
+For the current MVP, use the cloned FinanceBench repository as read-only source
+material. Deterministically prepare:
+- a project-owned, generated 10-K subset
+- while preserving both original JSONL schemas from dataset 
+- The prepared subset and PDFs remain out
+of Git and can be recreated with a command.
+
+Answer generation uses `z-ai/glm-5.3-flash` through OpenRouter. Final-answer judging will use `gpt-5.6-luna` through a Direct-from-Azure Microsoft Foundry deployment. Due to accuracy/cost efficiency of both models, as per https://www.vals.ai/benchmarks/fab v2
+
+The initial dataset contains 112 questions across 64 PDFs. FinanceBench 10-Qs, 8-Ks, earnings documents.
+
+
 ## Overall benchmark actions
+
+The staged flow is:
+
+```text
+prepare data
+    ↓
+validate 112 questions and 64 PDFs
+    ↓
+construct condition inputs for 5 testing conditions
+    ↓
+retrieve where applicable
+    ↓
+generate and checkpoint answers
+    ↓
+judge saved answers separately
+    ↓
+calculate and aggregate metrics
+    ↓
+write reports
+```
+
 
 Clone both repos, `cat`/`head` the actual data files.
 
-Pin libraries in package manager (like uv)
+Use Python 3.12 and `uv`. Pin direct dependency versions in `pyproject.toml` and
+commit the complete `uv.lock`. 
 
 Extract questions + corresponding PDFs to meet this criteria:
 
 - Use FinanceBench dataset + questions - only 10Ks for now, add in 10Qs, 8Ks etc. later (150 qs -> 112 qs across 64 PDFs)
 - Use Hirec/Lofin dataset + questions - only for those where answer is > 1 pdf, cap say at 200 qs
 - Include full Hirec dataset to test for statistical significance
+
+Prepare FinanceBench 10-K data:
+
+- Read the two source files `financebench_open_source.jsonl` and `financebench_document_information.jsonl`.
+- Join document metadata to questions by `doc_name` in memory.
+- Make preparation idempotent, so running it repeatedly produces the same prepared dataset without duplicate records.
+- Create a manifest that records:
+  - source;
+  - filter (i.e just 10-K filings);
+  - expected and observed counts;
+  - selected PDF filenames;
+  - file hashes.
 
 Validate the question set
 _- `financebench_id` is unique._
@@ -64,15 +114,23 @@ _- Final counts are 112 questions and 64 PDFs._
 
 Develop testing set pipeline:
 
-- use questions mentioned above
-- integrate FinanceBench 5 context conditions (below) into our pipeline, for the retrieval metrics below (even if placeholders for parts that differ from ours, like how we plan to use different RAG pipeline)
+- use questions mentioned above + context from PDF - but include checks to ensure fits in cotext window. Dont truncate prompts or only beginning of filing' if prompt cannot fit, it fails
+- integrate FinanceBench 5 context conditions (read section below) into our pipeline, for the retrieval metrics below, using placeholders for our RAG pipeline
 - configure results reporting:
-  - for FinanceBench: report results segmented across generation method + cognitive skill
-  - with this segmentation, report: page recall, page precision, page MRR.
+  - for FinanceBench: report results segmented across generation method + cognitive skill + condition, with sample count for each segment
+  - with this segmentation, report: page recall, page precision, page MRR (count number of unique pages retrieved, MRR is first chunk from golden page)
+  - for each answer, record:
+    - requested model;
+    - returned model;
+    - serving provider;
+    - token usage;
+    - latency;
+    - cost.
 - use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric using RAGAS library (details below)
-  - use Azure Foundry, use GPT-5.6 Luna due to accuracy/cost efficiency as per https://www.vals.ai/benchmarks/fabv2
+  - use Azure Foundry, use GPT-5.6 Luna
+  - provide it: question, reference answer + evidence + human labeller's justification, candidate answer
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
-  - consider doing again using LLM as judge to calculate Context Recall, Context Precision, Faithfulness, Correctness. If too expensive, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
+  - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
 Develop a validation set pipeline (for purpose of debugging pipeline works):
@@ -112,10 +170,11 @@ A 45% vs. 53% comparison at n=112–150 will likely have overlapping CIs — not
 **RAG pipeline failures (specifically, retrieval failures)** are isolated by running the same question under 5 context conditions:
 
 - **closed-book**: no context given - accounts for knowledge in model's parameters
-- **oracle**: exact correct page handed to model - reasoning ceiling if retrieval is perfect
+- **oracle**: exact correct pages handed to model - reasoning ceiling if retrieval is perfect
+- **long-context**: full document(s) get stuffed directly into the model's context window: tests RAG vs long-context question directly
+- **REQUIRE RETRIEVER:**
 - **vector-store**: tests retrieval from vector store, if the only stored filing is the one containing the answer (errors here due to bad chunking - wrong or insufficient recall)
 - **shared-store**: vector store contains chunks from ALL companies' filings (error here from finding correct document)
-- **long-context**: full document(s) get stuffed directly into the model's context window: tests RAG vs long-context question directly
 
 **Question types** (§3.1, p.3–4. Note - % given from original 10,000 qs, not the 150q subset):
 
@@ -127,7 +186,7 @@ Each question has the below labels in dataset.
   - domain-relevant (9%): generic finance questions applicable to many 10-Ks.
   - novel-generated (12.9%): annotator-written, company/report/industry-specific questions requiring close reading of the filing
   - metrics-generated (78%): retrieving 'typical' metrics from filing eg revenue, ebitda etc. (18 different metrics in total)
-- **By cognitive skill**:
+- **By cognitive skills (can have >1 label)**:
   - **Information extraction** (28%): "extracting specific data or textual content"
   - **Numerical reasoning** (66%) — "performing mathematical calculations or comparing numerical data"
   - **Logical reasoning** (6%) — "using logical deductions to evaluate, contrast, or make judgments", still from one filing (even if many pages)
@@ -139,9 +198,12 @@ See github README.md - very exhaustive
 - gold answer pdf + page number
 
 **Dataset metrics**:
-So, we can label each chunk with its pdf + page number metadata, and compare with gold answer metadata to compute:
+So, we can label each chunk with its pdf + page number metadata, and compare with gold answer metadata (doc_name, evidence_page_num) to compute:
 
 - **MRR, Recall, Precision**
+  - page recall: retrieved gold pages / all gold pages
+  - page precision: retrieved gold pages / all unique retrieved pages
+  - page MRR: 1 / rank of first chunk containing a gold page
   - we can _segment across both question types_, as long as we say how many questions belong to each
   - given it provides 'evidence_text' - we could even give to **LLM as judge + RAGAS library** to computer these metrics as well e.g. retrieves from different page, but still correct
     - can compute Context Recall, Context Precision, Faithfulness, Correctness (looks at each retrieved chunk vs evidence text, see if it is relevant or not)
@@ -201,3 +263,4 @@ Sourced from three places (Table 9, p.16674):
 - **_k_** (average passages used)
 
 **Reproducibility:** https://github.com/JaeyoungChoe/LOFin-bench-HiREC — dataset also on HuggingFace.
+                                           
