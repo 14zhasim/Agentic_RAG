@@ -1,0 +1,28 @@
+[project]
+name = "sec-rag-benchmark"
+version = "0.1.0"
+description = "Reproducible FinanceBench 10-K benchmark harness"
+readme = "README.md"
+authors = [
+    { name = "14zhasim", email = "zubair.asim.25@ucl.ac.uk" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "jinja2==3.1.6",
+    "openai==3.8.0",
+    "pandas==3.0.5",
+    "pymupdf==1.28.2",
+    "transformers==5.17.0",
+]
+
+[project.scripts]
+sec-rag-benchmark = "sec_rag_benchmark.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
