@@ -51,8 +51,8 @@ benchmarks/
 
 The major boundaries are:
 
-- `data`: prepares, validates, and loads FinanceBench while preserving the schemas of its two source JSONL files.
-- `conditions`: constructs the context for each of the five FinanceBench conditions.
+- `data`: prepares, validates, and loads FinanceBench frin original repo, while preserving the schemas of its two source JSONL files.
+- `conditions`: constructs the context for each of the five FinanceBench testing conditions.
 - `retrieval`: defines the interface that baseline and future dissertation RAG implementations must satisfy.
 - `generation`: handles OpenRouter/GLM model calls and shared answer prompts.
 - `evaluation`: calculates retrieval metrics, numeric and LLM-judged answer scores, and summaries.
@@ -73,7 +73,7 @@ prepare data
     ↓
 validate 112 questions and 64 PDFs
     ↓
-construct condition inputs
+construct condition inputs for 5 testing conditions
     ↓
 retrieve where applicable
     ↓
