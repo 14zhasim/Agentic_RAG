@@ -38,6 +38,15 @@ Generation failure
 ├── hallucination
 └── formatting
 
+How to classify (automatic first pass from saved results, hand-label only a sample):
+- oracle correct, retrieval condition wrong → retrieval failure
+  - page recall = 0 in shared_store but > 0 in single_store → wrong document
+  - right document but page recall = 0 → wrong section/chunk
+  - page recall > 0 but < 1 → insufficient recall
+- oracle wrong → reasoning or generation failure (retrieval is not the cause)
+- did_not_fit → context-limit outcome, kept separate from all three
+- sub-types (e.g. arithmetic vs hallucination, missed table) → hand-label a small sample only, using the judge's reason plus the question's cognitive skill label
+
 
 (sources for benchmark based off resources in lit review folder: pdf of the benchmark papers, info in matrix, their github repo - summarised under 'benchmarking.md')
 
