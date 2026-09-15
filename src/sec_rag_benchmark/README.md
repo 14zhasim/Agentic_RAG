@@ -1,9 +1,19 @@
 # FinanceBench package
 
-This directory contains the six-module golden-path implementation:
+This directory contains the golden-path implementation:
 
 ```text
-data.py → conditions.py → generation.py → runner.py → metrics.py → cli.py
+config.py      load and validate TOML settings
+data.py        prepare, validate and load FinanceBench
+conditions.py  construct the five context conditions
+generation.py  build prompts and call OpenRouter
+metrics.py     calculate one job's retrieval metrics
+reporting.py   aggregate saved predictions
+cli.py         route terminal commands to those modules
+execution/
+├── preflight.py  inspect jobs without API calls
+├── job.py        execute one question-condition pair
+└── runner.py     loop, checkpoint and resume real runs
 ```
 
 For the authoritative explanation, diagrams, data contracts, public-function
@@ -15,6 +25,5 @@ For requirements and approved design decisions, read:
 
 `docs sys design/Benchmark.md`
 
-Those authoritative documents are maintained in the main checkout while this
-feature worktree is reviewed. This README deliberately does not duplicate their
-requirements or implementation decisions.
+This README deliberately does not duplicate their requirements or implementation
+decisions.

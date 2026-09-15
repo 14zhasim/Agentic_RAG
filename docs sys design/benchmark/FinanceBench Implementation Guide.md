@@ -2,7 +2,7 @@
 
 #THOUGHTS: why we loading pdf table entry instead of actual pdf page itself
 
-Status: reconstructed as-built guide for learner review
+Section 15 reconciles this guide with the implemented execution subpackage.
 
 Authoritative requirements: `../Benchmark.md`
 
@@ -13,8 +13,7 @@ Historical inputs only:
 
 Those historical documents explain how the first, more engineered implementation
 was reached. They are not the current source of truth. This guide explains the
-smaller golden-path implementation actually present on
-`feature/financebench-golden-path`.
+smaller golden-path implementation now present in this repository.
 
 ## 1. System purpose and boundary
 
@@ -62,7 +61,9 @@ Deferred:
 ## 2. Project bootstrap and controls
 
 The benchmark is a named package under `src/sec_rag_benchmark/` because its
-modules import one another and share one installed command. This avoids ambiguous
+modules import one another and share one installed command; it also has several dependencies.
+
+This avoids ambiguous
 imports such as `from data import ...` and lets `uv run sec-rag-benchmark` invoke
 the package consistently.
 
@@ -82,7 +83,7 @@ uv sync
 
 `uv init` creates the package controls, `uv add` records exact direct
 dependencies, `uv lock` resolves the complete dependency graph, and `uv sync`
-creates or updates the local environment.
+creates or updates the local virtual environment.
 
 | Tool | Current purpose | Why it is present |
 |---|---|---|
@@ -140,47 +141,29 @@ sec-rag-benchmark = "sec_rag_benchmark.cli:main"
 
 
 
-`pyproject.toml` controls the Python project; `configs/financebench.toml` controls
-a benchmark run. `cli.load_config()` reads the latter and routes its sections as
-follows:
-
-```text
-[dataset]    → data.py preparation, validation, paths, and expected counts
-[generation] → generation.py model request and context limits
-[run]        → cli.py/runner.py conditions, retrieval depth, and results path
-```
-
-Use these commands after the one-time bootstrap:
-
-```bash
-uv lock --check
-uv run pytest -q
-uv run sec-rag-benchmark prepare --config configs/financebench.toml
-uv run sec-rag-benchmark validate --config configs/financebench.toml
-uv run sec-rag-benchmark run --config configs/financebench.toml --dry-run
-```
-
-Read `.python-version`, `pyproject.toml`, `.env.example`, and
-`configs/financebench.toml` in that order. Then inspect only `load_config()` in
-`src/sec_rag_benchmark/cli.py`; the rest of that file is explained in section 11.
-Read alongside `test_cli_prepare_validate_and_no_spend_dry_run()` in
-`tests/test_golden_path.py`. `uv.lock` does not need line-by-line review.
+`pyproject.toml` controls the Python project; `configs/financebench.toml` controls a benchmark run.
 
 ## 3. File structure and module relationships
 
-All paths below are relative to the `feature/financebench-golden-path` worktree
-root. Sections 5–11 follow the order in which to read the implementation; each
-section identifies its exact source file, function order, and corresponding test.
+Sections 5–12 follow the order in which to read the implementation; each section
+identifies its exact source file, function order, and corresponding test.
+
+The run-related modules live together under `execution/`:
 
 ```text
 configs/financebench.toml          public editable run settings
 src/sec_rag_benchmark/
-├── data.py                        prepare, validate, load
-├── conditions.py                  build five context conditions
+├── config.py                      load and validate TOML configuration
+├── data.py                        prepare, validate, load questions
+├── conditions.py                  dispatch to five condition builders
 ├── generation.py                  prompt and OpenRouter request
-├── metrics.py                     retrieval metrics and report aggregation
-├── runner.py                      job loop, checkpoint, resume
-└── cli.py                         terminal entry point and orchestration
+├── metrics.py                     score one job and normalize skill labels
+├── reporting.py                   aggregate saved jobs into reports
+├── execution/
+│   ├── preflight.py               no-spend condition and token checks
+│   ├── job.py                     execute one question-condition pair
+│   └── runner.py                  loop, checkpoint and resume real runs
+└── cli.py                         arguments, match/case, output and exit codes
 tests/
 ├── conftest.py                    tiny two-question/PDF fixtures
 └── test_golden_path.py            compact behavior tests
@@ -188,22 +171,26 @@ tests/
 
 ```mermaid
 flowchart LR
+    CLI[cli.py] --> CONFIG[config.py]
     CLI[cli.py] --> DATA[data.py]
-    CLI --> COND[conditions.py]
-    CLI --> GEN[generation.py]
-    CLI --> RUN[runner.py]
-    CLI --> MET[metrics.py]
-    RUN --> COND
-    RUN --> GEN
-    RUN --> MET
+    CLI --> PREFLIGHT[execution/preflight.py]
+    CLI --> RUN[execution/runner.py]
+    CLI --> REPORT[reporting.py]
+    CONFIG --> COND[conditions.py constants]
+    PREFLIGHT --> DATA
+    PREFLIGHT --> COND
+    PREFLIGHT --> GEN
+    RUN --> DATA
+    RUN --> JOB[execution/job.py]
+    JOB --> COND
+    JOB --> GEN
+    JOB --> MET
     COND --> PDF[PyMuPDF]
     DATA --> PDF
     GEN --> OR[OpenRouter via OpenAI SDK]
-    MET --> PD[pandas]
+    REPORT --> PD[pandas]
 ```
 
-There is no `records.py`. Modules exchange ordinary dictionaries. This makes
-the small benchmark easier to inspect, at the cost of weaker static type safety.
 
 ## 4. Main data shapes
 
@@ -312,12 +299,67 @@ this saved row, which already contains all reference inputs it needs, and
 persists its binary decision separately. `cost` is retained from OpenRouter's
 usage metadata when returned and is otherwise explicitly `null`.
 
-## 5. Data preparation and validation flow
+## 5. Configuration loading and routing
+
+`config.load_config()` reads `configs/financebench.toml` and routes its sections
+as follows:
+
+```text
+[dataset]    → data.py preparation, validation, paths, and expected counts
+[generation] → generation.py model request and context limits
+[run]        → execution modules: conditions, retrieval depth, and results path
+```
+
+`src/sec_rag_benchmark/config.py` has one responsibility: load and verify the
+TOML configuration.
+
+```text
+load_config(config_path):
+    read the TOML file into a dictionary
+    resolve dataset and results paths relative to the repository root
+    verify configured condition names
+    verify the OpenRouter/provider requirements
+    verify GLM reasoning-effort and token-limit settings
+    return the validated top-level configuration dictionary
+```
+
+It is separate because the TOML contains dataset, generation and run settings.
+Experiment settings that can affect results remain visible in
+`configs/financebench.toml`.
+
+## 6. Data preparation and validation flow
 
 In `src/sec_rag_benchmark/data.py`, read `prepare()` → `validate()` →
-`load_questions()` → `_check_rows()` → the small I/O, PDF, and hash helpers. Read
+`load_run_questions()` → `load_questions()` → `_check_rows()` → the
+small I/O, PDF, and hash helpers. Read
 the three data tests in `tests/test_golden_path.py` alongside it, using the
 fixture records in `tests/conftest.py`.
+
+The implementation keeps this as one module because all three public
+operations belong to the FinanceBench dataset lifecycle. The long preparation
+steps are separated by purpose:
+
+```text
+prepare()
+├── _select_10k_subset()
+├── _check_rows()
+├── _replace_prepared_files()
+└── _write_manifest()
+
+validate()
+├── _check_rows()
+└── _validate_manifest()
+
+load_questions()
+└── read both JSONLs and join metadata in memory
+
+load_run_questions()
+├── validate()
+└── load_questions(), then apply an optional limit
+```
+
+The small `_read_jsonl()`, `_write_jsonl()`, `_hash()`, `_pdf_path()` and
+`_evidence_doc()` functions remain file/PDF helpers.
 
 ```mermaid
 flowchart TD
@@ -341,24 +383,86 @@ Representative pseudocode:
 ```text
 prepare(config):
     read source question and metadata records
-    filter metadata to normalized 10k
-    select questions referencing those documents
-    discard metadata not used by a selected question
-    validate exact selection against source PDFs
-    replace generated PDF subset and JSONLs
-    hash generated files and write manifest
+    questions, metadata = _select_10k_subset(...)
+    _check_rows(questions, metadata, source PDFs, expected counts)
+    generated_files = _replace_prepared_files(...)
+    _write_manifest(generated_files, selection information)
     return observed counts
 
 validate(config):
     load generated JSONLs
-    repeat record/page/count validation
+    _check_rows(questions, metadata, prepared PDFs, expected counts)
     compare expected and actual PDF filenames
-    compare manifest settings and file hashes
+    _validate_manifest(...)
     return counts
 
 load_questions(output_dir):
     load questions, load doc metadata
     combine them
+
+load_run_questions(dataset_config, limit):
+    validate the prepared dataset
+    load its joined questions
+    reject a non-positive limit
+    return all questions or the requested first questions
+```
+
+The helper responsibilities are:
+
+```text
+_select_10k_subset():
+    filter metadata to normalized 10k
+    keep questions referencing those documents
+    discard metadata not used by a selected question
+    return selected questions and metadata
+
+_check_rows(questions, metadata, pdf_dir, expected counts):
+    check that both JSONL record types contain their required fields
+    check that every financebench_id is unique
+    check that each question matches exactly one metadata row by doc_name
+    check that the question and document totals are exactly 112 and 64
+
+    FOR each question:
+        locate and open its PDF
+        record the PDF's number of pages
+        check that its evidence is a non-empty list
+
+        FOR each evidence item:
+            check that it names the same document as the question
+            check that evidence_page_num is a valid zero-indexed PDF page
+
+    return nothing when every check passes
+    raise DataError immediately when a check fails
+
+_replace_prepared_files():
+    remove stale generated PDFs
+    copy the selected source PDFs
+    write both filtered JSONLs
+    return every generated file that must be hashed
+
+_write_manifest():
+    record source, filter, counts, PDF names and file hashes
+
+_validate_manifest():
+    compare manifest settings, filenames and hashes with prepared files
+```
+
+`_check_rows()` is the shared dataset gate. `prepare()` calls it against the
+selected source records and source PDFs **before writing generated data**.
+`validate()` calls the same helper against the prepared JSONLs and copied PDFs
+before permitting a benchmark run. This avoids maintaining two different sets
+of rules for what counts as a valid FinanceBench subset.
+
+Its inputs and result are:
+
+```text
+questions       selected question dictionaries
+metadata        selected document-information dictionaries
+pdf_dir         directory in which those documents must exist
+expected counts configured in financebench.toml
+
+success         no return value; execution continues
+failure         DataError explaining the first invalid condition found
 ```
 
 Important behavior:
@@ -367,26 +471,107 @@ Important behavior:
 - Evidence pages are zero-indexed and document-aware.
 - Preparation deletes stale PDFs only inside the generated output directory.
 - The manifest acts as provenance receipt, file inventory, and integrity check.
-- The current implementation reopens a repeated PDF for each question during
-  `_check_rows()`; this is understandable at current scale but could later be
-  simplified to use the existing `page_counts` dictionary as a true cache.
+- `_check_rows()` opens each distinct PDF once and reuses its page count when
+  several questions reference the same filing.
 
-## 6. Condition construction
+## 7. Condition construction
 
-In `src/sec_rag_benchmark/conditions.py`, read `build_condition()` first, then
-`gold_pages()`, `_pdf_pages()`, and `_page_block()`. Read alongside
-`test_all_conditions_and_retrieval_scopes()` in `tests/test_golden_path.py`.
+`src/sec_rag_benchmark/conditions.py` keeps one public dispatcher
+but moves each condition's substantial work into a named builder. Read it as:
+
+```text
+build_condition()
+├── _build_closed_book()
+├── _build_oracle()
+├── _build_long_context()
+├── _build_single_store()
+│       └── _build_retrieval_context()
+└── _build_shared_store()
+        └── _build_retrieval_context()
+
+then read:
+gold_pages() → _pdf_pages() → _page_block()
+```
+
+Read alongside `test_all_conditions_and_retrieval_scopes()` in
+`tests/test_golden_path.py`.
+
+### Condition-dispatch pseudocode
+
+```text
+build_condition(question, condition, PDFs, all document names, retriever, top_k):
+    MATCH condition:
+        CASE closed_book:
+            condition_data = _build_closed_book()
+
+        CASE oracle:
+            condition_data = _build_oracle(question)
+
+        CASE long_context:
+            condition_data = _build_long_context(question, PDFs)
+
+        CASE single_store:
+            condition_data = _build_single_store(
+                question, retriever, top_k
+            )
+
+        CASE shared_store:
+            condition_data = _build_shared_store(
+                question, all document names, retriever, top_k
+            )
+
+        CASE unknown value:
+            raise an unknown-condition error
+
+    combine the common question fields with condition_data
+    return one condition-result dictionary
+```
+
+Each private builder returns the same three keys:
+
+```python
+{
+    "context": "text supplied to the model",
+    "context_pages": [("document.pdf", 12)],
+    "retrieved_chunks": [],
+}
+```
+
+The two retrieval conditions differ only in document scope. Their small named
+builders make that distinction visible, then both call one shared chunk-to-
+context algorithm:
+
+```text
+_build_single_store()
+    scope = only the question's document
+    call _build_retrieval_context(...)
+
+_build_shared_store()
+    scope = all selected documents
+    call _build_retrieval_context(...)
+
+_build_retrieval_context()
+    require a retriever
+    retrieve ranked chunks within scope
+    format chunks into model context
+    record unique document-aware pages
+    return context, pages and chunks
+```
 
 ```mermaid
 flowchart TD
-    Q[Question] --> C{Condition}
-    C -->|closed_book| CB[Empty context]
-    C -->|oracle| O[Unique full gold pages]
-    C -->|long_context| L[Every PDF page in order]
-    C -->|single_store| S[Retriever scope = question PDF]
-    C -->|shared_store| SS[Retriever scope = all selected PDFs]
-    S --> R[Ranked chunk context]
+    Q[build_condition] --> C{match condition}
+    C -->|closed_book| CB[_build_closed_book]
+    C -->|oracle| O[_build_oracle]
+    C -->|long_context| L[_build_long_context]
+    C -->|single_store| S[_build_single_store]
+    C -->|shared_store| SS[_build_shared_store]
+    S --> R[_build_retrieval_context]
     SS --> R
+    CB --> OUT[Common condition-result dictionary]
+    O --> OUT
+    L --> OUT
+    R --> OUT
 ```
 
 The retriever public shape is:
@@ -398,7 +583,7 @@ Retriever = Callable[[str, tuple[str, ...], int], list[dict[str, Any]]]
 That means `retriever(question_text, document_scope, top_k)` returns ranked chunk
 dictionaries. A missing retriever raises `RetrieverUnavailable`.
 
-## 7. Generation flow
+## 8. Generation flow
 
 In `src/sec_rag_benchmark/generation.py`, read `build_messages()` → `generate()`
 → `count_prompt_tokens()` → `get_tokenizer()` → `_selected_provider()`. Read alongside
@@ -406,9 +591,46 @@ In `src/sec_rag_benchmark/generation.py`, read `build_messages()` → `generate(
 `test_generation_rejects_empty_output_and_oversized_prompt()` in
 `tests/test_golden_path.py`.
 
+The implementation gives generation's three stages distinct names:
+
+```text
+generate()
+├── _check_context_capacity()
+│       └── count_prompt_tokens() → get_tokenizer()
+├── _create_openrouter_client() only when no client was supplied
+├── client.responses.create()
+└── _read_generation_result()
+        └── _selected_provider()
+```
+
+```text
+generate(messages, config, optional client):
+    _check_context_capacity(messages, config)
+
+    IF no client was supplied:
+        client = _create_openrouter_client(config)
+
+    send the Responses API request
+    return _read_generation_result(response, config, elapsed time)
+
+_check_context_capacity():
+    count the complete formatted prompt
+    reserve output tokens and the safety margin
+    raise an explicit error if the total exceeds the context window
+
+_create_openrouter_client():
+    require OPENROUTER_API_KEY
+    create the OpenAI client using OpenRouter's URL and retry settings
+
+_read_generation_result():
+    reject an empty answer
+    collect model, provider, usage, cost and latency
+    return the answer-and-provenance dictionary
+```
+
 ```mermaid
 sequenceDiagram
-    participant R as runner.py
+    participant R as execution/job.py
     participant G as generation.py
     participant O as OpenRouter
     R->>G: build_messages(question, context)
@@ -438,11 +660,7 @@ between the locally applied template and OpenRouter's serving path. The check
 therefore compares input tokens + output-token reserve + safety tokens with the
 configured token context window.
 The pinned OpenAI SDK sends `client.responses.create()` to OpenRouter's base
-URL. The standard Responses fields are `input`, `max_output_tokens`,
-`reasoning`, and `store=False`; OpenRouter's endpoint is stateless and rejects
-stored response state. The harness omits the deprecated `truncation` parameter
-and instead raises its own error before making a request when the complete
-prompt and output reserve cannot fit.
+URL.
 
 Provider routing is an OpenRouter-only request extension passed through the
 SDK's `extra_body`. It orders the `z-ai` upstream provider first and disables
@@ -451,19 +669,11 @@ The `X-OpenRouter-Metadata: enabled` header asks OpenRouter to return routing
 metadata. `_selected_provider()` records the endpoint marked `selected`; it
 returns `None` instead of guessing when that metadata is absent.
 
-The result records the requested model from configuration separately from the
-model returned by OpenRouter. `response.output_text` supplies the answer. The
-result also records the serving provider, token usage, latency, and
-OpenRouter-reported `usage.cost`. Cost remains `null` when the response does not
-include it; the harness does not silently estimate it from a separate price
-table. The fake-client tests verify this request and response mapping without a
-paid API call; one later paid smoke request must verify the extensions against
-the live GLM endpoint before a benchmark run.
-
-## 8. Retrieval metrics
+## 9. Retrieval metrics
 
 In `src/sec_rag_benchmark/metrics.py`, read `page_metrics()` and
-`cognitive_skills()` now; leave `write_report()` for section 10. Read alongside
+`cognitive_skills()`. These both transform one question/job rather than
+aggregating a complete run. Read alongside
 `test_metrics_use_document_aware_unique_pages_and_chunk_rank()` in
 `tests/test_golden_path.py`.
 
@@ -499,7 +709,15 @@ stored on that job's prediction row:
 }
 ```
 
-### Pseudocode followed by `page_metrics()`
+The helper breakdown is:
+
+```text
+page_metrics()
+├── _unique_pages_from_chunks()
+└── _first_relevant_chunk_rank()
+```
+
+### `page_metrics()` pseudocode
 
 ```text
 INPUT:
@@ -510,35 +728,31 @@ INPUT:
 sort chunks by retrieval rank
 keep only the first top_k chunks
 
-create an empty set of unique retrieved pages
-
-FOR each retrieved chunk:
-    FOR each page covered by that chunk:
-        add (document name, page number) to the set
+unique retrieved pages = _unique_pages_from_chunks(ranked chunks)
 
 count how many unique retrieved pages are gold pages
+calculate page recall and page precision
 
-page recall =
-    gold pages retrieved / all gold pages
-
-page precision =
-    gold pages retrieved / all unique retrieved pages
-
-set first relevant chunk rank to nothing
-
-FOR each ranked chunk:
-    construct that chunk's (document name, page number) pairs
-
-    IF any pair is a gold page:
-        save this chunk's rank
-        stop searching
-
-IF a relevant chunk was found:
-    page MRR = 1 / its rank
-ELSE:
-    page MRR = 0
+first rank = _first_relevant_chunk_rank(gold pages, ranked chunks)
+calculate page MRR from first rank, or zero when there is no match
 
 RETURN recall, precision and MRR
+```
+
+```text
+_unique_pages_from_chunks():
+    create an empty set
+    FOR each chunk:
+        FOR each page covered by that chunk:
+            add (document name, page number) to the set
+    return the set
+
+_first_relevant_chunk_rank():
+    FOR each ranked chunk:
+        construct that chunk's document-aware pages
+        IF any page is gold:
+            return this chunk's rank immediately
+    return nothing when no chunk matches
 ```
 
 ```mermaid
@@ -602,38 +816,122 @@ page MRR = 1 / first relevant chunk rank = 1 / 2 = 0.5
 `cognitive_skills()` is separate from this calculation. It converts the raw
 FinanceBench reasoning text into the skill labels used later by `write_report()`.
 
-## 9. Runner and checkpoints
+## 10. Preflight, one-job execution and real-run orchestration
 
-In `src/sec_rag_benchmark/runner.py`, read `run()` first, followed by
-`_successful_jobs()` and `_append()`. Read alongside
-`test_runner_checkpoints_resumes_and_reports()` in `tests/test_golden_path.py`.
+This workflow is split across three files because the three operations have
+different purposes. Read them in this order:
+
+```text
+execution/preflight.py   dry_run()       inspect work without generating answers
+execution/job.py         execute_job()   turn one pair into one prediction
+execution/runner.py      run_benchmark() control the real loop and files
+```
+
+The three modules use `data.load_run_questions(dataset_config, limit)`, which validates
+the prepared dataset, loads its questions and applies the optional limit.
+
+### `execution/preflight.py`: no-spend inspection
+
+`dry_run()` does not create a results directory or API client:
+
+```text
+load_run_questions()
+select and validate condition names
+
+FOR each condition:
+    IF it requires a retriever:
+        record "requires retriever"
+    ELSE:
+        build each condition context
+        build its model messages
+        count its prompt tokens
+        record the largest prompt and any context-limit failures
+
+RETURN planned jobs, conditions, token results and API requests = 0
+```
+
+Read it alongside `test_dry_run_preflights_jobs_without_api_requests()`.
+
+### `execution/job.py`: execute exactly one job
+
+`execute_job()` handles one pair such as `q2 + oracle`:
+
+```text
+build the condition context
+build the shared messages
+generate one answer
+calculate retrieval metrics when retrieval was used
+combine question, answer, provenance and metrics
+return one prediction dictionary
+```
+
+It does not loop over questions, select a run directory or write files. This
+keeps the model-facing pipeline readable separately from run administration.
+
+### `execution/runner.py`: control one real run
+
+Read `run_benchmark()` first, then its three small file/run helpers:
+
+```text
+run_benchmark()
+├── _create_or_resume_run()
+├── _successful_jobs()
+└── _append()
+```
+
+`run_benchmark()` performs the complete real workflow:
+
+```text
+load_run_questions()
+select and validate condition names
+create or resume the run directory
+read already successful job IDs
+
+FOR each question and condition:
+    create its stable job ID
+
+    IF already successful:
+        count it as skipped
+    ELSE:
+        TRY execute_job() and append its prediction
+        IF it fails, append its error
+
+RETURN run directory and generated/skipped/failed counts
+```
+
+`_create_or_resume_run()` writes or verifies the effective `config.toml` and
+derives the run key. `_successful_jobs()` reads successful IDs from
+`predictions.jsonl`. `_append()` immediately adds one success or failure to its
+JSONL, so a later crash does not discard earlier answers.
 
 ```mermaid
 flowchart TD
-    A[For each question and condition] --> B[Build stable job ID]
-    B --> C{Already successful?}
-    C -- yes --> D[Skip]
-    C -- no --> E[Build condition]
-    E --> F[Build prompt and generate]
-    F --> G[Calculate applicable retrieval metrics]
-    G --> H[Append predictions.jsonl]
-    E -. error .-> I[Append errors.jsonl]
-    F -. error .-> I
-    I --> J{Fatal?}
-    J -- yes --> K[Stop run]
-    J -- no --> A
-    H --> A
+    A[cli.py run] --> B{--dry-run?}
+    B -- yes --> C[preflight.dry_run]
+    C --> D[data.load_run_questions]
+    C --> E[Build contexts and count tokens]
+    E --> F[Return no-spend summary]
+    B -- no --> G[runner.run_benchmark]
+    G --> H[data.load_run_questions]
+    H --> I[Create or resume run]
+    I --> J[Read successful job IDs]
+    J --> K[Loop over question-condition jobs]
+    K --> L{Already successful?}
+    L -- yes --> M[Skip]
+    L -- no --> N[job.execute_job]
+    N --> O[Condition, generation and metrics]
+    O --> P[Append prediction]
+    N -. error .-> Q[Append error]
 ```
 
-The CLI copies the effective TOML into the run directory and hashes it to form
-part of each job ID. Reusing a run directory with different effective settings
-fails instead of mixing results.
+Reusing a run directory with different effective settings still fails instead
+of mixing incompatible results.
 
-## 10. Reporting and result artifacts
+## 11. Reporting and result artifacts
 
-Return to `src/sec_rag_benchmark/metrics.py` and read `write_report()` now that
-the saved prediction and error rows from `runner.py` are familiar. Within it,
-read the five explicitly labelled reporting blocks in order, then read
+Read `src/sec_rag_benchmark/reporting.py` now that the saved
+prediction and error rows from `execution/runner.py` are familiar. This file contains only
+run-level aggregation: read `write_report()` first, then
 `_average_retrieval_metrics()`, which performs the repeated averaging for one
 subset.
 Continue with `test_runner_checkpoints_resumes_and_reports()` and
@@ -650,7 +948,18 @@ contrast, `write_report()` reads all saved jobs and answers questions such as
 {"job_id":"q1:single_store","status":"success","eval_mode":"single_store","question_type":"calculated","cognitive_skills":["information_extraction","numerical_reasoning"],"page_recall":1.0,"page_precision":0.5,"page_mrr":1.0}
 ```
 
-### Pseudocode followed by `write_report()`
+The helper breakdown keeps the five report views visible in the public
+function while extracting the two data-preparation stages:
+
+```text
+write_report()
+├── _latest_rows_by_job_id() for predictions
+├── _latest_rows_by_job_id() for errors
+├── _expand_by_cognitive_skill()
+└── _average_retrieval_metrics() for each report group
+```
+
+### `write_report()` pseudocode
 
 ```text
 INPUT:
@@ -658,49 +967,37 @@ INPUT:
     errors.jsonl
     run configuration
 
-read every saved prediction attempt
+latest predictions = _latest_rows_by_job_id(predictions.jsonl)
+latest errors = _latest_rows_by_job_id(errors.jsonl)
+keep successful predictions
 
-FOR each job_id:
-    retain its latest prediction
-
-keep only predictions whose status is success
-
-create the ordinary predictions table
-
-create a second table for cognitive-skill reporting:
-    FOR each successful prediction:
-        FOR each cognitive skill on that prediction:
-            add one copy labelled with that skill
-
-create an empty list called report_rows
+predictions table = one row per successful prediction
+skill table = _expand_by_cognitive_skill(successful predictions)
 
 summarize all successful predictions
-add that overall summary to report_rows
-
-FOR each condition:
-    select predictions from that condition
-    average their retrieval metrics
-    add one condition summary
-
-FOR each generation method:
-    select predictions from that method
-    average their retrieval metrics
-    add one generation-method summary
-
-FOR each cognitive skill:
-    select predictions labelled with that skill
-    average their retrieval metrics
-    add one cognitive-skill summary
-
-FOR each generation-method and cognitive-skill combination:
-    select predictions matching both
-    average their retrieval metrics
-    add one cross-tab summary
+summarize each condition
+summarize each generation method
+summarize each cognitive skill
+summarize each generation-method/cognitive-skill combination
 
 count planned, successful, failed and missing jobs
+write summary.json and summary.csv
+return the summary
+```
 
-write report_rows and completion counts to summary.json
-write report_rows as a table to summary.csv
+```text
+_latest_rows_by_job_id(path):
+    read every non-empty JSON line when the file exists
+    FOR each row:
+        store it under its job_id
+        replace an earlier row with the same job_id
+    return the latest row for each job
+
+_expand_by_cognitive_skill(predictions):
+    FOR each prediction:
+        FOR each skill assigned to that prediction:
+            add one reporting-only copy labelled with that skill
+    return the expanded rows
 ```
 
 ```mermaid
@@ -835,39 +1132,109 @@ answer accuracy. The precise RAGAS integration, Azure deployment configuration,
 judge prompt, and validation against human-reviewed examples remain a later
 vertical slice.
 
-## 11. CLI and complete call flow
+## 12. CLI and complete call flow
 
-Finish with `src/sec_rag_benchmark/cli.py`: read `main()` → `load_config()` →
-`_parser()`. Read alongside `test_cli_prepare_validate_and_no_spend_dry_run()`.
+Finish with `src/sec_rag_benchmark/cli.py`. Its single public function,
+`main()`, contains argument definition, argument parsing, explicit `match/case`
+dispatch, short module calls, user-facing output and top-level exit codes. There
+is no separate `_parser()` and no set of one-line command wrappers.
+
+Read `main()` from top to bottom alongside the CLI routing test in
+Section 13. Preview `config.load_config()` first, as described in Section 5,
+then revisit `preflight.dry_run()` and `runner.run_benchmark()` from Section 10
+when their cases are reached.
+
+### Proposed `main()` pseudocode
+
+```text
+create the sec-rag-benchmark argument parser
+define prepare, validate, run, report and judge subcommands
+define each subcommand's arguments
+parse the terminal arguments
+
+TRY:
+    match the requested command
+    perform the short action listed below
+    print its result
+    return exit code 0
+
+IF a known application error is raised:
+    print one error message
+    return exit code 2
+```
+
+Each `case` remains short:
+
+| Case | Action |
+|---|---|
+| `prepare` | load config → `data.prepare()` → print counts |
+| `validate` | load config → `data.validate()` → print counts |
+| `run --dry-run` | load config → `preflight.dry_run()` → print preflight |
+| real `run` | load config → `runner.run_benchmark()` → print directory/counts |
+| `report` | `reporting.write_report()` → print successful count |
+| `judge` | report that Azure/RAGAS judging is unavailable |
+
+The short preparation case intentionally remains visible rather than being
+wrapped in a `prepare_command()` function:
+
+```python
+case "prepare":
+    config = load_config(args.config)
+    counts = prepare(config["dataset"])
+    print(
+        f"Prepared {counts['questions']} questions "
+        f"and {counts['documents']} documents"
+    )
+    return 0
+```
+
+This follows the Boot.dev CLI pattern: the `case` explains what the terminal
+command does, while `data.prepare()` contains the actual preparation algorithm.
 
 ```mermaid
 sequenceDiagram
     actor User
     participant CLI as cli.main
+    participant CFG as config.load_config
     participant D as data.py
-    participant R as runner.py
+    participant P as execution/preflight.py
+    participant R as execution/runner.py
+    participant J as execution/job.py
     participant C as conditions.py
     participant G as generation.py
     participant M as metrics.py
+    participant REP as reporting.py
     User->>CLI: prepare
+    CLI->>CFG: load TOML
     CLI->>D: prepare(dataset config)
     User->>CLI: validate
+    CLI->>CFG: load TOML
     CLI->>D: validate(dataset config)
+    User->>CLI: run --dry-run
+    CLI->>CFG: load TOML
+    CLI->>P: dry_run(config and CLI overrides)
+    P->>D: load_run_questions
+    P->>C: build conditions
+    P->>G: build messages + count tokens
+    P-->>CLI: no-spend preflight summary
     User->>CLI: run
-    CLI->>D: validate + load_questions
-    CLI->>R: run(jobs)
+    CLI->>CFG: load TOML
+    CLI->>R: run_benchmark(config and CLI overrides)
+    R->>D: load_run_questions
     loop question × condition
-        R->>C: build_condition
-        R->>G: build_messages + generate
-        R->>M: row metrics
+        R->>J: execute_job
+        J->>C: build_condition
+        J->>G: build_messages + generate
+        J->>M: row metrics
     end
     User->>CLI: report
-    CLI->>M: write_report(run directory)
+    CLI->>REP: write_report(run directory)
 ```
 
 The available commands are `prepare`, `validate`, `run`, `report`, and `judge`.
-`run --dry-run` enumerates work and preflights non-retrieval contexts without
-creating an OpenRouter client. `judge` intentionally reports unavailable.
+The refactor changes only code ownership and reading order. Command names,
+arguments, output artifacts, no-spend behavior and exit behavior remain the
+same. `judge` still intentionally reports unavailable.
 
 ### Terminal commands, in execution order
 
@@ -984,19 +1351,24 @@ explicit "not implemented" error and performs no judging:
 uv run sec-rag-benchmark judge --run-dir results/20260913-143052
 ```
 
-## 12. Test design and requirement traceability
+## 13. Test design and requirement traceability
 
-| Requirement or behavior | Current test |
+| Requirement or behavior | Test or status |
 |---|---|
 | Preserve source rows; prepare/validate/load | `test_prepare_validate_and_load_preserve_source_rows` |
 | Reject missing PDF and ambiguous metadata | `test_prepare_rejects_missing_pdf_and_ambiguous_metadata` |
 | Reject duplicate IDs and invalid pages | `test_validation_rejects_bad_question_data` |
-| Construct all five conditions and correct scopes | `test_all_conditions_and_retrieval_scopes` |
+| Each named condition builder returns the shared result shape | `test_all_conditions_and_retrieval_scopes` |
+| Single-store and shared-store pass distinct scopes to the shared retrieval builder | `test_all_conditions_and_retrieval_scopes` |
 | Document-aware recall/precision and chunk-rank MRR | `test_metrics_use_document_aware_unique_pages_and_chunk_rank` |
+| Aggregation in `reporting.py` writes the expected summary | `test_report_places_multi_skill_prediction_in_each_skill_view` and `test_runner_checkpoints_resumes_and_reports` |
 | Record requested/returned model, provider, usage, latency and cost without paid call | `test_generation_pins_provider_without_real_api_call` |
 | Preserve evidence and human justification for later judging | `test_runner_checkpoints_resumes_and_reports` |
 | Append checkpoints, resume, and report | `test_runner_checkpoints_resumes_and_reports` |
-| CLI prepare/validate/dry-run with zero requests | `test_cli_prepare_validate_and_no_spend_dry_run` |
+| Configuration loading resolves paths and rejects invalid settings | `test_load_config_resolves_paths_and_rejects_unknown_condition` |
+| `execution/preflight.py` owns dry-run selection, context checks and zero requests | `test_dry_run_preflights_jobs_without_api_requests` |
+| `run_benchmark()` establishes or resumes a run and executes every job | `test_runner_checkpoints_resumes_and_reports` |
+| CLI routes preparation, validation and dry-run commands | `test_cli_prepare_validate_and_no_spend_dry_run` |
 | Exact real 112-question/64-PDF acceptance | Verified manually; not bundled because source clone is ignored |
 | No answer-accuracy calculation during generation | `test_runner_checkpoints_resumes_and_reports` |
 | Judge-only official answer accuracy | Explicitly deferred |
@@ -1005,11 +1377,11 @@ uv run sec-rag-benchmark judge --run-dir results/20260913-143052
 Run the verification commands listed in section 2. The tests use a tiny generated
 fixture, fake generator, and fake OpenRouter client; they make no paid request.
 
-## 13. As-built differences from the engineered branch
+## 14. As-built differences from the engineered branch
 
 | Earlier implementation | Golden-path implementation |
 |---|---|
-| Layered subpackages and many wrappers | Six direct modules |
+| Layered subpackages and many wrappers | Small flat modules with one visible responsibility |
 | Nested immutable dataclasses and `MappingProxyType` | Ordinary documented dictionaries |
 | Atomic staging, backup activation, source fingerprints | Direct deterministic preparation plus manifest hashes |
 | `run_plan.json` and result-store abstraction | Effective `config.toml`, append helpers, stable job IDs |
@@ -1026,9 +1398,40 @@ Safeguards retained because they directly support benchmark validity:
 - immediate checkpoints and compatible configuration snapshot;
 - document-aware retrieval metrics and applicable denominators.
 
-## 14. As-built reconciliation status
+## 15. As-built reconciliation status
 
-The code-reading route is integrated into sections 2 and 5–11. Future answer
+### Refactor implemented and awaiting user review
+
+Sections 2, 3 and 5–13 now describe the code as built:
+
+- `config.py` owns `load_config()`;
+- `data.py` separates selection, row checks, prepared-file replacement and
+  manifest work into named helpers;
+- `conditions.py` dispatches to one named builder per condition;
+- `generation.py` separates capacity checking, client construction and response
+  parsing;
+- `metrics.py` contains per-job calculations only;
+- `reporting.py` owns latest-attempt selection, skill expansion and aggregation;
+- `execution/preflight.py` owns the no-spend `dry_run()` path;
+- `execution/job.py` owns `execute_job()` for one question-condition pair;
+- `execution/runner.py` owns the complete `run_benchmark()` workflow and
+  checkpoint files;
+- `cli.py` defines arguments inside `main()` and uses `match/case` to make each
+  terminal route visible.
+
+The public commands, arguments, result artifacts and metric definitions remain
+unchanged. The implemented refactor added focused tests for configuration
+loading and the runner's no-spend dry-run boundary.
+
+### Execution subpackage implemented
+
+Section 10 and its diagrams now match the code. The run-related files are
+grouped under `src/sec_rag_benchmark/execution/`; `_select_run_inputs()` has
+been removed, and `data.load_run_questions()` owns validation, loading and the
+optional question limit. No command, result file or benchmark calculation
+changed.
+
+The code-reading route is integrated into sections 2 and 5–12. Future answer
 judging remains an unimplemented slice that will add separately persisted binary
 answer accuracy.
 
@@ -1043,14 +1446,20 @@ reader needs design context:
 
 - `data.py` comments trace 10-K selection, idempotent rebuilding, manifest
   provenance, complete-PDF validation, and the in-memory metadata join;
-- `conditions.py` comments distinguish the oracle, long-context, single-store,
-  and shared-store information supplied to the shared generator;
+- `config.py` comments explain path resolution and cross-section checks;
+- `conditions.py` comments connect each named builder to the information
+  supplied under its condition;
 - `generation.py` comments connect shared prompting, conservative context
   accounting, lazy credentials, and provider pinning;
-- `runner.py` comments trace one question-condition job, retrieval-metric
-  applicability, checkpointing, and deferred separate judging;
+- `execution/preflight.py` comments trace no-spend context and token checks;
+- `execution/job.py` comments trace one question-condition job and retrieval-metric
+  applicability;
+- `execution/runner.py` comments trace run setup, looping, checkpointing and
+  resumption;
 - `metrics.py` comments explain unique document-aware pages, chunk-ranked MRR,
-  multi-label segmentation, and per-metric denominators;
+  and per-job cognitive-skill normalization;
+- `reporting.py` comments explain multi-label segmentation and per-metric
+  denominators;
 - `cli.py` comments distinguish data preparation, no-spend preflight, generation,
   and report-only orchestration.
 
@@ -1058,6 +1467,5 @@ These comments explain purpose, data flow, and non-obvious rationale. Routine
 Python syntax remains uncommented so the code and this guide do not become two
 duplicated implementations that can drift independently.
 
-For each slice, compare the golden-path branch with its base in GitLens, discuss
-questions, and record any approved correction here before changing code. Future
-slice changes remain uncommitted until the user reviews their actual diff.
+For each slice, review its uncommitted Git diff in GitLens, discuss questions,
+and record approved corrections here before committing it.

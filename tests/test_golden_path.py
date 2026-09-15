@@ -6,10 +6,43 @@ import pytest
 
 from sec_rag_benchmark.conditions import RetrieverUnavailable, build_condition, gold_pages
 from sec_rag_benchmark.cli import main
+from sec_rag_benchmark.config import load_config
 from sec_rag_benchmark.data import DataError, load_questions, prepare, validate
+from sec_rag_benchmark.execution.preflight import dry_run
+from sec_rag_benchmark.execution.runner import run_benchmark
 from sec_rag_benchmark.generation import build_messages, count_prompt_tokens, generate
-from sec_rag_benchmark.metrics import cognitive_skills, page_metrics, write_report
-from sec_rag_benchmark.runner import run
+from sec_rag_benchmark.metrics import cognitive_skills, page_metrics
+from sec_rag_benchmark.reporting import write_report
+
+
+def _write_config(path: Path, sample) -> None:
+    """Write the small fixture configuration used by CLI and runner tests."""
+    dataset, generation, run_config = sample["dataset"], sample["generation"], sample["run"]
+    path.write_text(f'''[dataset]
+source_dir = "{dataset['source_dir']}"
+output_dir = "{dataset['output_dir']}"
+document_type = "10k"
+expected_questions = 2
+expected_documents = 2
+[generation]
+provider = "openrouter"
+model = "z-ai/glm-5.3-flash"
+prompt_version = "financebench-answer-v1"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"
+allow_fallbacks = false
+context_window_tokens = 1048576
+max_output_tokens = 2048
+token_safety_margin = 1024
+temperature = 0.0
+reasoning_effort = "low"
+timeout_seconds = 30.0
+max_retries = 2
+[run]
+conditions = ["closed_book", "oracle", "long_context"]
+retrieval_depth = 5
+results_dir = "{run_config['results_dir']}"
+''')
 
 
 def test_prepare_validate_and_load_preserve_source_rows(sample):
@@ -185,15 +218,55 @@ def test_generation_rejects_empty_output_and_oversized_prompt(sample, monkeypatc
     assert called is False
 
 
+def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_path):
+    config_path = tmp_path / "configs" / "financebench.toml"
+    config_path.parent.mkdir()
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    assert Path(config["dataset"]["source_dir"]).is_absolute()
+    assert Path(config["run"]["results_dir"]).is_absolute()
+
+    config_path.write_text(
+        config_path.read_text().replace(
+            '["closed_book", "oracle", "long_context"]', '["unknown"]'
+        )
+    )
+    with pytest.raises(ValueError, match="unknown conditions"):
+        load_config(config_path)
+
+
+def test_dry_run_preflights_jobs_without_api_requests(sample, tmp_path, monkeypatch):
+    prepare(sample["dataset"])
+    config_path = tmp_path / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    monkeypatch.setattr(
+        "sec_rag_benchmark.execution.preflight.count_prompt_tokens",
+        lambda messages, effort: 10,
+    )
+
+    result = dry_run(config, conditions=["closed_book", "oracle"], limit=1)
+
+    assert result == {
+        "planned_jobs": 2,
+        "conditions": ["closed_book", "oracle"],
+        "maximum_prompt_tokens": {"closed_book": 10, "oracle": 10},
+        "oversized_jobs": 0,
+        "api_requests": 0,
+    }
+
+
 def test_runner_checkpoints_resumes_and_reports(sample):
-    prepare(sample["dataset"]); questions = load_questions(sample["dataset"]["output_dir"])
-    run_dir = Path(sample["run"]["results_dir"]); run_dir.mkdir()
-    (run_dir / "config.toml").write_text("[selection]\nconditions=['closed_book']\nlimit=2\n")
+    prepare(sample["dataset"])
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    run_dir = Path(sample["run"]["results_dir"]) / "test-run"
     def fake(messages, config): return {"answer": "42", "requested_model": config["model"], "request_id": "r", "returned_model": "glm", "provider": "Z.AI", "usage": {}, "cost": None, "latency_seconds": 0.1}
-    kwargs = dict(pdf_dir=Path(sample["dataset"]["output_dir"]) / "pdfs", all_doc_names=("a.pdf", "b.pdf"),
-                  generation_config=sample["generation"], run_dir=run_dir, generator=fake)
-    assert run(questions, ["closed_book"], **kwargs)["generated"] == 2
-    assert run(questions, ["closed_book"], **kwargs)["skipped"] == 2
+    kwargs = dict(conditions=["closed_book"], requested_run_dir=run_dir, generator=fake)
+    assert run_benchmark(config, config_path, **kwargs)["generated"] == 2
+    assert run_benchmark(config, config_path, **kwargs)["skipped"] == 2
+    questions = load_questions(sample["dataset"]["output_dir"])
     prediction = json.loads((run_dir / "predictions.jsonl").read_text().splitlines()[0])
     assert "numeric_accuracy" not in prediction
     assert prediction["gold_evidence"] == questions[0]["evidence"]
@@ -209,34 +282,12 @@ def test_runner_checkpoints_resumes_and_reports(sample):
 
 
 def test_cli_prepare_validate_and_no_spend_dry_run(sample, tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr("sec_rag_benchmark.cli.count_prompt_tokens", lambda messages, effort: 10)
+    monkeypatch.setattr(
+        "sec_rag_benchmark.execution.preflight.count_prompt_tokens",
+        lambda messages, effort: 10,
+    )
     config = tmp_path / "financebench.toml"
-    dataset, generation, run_config = sample["dataset"], sample["generation"], sample["run"]
-    config.write_text(f'''[dataset]
-source_dir = "{dataset['source_dir']}"
-output_dir = "{dataset['output_dir']}"
-document_type = "10k"
-expected_questions = 2
-expected_documents = 2
-[generation]
-provider = "openrouter"
-model = "z-ai/glm-5.3-flash"
-prompt_version = "financebench-answer-v1"
-base_url = "https://openrouter.ai/api/v1"
-upstream_provider = "z-ai"
-allow_fallbacks = false
-context_window_tokens = 1048576
-max_output_tokens = 2048
-token_safety_margin = 1024
-temperature = 0.0
-reasoning_effort = "low"
-timeout_seconds = 30.0
-max_retries = 2
-[run]
-conditions = ["closed_book", "oracle", "long_context"]
-retrieval_depth = 5
-results_dir = "{run_config['results_dir']}"
-''')
+    _write_config(config, sample)
     assert main(["prepare", "--config", str(config)]) == 0
     assert main(["validate", "--config", str(config)]) == 0
     assert main(["run", "--config", str(config), "--dry-run"]) == 0

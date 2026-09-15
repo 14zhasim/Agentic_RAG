@@ -68,6 +68,48 @@ def _selected_provider(response: Any) -> str | None:
     return None
 
 
+def _check_context_capacity(
+    messages: list[dict[str, str]], config: dict[str, Any]
+) -> None:
+    """Reject a complete prompt that cannot leave the configured output reserve."""
+    prompt_tokens = count_prompt_tokens(messages, config["reasoning_effort"])
+    reserved_tokens = config["max_output_tokens"] + config["token_safety_margin"]
+    if prompt_tokens + reserved_tokens > config["context_window_tokens"]:
+        raise ValueError("Complete prompt and output reserve exceed the context window")
+
+
+def _create_openrouter_client(config: dict[str, Any]) -> OpenAI:
+    """Create the API client lazily so non-generation commands need no key."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    return OpenAI(
+        base_url=config["base_url"],
+        api_key=api_key,
+        timeout=config["timeout_seconds"],
+        max_retries=config["max_retries"],
+    )
+
+
+def _read_generation_result(
+    response: Any, config: dict[str, Any], latency_seconds: float
+) -> dict[str, Any]:
+    """Convert an OpenRouter response into the persisted provenance fields."""
+    if not response.output_text:
+        raise RuntimeError("OpenRouter returned an empty answer")
+    usage = response.usage.model_dump() if response.usage else {}
+    return {
+        "answer": response.output_text,
+        "requested_model": config["model"],
+        "request_id": response.id,
+        "returned_model": response.model,
+        "provider": _selected_provider(response),
+        "usage": usage,
+        "cost": usage.get("cost"),
+        "latency_seconds": latency_seconds,
+    }
+
+
 def generate(
     messages: list[dict[str, str]],
     config: dict[str, Any],
@@ -75,23 +117,9 @@ def generate(
     client: Any | None = None,
 ) -> dict[str, Any]:
     """Check context capacity, call OpenRouter, and return answer provenance."""
-    # Reserve both the model's possible answer and an extra accounting margin.
-    # Reject the complete prompt rather than silently truncating filing pages.
-    reserved = config["max_output_tokens"] + config["token_safety_margin"]
-    if count_prompt_tokens(messages, config["reasoning_effort"]) + reserved > config["context_window_tokens"]:
-        raise ValueError("Complete prompt and output reserve exceed the context window")
+    _check_context_capacity(messages, config)
     if client is None:
-        # Construct the client only for a real generation call. Preparation,
-        # validation, dry runs, reporting, and tests therefore need no API key.
-        key = os.getenv("OPENROUTER_API_KEY")
-        if not key:
-            raise RuntimeError("OPENROUTER_API_KEY is not set")
-        client = OpenAI(
-            base_url=config["base_url"],
-            api_key=key,
-            timeout=config["timeout_seconds"],
-            max_retries=config["max_retries"],
-        )
+        client = _create_openrouter_client(config)
     started = time.perf_counter()
     # The OpenAI SDK sends this Responses request to OpenRouter because the
     # client uses OpenRouter's base URL. Provider routing remains an OpenRouter-
@@ -109,21 +137,4 @@ def generate(
             "provider": {"order": [config["upstream_provider"]], "allow_fallbacks": False},
         },
     )
-    text = response.output_text
-    if not text:
-        raise RuntimeError("OpenRouter returned an empty answer")
-    usage = response.usage.model_dump() if response.usage else {}
-    return {
-        "answer": text,
-        "requested_model": config["model"],
-        "request_id": response.id,
-        "returned_model": response.model,
-        # OpenRouter adds this metadata only because the request opted in. Do
-        # not guess the serving provider when the metadata is absent.
-        "provider": _selected_provider(response),
-        "usage": usage,
-        # OpenRouter can include request cost inside usage. Keep the key even
-        # when a provider/test response does not return a value.
-        "cost": usage.get("cost"),
-        "latency_seconds": time.perf_counter() - started,
-    }
+    return _read_generation_result(response, config, time.perf_counter() - started)

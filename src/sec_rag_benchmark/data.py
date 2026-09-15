@@ -85,9 +85,12 @@ def _check_rows(
     page_counts: dict[str, int] = {}
     for question in questions:
         doc_name = question["doc_name"]
-        path = _pdf_path(pdf_dir, doc_name)
-        with pymupdf.open(path) as pdf:
-            page_counts[doc_name] = pdf.page_count
+        # Several questions can use the same filing. Open each PDF once, then
+        # reuse its page count while checking every question's evidence.
+        if doc_name not in page_counts:
+            path = _pdf_path(pdf_dir, doc_name)
+            with pymupdf.open(path) as pdf:
+                page_counts[doc_name] = pdf.page_count
         evidence_list = question.get("evidence")
         if not isinstance(evidence_list, list) or not evidence_list:
             raise DataError(f"Evidence must be retained for {question['financebench_id']}")
@@ -99,6 +102,112 @@ def _check_rows(
                 raise DataError(f"Evidence page index is invalid for {doc_name}")
 
 
+def _select_10k_subset(
+    questions: list[dict[str, Any]],
+    metadata: list[dict[str, Any]],
+    document_type: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select questions and metadata belonging to the configured filing type."""
+    selected_metadata = [
+        row
+        for row in metadata
+        if str(row.get("doc_type", "")).strip().casefold() == document_type
+    ]
+    selected_document_names = {row["doc_name"] for row in selected_metadata}
+    selected_questions = [
+        row for row in questions if row.get("doc_name") in selected_document_names
+    ]
+
+    # Some filtered metadata rows may have no question. The prepared metadata
+    # should describe exactly the PDFs actually used by the question subset.
+    used_document_names = {row["doc_name"] for row in selected_questions}
+    selected_metadata = [
+        row for row in selected_metadata if row["doc_name"] in used_document_names
+    ]
+    return selected_questions, selected_metadata
+
+
+def _replace_prepared_files(
+    source: Path,
+    output: Path,
+    questions: list[dict[str, Any]],
+    metadata: list[dict[str, Any]],
+) -> list[Path]:
+    """Rebuild the generated JSONLs and PDF subset, removing stale PDFs."""
+    output.mkdir(parents=True, exist_ok=True)
+    prepared_pdf_dir = output / "pdfs"
+    prepared_pdf_dir.mkdir(exist_ok=True)
+
+    for old_pdf in prepared_pdf_dir.glob("*.pdf"):
+        old_pdf.unlink()
+    for document_name in sorted({row["doc_name"] for row in questions}):
+        source_pdf = _pdf_path(source / "pdfs", document_name)
+        shutil.copy2(source_pdf, prepared_pdf_dir / source_pdf.name)
+
+    question_path = output / QUESTIONS_FILE
+    metadata_path = output / METADATA_FILE
+    _write_jsonl(question_path, questions)
+    _write_jsonl(metadata_path, metadata)
+    return [question_path, metadata_path, *sorted(prepared_pdf_dir.glob("*.pdf"))]
+
+
+def _write_manifest(
+    source: Path,
+    output: Path,
+    config: dict[str, Any],
+    questions: list[dict[str, Any]],
+    metadata: list[dict[str, Any]],
+    generated_files: list[Path],
+) -> None:
+    """Record how the ignored prepared dataset was produced and hashed."""
+    manifest = {
+        "source_path": str(source),
+        "filter": {"doc_type": config["document_type"]},
+        "expected": {
+            "questions": config["expected_questions"],
+            "documents": config["expected_documents"],
+        },
+        "observed": {
+            "questions": len(questions),
+            "documents": len(metadata),
+        },
+        "selected_filenames": sorted(
+            path.name for path in (output / "pdfs").glob("*.pdf")
+        ),
+        "sha256": {
+            str(path.relative_to(output)): _hash(path) for path in generated_files
+        },
+    }
+    (output / MANIFEST_FILE).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+
+def _validate_manifest(
+    output: Path,
+    config: dict[str, Any],
+    actual_pdf_names: set[str],
+) -> None:
+    """Check that the manifest still describes the prepared files on disk."""
+    try:
+        manifest = json.loads((output / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DataError(f"Cannot read prepared manifest: {error}") from error
+
+    if manifest.get("selected_filenames") != sorted(actual_pdf_names):
+        raise DataError("Manifest filenames do not match prepared PDFs")
+    expected_counts = {
+        "questions": config["expected_questions"],
+        "documents": config["expected_documents"],
+    }
+    if manifest.get("expected") != expected_counts:
+        raise DataError("Manifest counts do not match configuration")
+    for relative_path, expected_hash in manifest.get("sha256", {}).items():
+        prepared_file = output / relative_path
+        if not prepared_file.is_file() or _hash(prepared_file) != expected_hash:
+            raise DataError(f"Manifest hash does not match {relative_path}")
+
+
 def prepare(config: dict[str, Any]) -> dict[str, int]:
     """Filter the source to 10-Ks and copy its 112 questions and 64 PDFs."""
     source = Path(config["source_dir"])
@@ -106,16 +215,9 @@ def prepare(config: dict[str, Any]) -> dict[str, int]:
     questions = _read_jsonl(source / "data" / "financebench_open_source.jsonl")
     metadata = _read_jsonl(source / "data" / "financebench_document_information.jsonl")
 
-    wanted_metadata = [
-        row for row in metadata
-        if str(row.get("doc_type", "")).strip().casefold() == config["document_type"]
-    ]
-    # First identify all 10-K metadata rows, then retain only questions linked to
-    # those filings. Finally discard 10-K metadata for filings with no question.
-    wanted_names = {row["doc_name"] for row in wanted_metadata}
-    wanted_questions = [row for row in questions if row.get("doc_name") in wanted_names]
-    used_names = {row["doc_name"] for row in wanted_questions}
-    wanted_metadata = [row for row in wanted_metadata if row["doc_name"] in used_names]
+    wanted_questions, wanted_metadata = _select_10k_subset(
+        questions, metadata, config["document_type"]
+    )
 
     _check_rows(
         wanted_questions,
@@ -125,32 +227,17 @@ def prepare(config: dict[str, Any]) -> dict[str, int]:
         expected_documents=config["expected_documents"],
     )
 
-    # Rebuild the prepared PDF set so repeated preparation produces the same
-    # selected files instead of retaining stale PDFs from an earlier filter.
-    output.mkdir(parents=True, exist_ok=True)
-    pdf_dir = output / "pdfs"
-    pdf_dir.mkdir(exist_ok=True)
-    for old_pdf in pdf_dir.glob("*.pdf"): #delete previously generate pdf subset
-        old_pdf.unlink()
-    for doc_name in sorted(used_names):
-        source_pdf = _pdf_path(source / "pdfs", doc_name)
-        shutil.copy2(source_pdf, pdf_dir / source_pdf.name) #copy freshly selected PDFs to output/pdfs folder
-    _write_jsonl(output / QUESTIONS_FILE, wanted_questions) #replaced .jsonl with the subset of data we want questions & their PDFs for
-    _write_jsonl(output / METADATA_FILE, wanted_metadata)
-    files = [output / QUESTIONS_FILE, output / METADATA_FILE, *sorted(pdf_dir.glob("*.pdf"))] #create one list containing both jsonl and 64 pdf copies
-    #this list is used to calculate hashes stored in manifest
-
-    # The manifest makes the local, ignored dataset reproducible and detects
-    # later file changes without committing the source PDFs to Git.
-    manifest = {
-        "source_path": str(source),
-        "filter": {"doc_type": config["document_type"]},
-        "expected": {"questions": config["expected_questions"], "documents": config["expected_documents"]},
-        "observed": {"questions": len(wanted_questions), "documents": len(wanted_metadata)},
-        "selected_filenames": sorted(path.name for path in pdf_dir.glob("*.pdf")),
-        "sha256": {str(path.relative_to(output)): _hash(path) for path in files},
-    }
-    (output / MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    generated_files = _replace_prepared_files(
+        source, output, wanted_questions, wanted_metadata
+    )
+    _write_manifest(
+        source,
+        output,
+        config,
+        wanted_questions,
+        wanted_metadata,
+        generated_files,
+    )
     return {"questions": len(wanted_questions), "documents": len(wanted_metadata)}
 
 
@@ -172,20 +259,7 @@ def validate(config: dict[str, Any]) -> dict[str, int]:
     actual_pdfs = {path.name for path in (output / "pdfs").glob("*.pdf")}
     if actual_pdfs != expected_pdfs:
         raise DataError("Prepared PDF set does not match selected metadata")
-    try:
-        manifest = json.loads((output / MANIFEST_FILE).read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise DataError(f"Cannot read prepared manifest: {error}") from error
-    if manifest.get("selected_filenames") != sorted(actual_pdfs):
-        raise DataError("Manifest filenames do not match prepared PDFs")
-    if manifest.get("expected") != {
-        "questions": config["expected_questions"], "documents": config["expected_documents"]
-    }:
-        raise DataError("Manifest counts do not match configuration")
-    for relative, expected_hash in manifest.get("sha256", {}).items():
-        path = output / relative
-        if not path.is_file() or _hash(path) != expected_hash:
-            raise DataError(f"Manifest hash does not match {relative}")
+    _validate_manifest(output, config, actual_pdfs)
     return {"questions": len(questions), "documents": len(metadata)}
 
 
@@ -200,3 +274,16 @@ def load_questions(output_dir: str | Path) -> list[dict[str, Any]]:
     # Preserve every original question/evidence field and add metadata only in
     # memory; the prepared question JSONL schema remains unchanged.
     return [{**question, "document_metadata": metadata[question["doc_name"]]} for question in questions]
+
+
+def load_run_questions(
+    dataset_config: dict[str, Any], limit: int | None = None
+) -> list[dict[str, Any]]:
+    """Validate and load the questions selected for a dry or real run."""
+    validate(dataset_config)
+    questions = load_questions(dataset_config["output_dir"])
+    if limit is None:
+        return questions
+    if limit <= 0:
+        raise ValueError("--limit must be positive")
+    return questions[:limit]

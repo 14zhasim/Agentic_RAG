@@ -38,7 +38,6 @@ Generation failure
 ├── hallucination
 └── formatting
 
-Might want to include MRR metric, and also token cost per query
 
 (sources for benchmark based off resources in lit review folder: pdf of the benchmark papers, info in matrix, their github repo - summarised under 'benchmarking.md')
 
@@ -96,6 +95,8 @@ Prepare FinanceBench 10-K data:
 
 - Read the two source files `financebench_open_source.jsonl` and `financebench_document_information.jsonl`.
 - Join document metadata to questions by `doc_name` in memory.
+- Filter on `doc_type == "10k"` exactly — the value is lowercase, and a separate `10k_annualreport` type exists (6 docs). A `startswith`/case-insensitive match silently admits annual reports and breaks the 112.
+- The metadata file has 361 rows but only 360 unique `doc_name`s: `FOOTLOCKER_2023_annualreport` appears twice with conflicting `doc_period` (2023 vs 2022). A naive `{doc_name: row}` join silently keeps the last row — the join must raise on a conflicting duplicate instead.
 - Make preparation idempotent, so running it repeatedly produces the same prepared dataset without duplicate records.
 - Create a manifest that records:
   - source;
@@ -112,12 +113,20 @@ _- Evidence document names and zero-indexed page numbers are usable._
 _- The complete evidence list is retained for every question._
 _- Final counts are 112 questions and 64 PDFs._
 
+Gold evidence should still be keyed as `(doc_name, page_num)` pairs rather than bare page numbers.
+
 Develop testing set pipeline:
 
 - use questions mentioned above + context from PDF - but include checks to ensure fits in cotext window. Dont truncate prompts or only beginning of filing' if prompt cannot fit, it fails
+  - count tokens over the **assembled prompt** (system message + instructions + question + document text), not the filing alone, using the tokenizer of the model actually being called, with a configured reserve for the completion
+  - a prompt that does not fit is recorded as a third outcome, `did_not_fit` — not correct, not incorrect, not an error. This keeps _n_ constant across conditions (so the paired McNemar comparison still works) and keeps the evidence for the claim that long-context is limited by context window size. Report accuracy both including and excluding these rows.
+  - `did_not_fit` is terminal and must not be retried on resume; API errors are transient and must be retried
 - integrate FinanceBench 5 context conditions (read section below) into our pipeline, for the retrieval metrics below, using placeholders for our RAG pipeline
 - configure results reporting:
   - for FinanceBench: report results segmented across generation method + cognitive skill + condition, with sample count for each segment
+    - `question_type` is clean and used as-is: metrics-generated (50), domain-relevant (48), novel-generated (14)
+    - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split on a standalone `OR`, casefold-compare, fold the parenthetical variant into Logical reasoning, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
+    - after normalising: Numerical reasoning 57, Information extraction 36, Logical reasoning 21, unlabelled 14 — summing to 128, since 16 questions carry >1 skill. Segment counts exceeding the sample size is expected and is why each segment reports its own _n_.
   - with this segmentation, report: page recall, page precision, page MRR (count number of unique pages retrieved, MRR is first chunk from golden page)
   - for each answer, record:
     - requested model;
@@ -178,7 +187,7 @@ A 45% vs. 53% comparison at n=112–150 will likely have overlapping CIs — not
 
 **Question types** (§3.1, p.3–4. Note - % given from original 10,000 qs, not the 150q subset):
 
-These are the skills these questions test; however, they are WITHIN a single document, on ONE page
+These are the skills these questions test; however, they are WITHIN a single document, on one or more pages
 But, tests open-domain (have to navigate across all filings)
 Each question has the below labels in dataset.
 
