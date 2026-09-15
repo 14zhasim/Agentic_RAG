@@ -221,10 +221,10 @@ Then start building system design:
 
 Progress
 
+Deferred
+- 3 experiments writeup (make sure to specify baseline/ablation)
 - worry about agentic tooling later: research papers (+ Claude Opus chat), bootdev agent course
 - not including LoFin benchmark yet
-
-Then, identify failure points in architecture and if benchmark can help with this.
 
 ---
 
@@ -309,12 +309,6 @@ Retrieve - Elastic search
 Generate answer
 
 - decide model: GLM-5.3-flash with openrouter, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
-
-LLM as judge
-
-- for retrieval metrics, Zhou et al., (2026) FinCARDA use MRR@10, maybe @10 is good
-- Azure
-- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not
 
 Experiment 3 - Agents: LLMs autonomously using tools in a loop
 https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents

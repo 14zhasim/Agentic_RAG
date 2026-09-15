@@ -139,6 +139,8 @@ Develop testing set pipeline:
   - use Azure Foundry, use GPT-5.6 Luna
   - provide it: question, reference answer + evidence + human labeller's justification, candidate answer
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
+  - Azure
+- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not
   - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 

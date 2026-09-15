@@ -2,6 +2,14 @@
 
 Findings from actually reading `benchmarks/financebench` and `benchmarks/lofin-hirec`, mapped against the `Overall benchmark actions` checklist in `Benchmark.md`.
 
+## Next benchmark stages
+
+1. Run one paid OpenRouter Oracle smoke test and inspect its saved model,
+   provider, usage, cost, latency and answer.
+2. Implement the Azure/RAGAS judge and binary final-answer accuracy.
+3. Run the full paid closed-book, oracle and long-context benchmark.
+4. Add the development validation subsets.
+
 Important weaknesses
 This is a rough safety mechanism rather than robust context management.
 
