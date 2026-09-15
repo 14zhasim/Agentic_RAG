@@ -76,7 +76,8 @@ def main(argv: list[str] | None = None) -> int:
                     requested_run_dir=args.run_dir,
                 )
                 counts = {
-                    key: result[key] for key in ("generated", "skipped", "failed")
+                    key: result[key]
+                    for key in ("generated", "did_not_fit", "skipped", "failed")
                 }
                 print(f"Run {result['run_dir']}: {counts}")
 

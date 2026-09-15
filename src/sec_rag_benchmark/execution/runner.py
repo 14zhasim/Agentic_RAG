@@ -16,9 +16,10 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from ..conditions import CONDITIONS, Retriever, RetrieverUnavailable
+from ..conditions import CONDITIONS, Retriever, RetrieverUnavailable, gold_pages
 from ..data import load_run_questions
-from ..generation import generate
+from ..generation import ContextLimitError, generate
+from ..metrics import cognitive_skills
 from .job import Generator, execute_job
 
 
@@ -29,18 +30,54 @@ def _append(path: Path, row: dict[str, Any]) -> None:
         file.flush()
 
 
-def _successful_jobs(path: Path) -> set[str]:
-    """Return job IDs whose saved prediction status is successful."""
+def _completed_jobs(path: Path) -> set[str]:
+    """Return jobs with terminal success or did_not_fit outcomes."""
     if not path.exists():
         return set()
-    successful_job_ids: set[str] = set()
+    completed_job_ids: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line:
             continue
         row = json.loads(line)
-        if row.get("status") == "success":
-            successful_job_ids.add(row["job_id"])
-    return successful_job_ids
+        if row.get("status") in {"success", "did_not_fit"}:
+            completed_job_ids.add(row["job_id"])
+    return completed_job_ids
+
+
+def _did_not_fit_prediction(
+    question: dict[str, Any],
+    condition_name: str,
+    job_id: str,
+    error: Exception,
+    generation_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve an oversized job as a terminal, non-answer prediction."""
+    return {
+        "job_id": job_id,
+        "status": "did_not_fit",
+        "financebench_id": question["financebench_id"],
+        "question": question["question"],
+        "gold_answer": question["answer"],
+        "gold_evidence": question["evidence"],
+        "human_justification": question["justification"],
+        "model_answer": None,
+        "eval_mode": condition_name,
+        "question_type": question["question_type"],
+        "cognitive_skills": cognitive_skills(question.get("question_reasoning")),
+        "gold_pages": gold_pages(question),
+        "retrieved_chunks": [],
+        "page_recall": None,
+        "page_precision": None,
+        "page_mrr": None,
+        "requested_model": generation_config["model"],
+        "returned_model": None,
+        "provider": None,
+        "usage": None,
+        "cost": None,
+        "latency_seconds": None,
+        "error": str(error),
+        "completed_at": datetime.now(UTC).isoformat(),
+    }
 
 
 def _create_or_resume_run(
@@ -114,10 +151,10 @@ def run_benchmark(
     run_dir = run_identity["run_dir"]
     predictions_path = run_dir / "predictions.jsonl"
     errors_path = run_dir / "errors.jsonl"
-    completed_job_ids = _successful_jobs(predictions_path)
+    completed_job_ids = _completed_jobs(predictions_path)
     all_doc_names = tuple(dict.fromkeys(row["doc_name"] for row in questions))
     pdf_dir = Path(config["dataset"]["output_dir"]) / "pdfs"
-    counts = {"generated": 0, "skipped": 0, "failed": 0}
+    counts = {"generated": 0, "did_not_fit": 0, "skipped": 0, "failed": 0}
 
     for question in questions:
         for condition_name in selected_conditions:
@@ -142,6 +179,20 @@ def run_benchmark(
                 )
                 _append(predictions_path, prediction)
                 counts["generated"] += 1
+            except ContextLimitError as error:
+                # This prompt will never fit under the unchanged run config.
+                # Save it with the terminal predictions so resume skips it.
+                _append(
+                    predictions_path,
+                    _did_not_fit_prediction(
+                        question,
+                        condition_name,
+                        job_id,
+                        error,
+                        config["generation"],
+                    ),
+                )
+                counts["did_not_fit"] += 1
             except Exception as error:
                 _append(
                     errors_path,

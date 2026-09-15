@@ -66,6 +66,9 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     successful_predictions = [
         row for row in latest_predictions.values() if row.get("status") == "success"
     ]
+    did_not_fit_predictions = [
+        row for row in latest_predictions.values() if row.get("status") == "did_not_fit"
+    ]
 
     predictions_table = pd.DataFrame(successful_predictions)
     skill_predictions_table = pd.DataFrame(
@@ -121,9 +124,11 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     summary = {
         "planned": planned_jobs,
         "successful": len(successful_predictions),
+        "did_not_fit": len(did_not_fit_predictions),
         "failed": len(failed_job_ids),
         "missing": max(0, planned_jobs - len(attempted_job_ids)),
-        "complete": len(successful_predictions) == planned_jobs,
+        "complete": len(successful_predictions) + len(did_not_fit_predictions)
+        == planned_jobs,
         "report_rows": report_rows,
     }
     (run_path / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

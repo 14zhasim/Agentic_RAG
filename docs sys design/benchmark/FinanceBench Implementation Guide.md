@@ -34,7 +34,7 @@ flowchart TD
     E -- yes, missing --> X[Fail explicitly]
     F --> G[Append prediction or error]
     G --> H[Calculate deterministic retrieval metrics]
-    G -. future .-> J[Judge saved answers with Azure and RAGAS]
+    G -. next slice .-> J[Judge saved answers with Azure DeepSeek-V4-Flash]
     H --> I[Aggregate reports]
     J -. future .-> I
 ```
@@ -52,11 +52,14 @@ Currently implemented:
 Deferred:
 
 - real single-store/shared-store retriever and vector store;
-- Azure GPT answer judge through RAGAS, which will provide the official answer-
-  accuracy result;
+- Azure DeepSeek-V4-Flash answer judge, which will provide the official binary
+  answer-accuracy result;
 - HiREC/LOFin;
 - smoke and pattern validation subsets;
-- final policy for nine conservatively oversized long-context jobs.
+
+The approved terminal `did_not_fit` outcome is implemented. The current
+1,048,576-token configuration has zero oversized long-context jobs; the
+largest measured prompt is 535,722 tokens.
 
 ## 2. Project bootstrap and controls
 
@@ -89,13 +92,13 @@ creates or updates the local virtual environment.
 |---|---|---|
 | Python 3.12 | Runtime | Stable language baseline selected in `.python-version` |
 | `uv` | Package, environment and lockfile management | Recreates direct and transitive dependency versions |
-| OpenAI SDK | OpenRouter-compatible GLM client | OpenRouter exposes an OpenAI-compatible API |
+| OpenAI SDK | OpenRouter generation now; Azure DeepSeek judge next | OpenRouter uses Responses; the separate Foundry client uses Chat Completions |
 | Transformers + Jinja2 | GLM tokenizer and its chat-template renderer | Counts the formatted prompt before sending it |
 | PyMuPDF | PDF page count and text extraction | Conditions and validation operate on physical pages |
 | pandas | Grouping and CSV report output | Reporting is tabular; preparation remains plain JSON |
 | pytest | Automated checks | Validates the golden path without paid requests |
 
-LangChain, Chroma, RAGAS, Azure libraries, and a vector database are not installed
+LangChain, Chroma, Azure-specific libraries, and a vector database are not installed
 because the current executable path does not use them. Add them only after their
 design is approved.
 
@@ -294,10 +297,66 @@ Records info model should receive
 }
 ```
 
-No answer-accuracy field is written during generation. The future judge reads
-this saved row, which already contains all reference inputs it needs, and
-persists its binary decision separately. `cost` is retained from OpenRouter's
-usage metadata when returned and is otherwise explicitly `null`.
+No answer-accuracy field is written during generation. The judge reads this
+saved row, which already contains all reference inputs it needs, and persists
+its decision separately. `cost` is retained from OpenRouter's usage metadata
+when returned and is otherwise explicitly `null`.
+
+### Proposed judgment row
+
+`src/sec_rag_benchmark/judge.py` will append one combined result after both
+judge calls complete:
+
+```python
+{
+    "job_id": "<config-hash>:q1:oracle",
+    "accuracy": 1,
+    "manual_review": False,
+    "prompt_version": "financebench-binary-judge-v1",
+    "requested_model": "DeepSeek-V4-Flash",
+    "passes": [
+        {
+            "prompt_order": "reference_first",
+            "verdict": 1,
+            "reason": "The candidate gives the same value as the reference.",
+            "returned_model": "DeepSeek-V4-Flash",
+            "request_id": "resp_...",
+            "usage": {},
+            "latency_seconds": 1.2
+        },
+        {
+            "prompt_order": "candidate_first",
+            "verdict": 1,
+            "reason": "The answers agree after equivalent numeric formatting.",
+            "returned_model": "DeepSeek-V4-Flash",
+            "request_id": "resp_...",
+            "usage": {},
+            "latency_seconds": 1.1
+        }
+    ]
+}
+```
+
+`accuracy` is `1` or `0` only when both passes agree. It is `None` and
+`manual_review` is `True` when they disagree. A `did_not_fit` prediction has no
+candidate answer, so it is not sent to the judge.
+
+An input that fails the context preflight instead records this terminal row in
+`predictions.jsonl`:
+
+```python
+{
+    "job_id": "<config-hash>:q1:long_context",
+    "status": "did_not_fit",
+    "financebench_id": "q1",
+    "eval_mode": "long_context",
+    "model_answer": None,
+    "error": "Complete prompt and output reserve exceed the context window"
+}
+```
+
+It preserves the job in the condition's denominator but is never sent to either
+generation or judging again.
 
 ## 5. Configuration loading and routing
 
@@ -307,6 +366,7 @@ as follows:
 ```text
 [dataset]    → data.py preparation, validation, paths, and expected counts
 [generation] → generation.py model request and context limits
+[judge]      → judge.py Azure request, prompt version, and judge limits
 [run]        → execution modules: conditions, retrieval depth, and results path
 ```
 
@@ -319,13 +379,27 @@ load_config(config_path):
     resolve dataset and results paths relative to the repository root
     verify configured condition names
     verify the OpenRouter/provider requirements
-    verify GLM reasoning-effort and token-limit settings
+    verify GLM generation and Azure judge settings
     return the validated top-level configuration dictionary
 ```
 
 It is separate because the TOML contains dataset, generation and run settings.
 Experiment settings that can affect results remain visible in
 `configs/financebench.toml`.
+
+The proposed judge section keeps every result-affecting choice public while the
+endpoint and key remain private environment variables:
+
+```toml
+[judge]
+provider = "azure"
+model = "DeepSeek-V4-Flash"
+deployment = "DeepSeek-V4-Flash"
+prompt_version = "financebench-binary-judge-v1"
+max_output_tokens = 512
+timeout_seconds = 180.0
+max_retries = 5
+```
 
 ## 6. Data preparation and validation flow
 
@@ -616,7 +690,7 @@ generate(messages, config, optional client):
 _check_context_capacity():
     count the complete formatted prompt
     reserve output tokens and the safety margin
-    raise an explicit error if the total exceeds the context window
+    raise ContextLimitError if the total exceeds the context window
 
 _create_openrouter_client():
     require OPENROUTER_API_KEY
@@ -637,7 +711,7 @@ sequenceDiagram
     G->>G: apply GLM chat template and count input tokens
     G->>G: reserve output tokens + safety margin
     alt prompt too large
-        G-->>R: ValueError, no request
+        G-->>R: ContextLimitError, no request
     else prompt fits
         G->>G: lazily read OPENROUTER_API_KEY
         G->>O: stateless Responses request for pinned GLM/provider
@@ -661,6 +735,12 @@ therefore compares input tokens + output-token reserve + safety tokens with the
 configured token context window.
 The pinned OpenAI SDK sends `client.responses.create()` to OpenRouter's base
 URL.
+
+`ContextLimitError` is not an API failure. `execution/runner.py` catches it and
+appends a terminal `did_not_fit` row to
+`predictions.jsonl`. Resume will skip that job exactly as it skips an answer
+that was generated successfully. Actual API failures remain in `errors.jsonl`
+and remain retryable.
 
 Provider routing is an OpenRouter-only request extension passed through the
 SDK's `extra_body`. It orders the `z-ai` upstream provider first and disables
@@ -875,7 +955,8 @@ Read `run_benchmark()` first, then its three small file/run helpers:
 ```text
 run_benchmark()
 ├── _create_or_resume_run()
-├── _successful_jobs()
+├── _completed_jobs()
+├── _did_not_fit_prediction()
 └── _append()
 ```
 
@@ -885,24 +966,27 @@ run_benchmark()
 load_run_questions()
 select and validate condition names
 create or resume the run directory
-read already successful job IDs
+read already terminal job IDs
 
 FOR each question and condition:
     create its stable job ID
 
-    IF already successful:
+    IF already terminal (success or did_not_fit):
         count it as skipped
     ELSE:
         TRY execute_job() and append its prediction
+        IF the complete prompt does not fit, append did_not_fit to predictions
         IF it fails, append its error
 
-RETURN run directory and generated/skipped/failed counts
+RETURN run directory and generated/did-not-fit/skipped/failed counts
 ```
 
 `_create_or_resume_run()` writes or verifies the effective `config.toml` and
-derives the run key. `_successful_jobs()` reads successful IDs from
-`predictions.jsonl`. `_append()` immediately adds one success or failure to its
-JSONL, so a later crash does not discard earlier answers.
+derives the run key. `_completed_jobs()` reads both successful and
+`did_not_fit` IDs from `predictions.jsonl`. `_did_not_fit_prediction()` builds
+the non-answer row for an oversized prompt. `_append()` immediately adds one
+terminal result or failure to its JSONL, so a later crash does not discard
+earlier answers.
 
 ```mermaid
 flowchart TD
@@ -914,13 +998,14 @@ flowchart TD
     B -- no --> G[runner.run_benchmark]
     G --> H[data.load_run_questions]
     H --> I[Create or resume run]
-    I --> J[Read successful job IDs]
+    I --> J[Read terminal job IDs]
     J --> K[Loop over question-condition jobs]
-    K --> L{Already successful?}
-    L -- yes --> M[Skip]
+    K --> L{Already terminal?}
+    L -- yes --> M[Skip success or did_not_fit]
     L -- no --> N[job.execute_job]
     N --> O[Condition, generation and metrics]
     O --> P[Append prediction]
+    N -. context too large .-> DNF[Append did_not_fit prediction]
     N -. error .-> Q[Append error]
 ```
 
@@ -1109,28 +1194,99 @@ sample size of zero. Skill views overlap when a question has multiple labels.
 ```text
 results/<run-id>/
 ├── config.toml        effective public run configuration
-├── predictions.jsonl append-only successful jobs
-├── errors.jsonl      append-only failed attempts
+├── predictions.jsonl append-only success and did_not_fit outcomes
+├── judgments.jsonl   append-only completed two-pass judgments
+├── errors.jsonl      append-only retryable generation or judge failures
 ├── summary.json      machine-readable report and completion status
 └── summary.csv       spreadsheet-friendly grouped metrics
 ```
 
-### Future final-answer judge
+### Azure binary answer judge
 
-Judging is a separate pass over saved predictions, so generated answers do not
-need to be regenerated when judging is retried or changed. For each answer, the
-judge input will contain:
+The next slice adds `src/sec_rag_benchmark/judge.py`. Read its public
+`judge_run()` first, followed by `_judge_answer()`, `_build_judge_input()`,
+`_request_verdict()`, and `_combine_verdicts()`. Judging is a separate pass over
+saved predictions, so changing or retrying the judge never regenerates answers.
 
-- the question;
-- the FinanceBench reference answer;
-- the complete FinanceBench reference-evidence list;
-- the human labeller's `justification` field;
-- the candidate model answer.
+```text
+judge_run(run_dir, config):
+    load successful predictions
+    load job IDs already present in judgments.jsonl
 
-The judge will return the binary correct/incorrect value used for official final-
-answer accuracy. The precise RAGAS integration, Azure deployment configuration,
-judge prompt, and validation against human-reviewed examples remain a later
-vertical slice.
+    FOR each unjudged prediction:
+        join its FinanceBench reference fields
+        result = _judge_answer(prediction, reference, judge config)
+        append result to judgments.jsonl
+
+    IF an Azure request fails:
+        append a stage="judge" row to errors.jsonl
+        leave the job eligible for retry
+
+    return judged, skipped and failed counts
+
+_judge_answer(...):
+    build the reference-first input
+    request one structured verdict
+
+    build the candidate-first input
+    request one structured verdict
+
+    combine both verdicts into one judgment row
+
+_build_judge_input(..., prompt_order):
+    include the question, reference answer, complete evidence,
+    human justification and candidate answer
+    keep the labels explicit
+    change only whether the reference or candidate block appears first
+
+_request_verdict(...):
+    lazily create the Foundry DeepSeek client when the judge command needs it
+    call Chat Completions and request one small JSON object
+    strictly validate verdict 0 or 1 and a concise reason locally
+    return the verdict plus model, request, usage and latency metadata
+
+_combine_verdicts(first, second):
+    IF both are 1: return accuracy=1, manual_review=false
+    IF both are 0: return accuracy=0, manual_review=false
+    ELSE: return accuracy=None, manual_review=true
+```
+
+```mermaid
+flowchart LR
+    P[predictions.jsonl] --> S[Successful unjudged answers]
+    S --> D[Join FinanceBench reference fields]
+    D --> A[Reference-first Azure judgment]
+    D --> B[Candidate-first Azure judgment]
+    A --> C[Combine verdicts]
+    B --> C
+    C --> J[judgments.jsonl]
+    J --> R[Segmented answer accuracy]
+```
+
+Only completed two-pass results enter `judgments.jsonl`, so resumption skips
+them. A failure before both calls finish remains in `errors.jsonl` and is
+retried. This deliberately favors a small, readable implementation; if the
+second request fails, the first request may be repeated on resume.
+
+The DeepSeek client receives the project endpoint from
+`AZURE_DEEPSEEK_ENDPOINT`, appends `/openai/v1`, and authenticates with
+`AZURE_DEEPSEEK_API_KEY`. It uses `client.chat.completions.create()` because
+Microsoft publishes DeepSeek-V4-Flash as a Chat Completions model. This does
+not alter `generation.py`: GLM generation continues using OpenRouter's
+Responses API.
+
+Judge calls are sequential. The pinned OpenAI client retries connection errors,
+timeouts, HTTP 429 rate limits and server errors with backoff, up to the
+configured `max_retries`. Every completed two-pass judgment is checkpointed
+before the next answer. If retries are exhausted, the error remains retryable
+when the `judge` command is resumed.
+
+Reporting joins judgments to predictions by `job_id`. It adds binary accuracy
+to the same five views already used for retrieval metrics. Each view records
+agreed judgments, disagreements requiring review, unjudged answers and
+`did_not_fit` outcomes. Accuracy excluding `did_not_fit` uses agreed judged
+answers as its denominator. Accuracy including `did_not_fit` retains those
+terminal jobs in the denominator while adding no correct answer for them.
 
 ## 12. CLI and complete call flow
 
@@ -1172,7 +1328,7 @@ Each `case` remains short:
 | `run --dry-run` | load config → `preflight.dry_run()` → print preflight |
 | real `run` | load config → `runner.run_benchmark()` → print directory/counts |
 | `report` | `reporting.write_report()` → print successful count |
-| `judge` | report that Azure/RAGAS judging is unavailable |
+| `judge` | load config → `judge.judge_run()` → print judged/skipped/failed counts |
 
 The short preparation case intentionally remains visible rather than being
 wrapped in a `prepare_command()` function:
@@ -1203,6 +1359,7 @@ sequenceDiagram
     participant C as conditions.py
     participant G as generation.py
     participant M as metrics.py
+    participant AJ as judge.py
     participant REP as reporting.py
     User->>CLI: prepare
     CLI->>CFG: load TOML
@@ -1227,21 +1384,24 @@ sequenceDiagram
         J->>G: build_messages + generate
         J->>M: row metrics
     end
+    User->>CLI: judge
+    CLI->>CFG: load TOML
+    CLI->>AJ: judge_run(run directory and config)
+    AJ->>AJ: request and combine two Azure verdicts
     User->>CLI: report
     CLI->>REP: write_report(run directory)
 ```
 
-The available commands are `prepare`, `validate`, `run`, `report`, and `judge`.
-The refactor changes only code ownership and reading order. Command names,
-arguments, output artifacts, no-spend behavior and exit behavior remain the
-same. `judge` still intentionally reports unavailable.
+The available commands are `prepare`, `validate`, `run`, `judge`, and `report`.
+The judge case parses `--config` and `--run-dir`, then delegates the complete
+operation to `judge_run()`.
 
 ### Terminal commands, in execution order
 
-Start every new terminal session from the golden-path worktree:
+During this slice, start every new terminal session from its isolated worktree:
 
 ```bash
-cd "/Users/zubairasim/Documents/SEC RAG/.worktrees/financebench-golden-path"
+cd "/Users/zubairasim/Documents/SEC RAG/.worktrees/azure-ragas-judge"
 ```
 
 The following setup commands are safe: they do not call an LLM or spend API
@@ -1327,7 +1487,7 @@ For example, the command may print a directory named
 
 If the run stops, load the API key again in a new terminal and pass that existing
 directory through `--run-dir`. Keep the same conditions. The runner skips job
-IDs already recorded as successful:
+IDs already recorded as successful or `did_not_fit`:
 
 ```bash
 uv run sec-rag-benchmark run \
@@ -1344,12 +1504,18 @@ with the directory printed by your run:
 uv run sec-rag-benchmark report --run-dir results/20260913-143052
 ```
 
-The following is the reserved future command. It currently exits with an
-explicit "not implemented" error and performs no judging:
+After completing the Azure setup guide, load `.env`. This command will make two
+paid Azure requests for each successful, previously unjudged answer:
 
 ```bash
-uv run sec-rag-benchmark judge --run-dir results/20260913-143052
+uv run sec-rag-benchmark judge \
+  --config configs/financebench.toml \
+  --run-dir results/20260913-143052
 ```
+
+Use a run containing one generated answer for the first paid smoke test. Review
+its `judgments.jsonl` before judging a larger run. Azure account and deployment
+instructions are in `Azure Judge Setup.md` beside this guide.
 
 ## 13. Test design and requirement traceability
 
@@ -1365,13 +1531,19 @@ uv run sec-rag-benchmark judge --run-dir results/20260913-143052
 | Record requested/returned model, provider, usage, latency and cost without paid call | `test_generation_pins_provider_without_real_api_call` |
 | Preserve evidence and human justification for later judging | `test_runner_checkpoints_resumes_and_reports` |
 | Append checkpoints, resume, and report | `test_runner_checkpoints_resumes_and_reports` |
+| Context overflow raises `ContextLimitError` before an API request | `test_generation_rejects_empty_output_and_oversized_prompt` |
+| Runner records that overflow as `did_not_fit`; resume skips it | `test_runner_resume_skips_did_not_fit` |
+| Generation API errors remain retryable | Proposed `test_runner_retries_generation_api_error` |
 | Configuration loading resolves paths and rejects invalid settings | `test_load_config_resolves_paths_and_rejects_unknown_condition` |
 | `execution/preflight.py` owns dry-run selection, context checks and zero requests | `test_dry_run_preflights_jobs_without_api_requests` |
 | `run_benchmark()` establishes or resumes a run and executes every job | `test_runner_checkpoints_resumes_and_reports` |
 | CLI routes preparation, validation and dry-run commands | `test_cli_prepare_validate_and_no_spend_dry_run` |
 | Exact real 112-question/64-PDF acceptance | Verified manually; not bundled because source clone is ignored |
 | No answer-accuracy calculation during generation | `test_runner_checkpoints_resumes_and_reports` |
-| Judge-only official answer accuracy | Explicitly deferred |
+| Both judge prompt orders contain every required reference field | Proposed judge prompt test |
+| Judge agreements produce binary accuracy and disagreement produces `None` | Proposed judge combination test |
+| Completed judgments resume; Azure failures retry | Proposed judge-run checkpoint test |
+| Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | Proposed reporting test |
 | Real retriever, HiREC and pattern suite | Explicitly deferred |
 
 Run the verification commands listed in section 2. The tests use a tiny generated
@@ -1431,9 +1603,9 @@ been removed, and `data.load_run_questions()` owns validation, loading and the
 optional question limit. No command, result file or benchmark calculation
 changed.
 
-The code-reading route is integrated into sections 2 and 5–12. Future answer
-judging remains an unimplemented slice that will add separately persisted binary
-answer accuracy.
+The code-reading route is integrated into sections 2 and 5–12. Section 11 now
+contains the approved design for the next unimplemented slice: terminal
+`did_not_fit` outcomes and separately persisted Azure binary judgments.
 
 The metrics/runner reconciliation is now implemented: deterministic numeric
 answer scoring has been removed from `metrics.py`, prediction rows, reports, and

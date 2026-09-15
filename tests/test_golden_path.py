@@ -10,7 +10,12 @@ from sec_rag_benchmark.config import load_config
 from sec_rag_benchmark.data import DataError, load_questions, prepare, validate
 from sec_rag_benchmark.execution.preflight import dry_run
 from sec_rag_benchmark.execution.runner import run_benchmark
-from sec_rag_benchmark.generation import build_messages, count_prompt_tokens, generate
+from sec_rag_benchmark.generation import (
+    ContextLimitError,
+    build_messages,
+    count_prompt_tokens,
+    generate,
+)
 from sec_rag_benchmark.metrics import cognitive_skills, page_metrics
 from sec_rag_benchmark.reporting import write_report
 
@@ -213,7 +218,7 @@ def test_generation_rejects_empty_output_and_oversized_prompt(sample, monkeypatc
         called = True
     client.responses.create = should_not_run
     tiny_context = {**sample["generation"], "context_window_tokens": 1}
-    with pytest.raises(ValueError, match="context window"):
+    with pytest.raises(ContextLimitError, match="context window"):
         generate(build_messages("Q", "C"), tiny_context, client=client)
     assert called is False
 
@@ -279,6 +284,45 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     assert overall["total_predictions"] == 2
     assert overall["page_recall"] is None
     assert overall["page_recall_sample_size"] == 0
+
+
+def test_runner_resume_skips_did_not_fit(sample):
+    prepare(sample["dataset"])
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    run_dir = Path(sample["run"]["results_dir"]) / "did-not-fit-run"
+    calls = 0
+
+    def oversized(messages, generation_config):
+        nonlocal calls
+        calls += 1
+        raise ContextLimitError(
+            "Complete prompt and output reserve exceed the context window"
+        )
+
+    kwargs = {
+        "conditions": ["long_context"],
+        "limit": 1,
+        "requested_run_dir": run_dir,
+        "generator": oversized,
+    }
+    first_result = run_benchmark(config, config_path, **kwargs)
+    second_result = run_benchmark(config, config_path, **kwargs)
+
+    assert first_result["did_not_fit"] == 1
+    assert second_result["skipped"] == 1
+    assert calls == 1
+    prediction = json.loads((run_dir / "predictions.jsonl").read_text().strip())
+    assert prediction["status"] == "did_not_fit"
+    assert prediction["model_answer"] is None
+    assert prediction["requested_model"] == "z-ai/glm-5.3-flash"
+    assert prediction["gold_pages"]
+    assert not (run_dir / "errors.jsonl").exists()
+
+    report = write_report(run_dir)
+    assert report["did_not_fit"] == 1
+    assert report["complete"] is True
 
 
 def test_cli_prepare_validate_and_no_spend_dry_run(sample, tmp_path, capsys, monkeypatch):
