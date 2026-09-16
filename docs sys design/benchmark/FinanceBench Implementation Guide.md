@@ -34,9 +34,9 @@ flowchart TD
     E -- yes, missing --> X[Fail explicitly]
     F --> G[Append prediction or error]
     G --> H[Calculate deterministic retrieval metrics]
-    G -. next slice .-> J[Judge saved answers with Azure DeepSeek-V4-Flash]
+    G --> J[Judge saved answers with Azure DeepSeek-V4-Flash]
     H --> I[Aggregate reports]
-    J -. future .-> I
+    J --> I
 ```
 
 Currently implemented:
@@ -46,16 +46,18 @@ Currently implemented:
 - closed-book, oracle, and long-context generation;
 - replaceable retrieval interface, without a real retriever;
 - page recall, page precision, and page MRR;
+- resumable two-pass Azure DeepSeek answer judging and binary accuracy;
 - checkpoint/resume and segmented reporting;
 - no-spend tests and dry runs.
 
 Deferred:
 
 - real single-store/shared-store retriever and vector store;
-- Azure DeepSeek-V4-Flash answer judge, which will provide the official binary
-  answer-accuracy result;
 - HiREC/LOFin;
 - smoke and pattern validation subsets;
+
+The judge implementation is fake-client tested; its one-answer paid Azure
+smoke test remains pending.
 
 The approved terminal `did_not_fit` outcome is implemented. The current
 1,048,576-token configuration has zero oversized long-context jobs; the
@@ -283,17 +285,21 @@ Records info model should receive
     "human_justification": "The reference answer follows from ...",
     "model_answer": "$42 million",
     "eval_mode": "oracle",
+    "question_type": "metrics-generated",
+    "cognitive_skills": ["information_extraction"],
     "gold_pages": [["example_2023_10K.pdf", 12]],
     "retrieved_chunks": [],
     "page_recall": None,
     "page_precision": None,
     "page_mrr": None,
     "requested_model": "z-ai/glm-5.3-flash",
+    "request_id": "response_...",
     "returned_model": "z-ai/glm-5.3-flash",
     "provider": "Z.AI",
     "usage": {},
     "cost": None,
-    "latency_seconds": 0.1
+    "latency_seconds": 0.1,
+    "completed_at": "2026-09-16T12:00:00+00:00"
 }
 ```
 
@@ -302,14 +308,15 @@ saved row, which already contains all reference inputs it needs, and persists
 its decision separately. `cost` is retained from OpenRouter's usage metadata
 when returned and is otherwise explicitly `null`.
 
-### Proposed judgment row
+### Judgment row
 
-`src/sec_rag_benchmark/judge.py` will append one combined result after both
+`src/sec_rag_benchmark/judge.py` appends one combined result after both
 judge calls complete:
 
 ```python
 {
     "job_id": "<config-hash>:q1:oracle",
+    "status": "complete",
     "accuracy": 1,
     "manual_review": False,
     "prompt_version": "financebench-binary-judge-v1",
@@ -333,13 +340,46 @@ judge calls complete:
             "usage": {},
             "latency_seconds": 1.1
         }
-    ]
+    ],
+    "completed_at": "2026-09-16T12:01:00+00:00"
 }
 ```
 
 `accuracy` is `1` or `0` only when both passes agree. It is `None` and
 `manual_review` is `True` when they disagree. A `did_not_fit` prediction has no
 candidate answer, so it is not sent to the judge.
+
+### Accuracy summary row
+
+`reporting._answer_accuracy_for_subset()` returns one row describing one
+selected group of predictions:
+
+```python
+{
+    "report_view": "condition",
+    "eval_mode": "oracle",
+    "total_predictions": 112,
+    "agreed_judgments": 105,
+    "disagreements": 4,
+    "unjudged": 2,
+    "did_not_fit": 1,
+    "accuracy_excluding_did_not_fit": 0.86,
+    "accuracy_including_did_not_fit": 0.85,
+}
+```
+
+The caller first selects the predictions belonging to the group. Any extra
+named arguments in the function call are collected into the temporary
+`subset_identity` dictionary. `**subset_identity` inserts those labels into
+the returned row; it is not stored as a nested dictionary.
+
+| Report view | Extra named arguments | Resulting `subset_identity` |
+|---|---|---|
+| Overall | none | `{}` |
+| Condition | `eval_mode="oracle"` | `{"eval_mode": "oracle"}` |
+| Generation method | `question_type="calculated"` | `{"question_type": "calculated"}` |
+| Cognitive skill | `cognitive_skill="numerical_reasoning"` | `{"cognitive_skill": "numerical_reasoning"}` |
+| Cross-tab | both fields | `{"question_type": "calculated", "cognitive_skill": "numerical_reasoning"}` |
 
 An input that fails the context preflight instead records this terminal row in
 `predictions.jsonl`:
@@ -387,7 +427,7 @@ It is separate because the TOML contains dataset, generation and run settings.
 Experiment settings that can affect results remain visible in
 `configs/financebench.toml`.
 
-The proposed judge section keeps every result-affecting choice public while the
+The judge section keeps every result-affecting choice public while the
 endpoint and key remain private environment variables:
 
 ```toml
@@ -1040,8 +1080,11 @@ function while extracting the two data-preparation stages:
 write_report()
 ├── _latest_rows_by_job_id() for predictions
 ├── _latest_rows_by_job_id() for errors
+├── _latest_rows_by_job_id() for judgments
 ├── _expand_by_cognitive_skill()
-└── _average_retrieval_metrics() for each report group
+├── _average_retrieval_metrics() for each retrieval group
+├── _answer_accuracy_rows()
+└── _answer_accuracy_for_subset() for each accuracy group
 ```
 
 ### `write_report()` pseudocode
@@ -1049,6 +1092,7 @@ write_report()
 ```text
 INPUT:
     predictions.jsonl
+    judgments.jsonl
     errors.jsonl
     run configuration
 
@@ -1064,6 +1108,12 @@ summarize each condition
 summarize each generation method
 summarize each cognitive skill
 summarize each generation-method/cognitive-skill combination
+
+join judgments to predictions by job_id
+for the same five report views:
+    count agreed judgments, disagreements, unjudged and did_not_fit
+    calculate accuracy excluding did_not_fit
+    calculate accuracy including did_not_fit as incorrect
 
 count planned, successful, failed and missing jobs
 write summary.json and summary.csv
@@ -1103,8 +1153,13 @@ flowchart TD
     J --> L
     K --> L
     L --> M[report_rows]
-    M --> N[summary.json]
-    M --> O[summary.csv]
+    B --> P[all terminal predictions]
+    Q[judgments.jsonl] --> R[_answer_accuracy_rows]
+    P --> R
+    R --> N[summary.json]
+    R --> O[summary.csv]
+    M --> N
+    M --> O
 ```
 
 ### The important data states
@@ -1203,10 +1258,47 @@ results/<run-id>/
 
 ### Azure binary answer judge
 
-The next slice adds `src/sec_rag_benchmark/judge.py`. Read its public
-`judge_run()` first, followed by `_judge_answer()`, `_build_judge_input()`,
-`_request_verdict()`, and `_combine_verdicts()`. Judging is a separate pass over
+Read `src/sec_rag_benchmark/judge.py` from its public `judge_run()` first,
+followed by `_judge_answer()`, `_build_judge_messages()`,
+`_request_verdict()`, `_combine_verdicts()`, and finally the small file/client
+helpers above them. Judging is a separate pass over
 saved predictions, so changing or retrying the judge never regenerates answers.
+
+The data changes shape at each step:
+
+```text
+prediction dictionary
+→ two message lists
+→ two Azure response objects
+→ two validated verdict dictionaries
+→ one combined judgment dictionary
+→ one JSON line in judgments.jsonl
+```
+
+The three function outputs are:
+
+```python
+# _build_judge_messages() output
+list[dict[str, str]]
+
+# _request_verdict() output
+{
+    "verdict": 1,
+    "reason": "The values are equivalent.",
+    "returned_model": "DeepSeek-V4-Flash",
+    "request_id": "...",
+    "usage": {...},
+    "latency_seconds": 1.2,
+}
+
+# _combine_verdicts() output
+{
+    "job_id": "...",
+    "accuracy": 1,
+    "manual_review": False,
+    "passes": [reference_first, candidate_first],
+}
+```
 
 ```text
 judge_run(run_dir, config):
@@ -1214,8 +1306,7 @@ judge_run(run_dir, config):
     load job IDs already present in judgments.jsonl
 
     FOR each unjudged prediction:
-        join its FinanceBench reference fields
-        result = _judge_answer(prediction, reference, judge config)
+        result = _judge_answer(prediction, judge config, client)
         append result to judgments.jsonl
 
     IF an Azure request fails:
@@ -1233,14 +1324,13 @@ _judge_answer(...):
 
     combine both verdicts into one judgment row
 
-_build_judge_input(..., prompt_order):
+_build_judge_messages(..., prompt_order):
     include the question, reference answer, complete evidence,
     human justification and candidate answer
     keep the labels explicit
     change only whether the reference or candidate block appears first
 
 _request_verdict(...):
-    lazily create the Foundry DeepSeek client when the judge command needs it
     call Chat Completions and request one small JSON object
     strictly validate verdict 0 or 1 and a concise reason locally
     return the verdict plus model, request, usage and latency metadata
@@ -1251,10 +1341,22 @@ _combine_verdicts(first, second):
     ELSE: return accuracy=None, manual_review=true
 ```
 
+In compact form:
+
+```text
+1 + 1 → accuracy 1, manual_review false
+0 + 0 → accuracy 0, manual_review false
+1 + 0 or 0 + 1 → accuracy null, manual_review true
+```
+
+`manual_review` is created by `_combine_verdicts()`; it is not returned by
+Azure. In the report, `summary.json → accuracy_rows → disagreements`
+counts these conflicting two-pass judgments.
+
 ```mermaid
 flowchart LR
     P[predictions.jsonl] --> S[Successful unjudged answers]
-    S --> D[Join FinanceBench reference fields]
+    S --> D[Read reference fields already stored in prediction]
     D --> A[Reference-first Azure judgment]
     D --> B[Candidate-first Azure judgment]
     A --> C[Combine verdicts]
@@ -1267,6 +1369,10 @@ Only completed two-pass results enter `judgments.jsonl`, so resumption skips
 them. A failure before both calls finish remains in `errors.jsonl` and is
 retried. This deliberately favors a small, readable implementation; if the
 second request fails, the first request may be repeated on resume.
+
+`judge_run()` creates the client lazily only after it finds a successful,
+unjudged prediction. `_create_azure_client()` appends `/openai/v1` when it is
+not already present on the configured project endpoint.
 
 The DeepSeek client receives the project endpoint from
 `AZURE_DEEPSEEK_ENDPOINT`, appends `/openai/v1`, and authenticates with
@@ -1300,7 +1406,7 @@ Section 13. Preview `config.load_config()` first, as described in Section 5,
 then revisit `preflight.dry_run()` and `runner.run_benchmark()` from Section 10
 when their cases are reached.
 
-### Proposed `main()` pseudocode
+### `main()` pseudocode
 
 ```text
 create the sec-rag-benchmark argument parser
@@ -1538,16 +1644,19 @@ instructions are in `Azure Judge Setup.md` beside this guide.
 | `execution/preflight.py` owns dry-run selection, context checks and zero requests | `test_dry_run_preflights_jobs_without_api_requests` |
 | `run_benchmark()` establishes or resumes a run and executes every job | `test_runner_checkpoints_resumes_and_reports` |
 | CLI routes preparation, validation and dry-run commands | `test_cli_prepare_validate_and_no_spend_dry_run` |
+| CLI routes the judge command without creating its own client | `test_cli_judge_delegates_without_creating_a_real_client` |
 | Exact real 112-question/64-PDF acceptance | Verified manually; not bundled because source clone is ignored |
 | No answer-accuracy calculation during generation | `test_runner_checkpoints_resumes_and_reports` |
-| Both judge prompt orders contain every required reference field | Proposed judge prompt test |
-| Judge agreements produce binary accuracy and disagreement produces `None` | Proposed judge combination test |
-| Completed judgments resume; Azure failures retry | Proposed judge-run checkpoint test |
-| Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | Proposed reporting test |
+| Both judge prompt orders contain every required reference field | `test_prompt_orders_include_every_required_financebench_field` |
+| Judge agreements produce binary accuracy and disagreement produces `None` | `test_judge_run_combines_two_orders_and_resumes` |
+| Malformed output and missing credentials fail clearly | `test_request_validation_and_missing_credentials` |
+| Completed judgments resume; Azure failures retry; `did_not_fit` is not judged | `test_judge_run_combines_two_orders_and_resumes` and `test_api_failure_is_retryable_and_did_not_fit_is_not_judged` |
+| Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
 | Real retriever, HiREC and pattern suite | Explicitly deferred |
 
 Run the verification commands listed in section 2. The tests use a tiny generated
-fixture, fake generator, and fake OpenRouter client; they make no paid request.
+fixture, fake generator, fake OpenRouter client and fake Azure judge client;
+they make no paid request.
 
 ## 14. As-built differences from the engineered branch
 

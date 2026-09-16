@@ -9,6 +9,7 @@ from .config import load_config
 from .data import DataError, prepare, validate
 from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
+from .judge import judge_run
 from .reporting import write_report
 
 
@@ -31,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     report_parser = commands.add_parser("report")
     report_parser.add_argument("--run-dir", type=Path, required=True)
     judge_parser = commands.add_parser("judge")
+    judge_parser.add_argument("--config", type=Path, required=True)
     judge_parser.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -86,7 +88,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Reported {summary['successful']} successful jobs")
 
             case "judge":
-                parser.error("Azure/RAGAS judge is not implemented yet")
+                config = load_config(args.config)
+                counts = judge_run(args.run_dir, config["judge"])
+                print(f"Judged {args.run_dir}: {counts}")
 
         return 0
     except (OSError, ValueError, RuntimeError, DataError) as error:

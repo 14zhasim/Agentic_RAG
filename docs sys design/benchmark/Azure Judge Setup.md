@@ -79,7 +79,7 @@ Do **not** run `pip install --upgrade openai azure-identity` for this project:
 If Entra authentication is adopted later, add a reviewed exact version with
 `uv add "azure-identity==VERSION"`, which updates both project files.
 
-## 5. How the code will call DeepSeek
+## 5. How the code calls DeepSeek
 
 The existing GLM generator remains on OpenRouter's Responses API. Only the
 judge uses Azure DeepSeek and Chat Completions:

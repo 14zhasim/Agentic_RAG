@@ -48,4 +48,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if reserved_tokens >= generation["context_window_tokens"]:
         raise ValueError("Output tokens and safety margin must leave room for the input prompt")
 
+    judge = config["judge"]
+    if judge["provider"] != "azure":
+        raise ValueError("Answer judging requires the Azure provider")
+    if not judge["deployment"] or not judge["prompt_version"]:
+        raise ValueError("Judge deployment and prompt version cannot be empty")
+    if judge["max_output_tokens"] <= 0:
+        raise ValueError("Judge max_output_tokens must be positive")
+    if judge["timeout_seconds"] <= 0 or judge["max_retries"] < 0:
+        raise ValueError("Judge timeout must be positive and retries cannot be negative")
+
     return config

@@ -43,6 +43,14 @@ temperature = 0.0
 reasoning_effort = "low"
 timeout_seconds = 30.0
 max_retries = 2
+[judge]
+provider = "azure"
+model = "DeepSeek-V4-Flash"
+deployment = "DeepSeek-V4-Flash"
+prompt_version = "financebench-binary-judge-v1"
+max_output_tokens = 512
+timeout_seconds = 30.0
+max_retries = 2
 [run]
 conditions = ["closed_book", "oracle", "long_context"]
 retrieval_depth = 5

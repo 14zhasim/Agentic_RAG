@@ -15,7 +15,8 @@ The harness currently supports:
 - reports segmented by condition, question type and cognitive skill.
 
 `single_store` and `shared_store` are defined but require the future retriever.
-The Azure/RAGAS answer judge and HiREC/LOFin support are also deferred.
+The Azure DeepSeek binary answer judge is implemented and fake-client tested;
+its paid smoke test is still pending. HiREC/LOFin support remains deferred.
 
 ## Project structure
 
@@ -151,8 +152,9 @@ Each run directory contains:
 ```text
 results/<run-id>/
 ├── config.toml        effective configuration for this run
-├── predictions.jsonl successful generated answers
-├── errors.jsonl      failed attempts, when present
+├── predictions.jsonl successful answers and terminal did_not_fit outcomes
+├── judgments.jsonl   completed two-pass answer judgments, when present
+├── errors.jsonl      retryable generation or judge failures, when present
 ├── summary.json      machine-readable metrics and completion status
 └── summary.csv       spreadsheet-friendly segmented metrics
 ```
@@ -164,7 +166,18 @@ uv run sec-rag-benchmark --help
 uv run sec-rag-benchmark run --help
 ```
 
-The `judge` command currently exits with an explicit not-implemented message.
+Judge one successful answer first and inspect `judgments.jsonl` before a full
+run:
+
+```bash
+uv run sec-rag-benchmark judge \
+  --config configs/financebench.toml \
+  --run-dir results/<one-answer-run>
+```
+
+This sends two paid Azure requests for each previously unjudged answer. Azure
+setup and troubleshooting are documented in
+[`Azure Judge Setup.md`](docs%20sys%20design/benchmark/Azure%20Judge%20Setup.md).
 
 ## Detailed documentation
 
