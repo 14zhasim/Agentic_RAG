@@ -1,4 +1,4 @@
-"""Aggregate checkpointed benchmark predictions into report files."""
+"""Calculate benchmark summaries and persist the JSON and Excel reports."""
 
 from __future__ import annotations
 
@@ -8,6 +8,23 @@ import tomllib
 from typing import Any
 
 import pandas as pd
+
+from .report_workbook import write_report_workbook
+
+
+REPORT_VIEWS = (
+    "overall",
+    "by_condition",
+    "by_generation_method",
+    "by_cognitive_skill",
+    "cross_tab",
+)
+RETRIEVAL_CONDITIONS = {"single_store", "shared_store"}
+
+
+def _empty_report_views() -> dict[str, list[dict[str, Any]]]:
+    """Create the five named lists used by each metric family."""
+    return {view: [] for view in REPORT_VIEWS}
 
 
 def _latest_rows_by_job_id(path: Path) -> dict[str, dict[str, Any]]:
@@ -39,31 +56,89 @@ def _average_retrieval_metrics(
     prediction_subset: pd.DataFrame,
     **subset_identity: str,
 ) -> dict[str, Any]:
-    """Average the retrieval metrics for one clearly identified subset."""
+    """Average retrieval metrics for one named subset of predictions."""
     report_row = {
         "report_view": report_view,
         **subset_identity,
         "total_predictions": len(prediction_subset),
     }
     for metric_name in ("page_recall", "page_precision", "page_mrr"):
-        # Non-retrieval conditions store None. Excluding those values gives
-        # each metric an honest denominator, which is recorded beside it.
-        applicable_values = pd.to_numeric(
-            prediction_subset[metric_name], errors="coerce"
-        ).dropna()
-        report_row[metric_name] = (
-            None if applicable_values.empty else float(applicable_values.mean())
-        )
-        report_row[f"{metric_name}_sample_size"] = len(applicable_values)
+        values = pd.to_numeric(prediction_subset[metric_name], errors="coerce").dropna()
+        report_row[metric_name] = None if values.empty else float(values.mean())
+        report_row[f"{metric_name}_sample_size"] = len(values)
     return report_row
 
 
+def _retrieval_metric_views(
+    successful_predictions: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Build five views using only jobs that actually executed retrieval."""
+    views = _empty_report_views()
+    retrieval_predictions = [
+        row
+        for row in successful_predictions
+        if row["eval_mode"] in RETRIEVAL_CONDITIONS
+    ]
+    if not retrieval_predictions:
+        return views
+
+    predictions_table = pd.DataFrame(retrieval_predictions)
+    skill_table = pd.DataFrame(_expand_by_cognitive_skill(retrieval_predictions))
+    views["overall"].append(
+        _average_retrieval_metrics("overall", predictions_table)
+    )
+
+    for condition, condition_rows in predictions_table.groupby("eval_mode", sort=True):
+        views["by_condition"].append(
+            _average_retrieval_metrics(
+                "condition", condition_rows, eval_mode=condition
+            )
+        )
+
+        # Detailed comparisons stay inside their condition. Otherwise an
+        # oracle result and a single-store result would be averaged together.
+        for question_type, rows in condition_rows.groupby("question_type", sort=True):
+            views["by_generation_method"].append(
+                _average_retrieval_metrics(
+                    "generation_method",
+                    rows,
+                    eval_mode=condition,
+                    question_type=question_type,
+                )
+            )
+
+    for condition, condition_rows in skill_table.groupby("eval_mode", sort=True):
+        for skill, rows in condition_rows.groupby("cognitive_skill", sort=True):
+            views["by_cognitive_skill"].append(
+                _average_retrieval_metrics(
+                    "cognitive_skill",
+                    rows,
+                    eval_mode=condition,
+                    cognitive_skill=skill,
+                )
+            )
+
+        cross_tab = condition_rows.groupby(
+            ["question_type", "cognitive_skill"], sort=True
+        )
+        for (question_type, skill), rows in cross_tab:
+            views["cross_tab"].append(
+                _average_retrieval_metrics(
+                    "cross_tab",
+                    rows,
+                    eval_mode=condition,
+                    question_type=question_type,
+                    cognitive_skill=skill,
+                )
+            )
+    return views
+
+
 def _answer_accuracy_for_subset(
-    report_view: str, #type of grouping being summarised e.g. overall, condition, generation_method, cognitive_skill
-    predictions: list[dict[str, Any]], #select predictions on a condition e.g. if prediction["eval_mode"] == "oracle"
-    judgments: dict[str, dict[str, Any]], #contains all completed judgements
-    **subset_identity: str, # ** means any name arguments not listed separately in one dictionary
-                            # e.g. subset_identity = {"question_type": "calculated", "cognitive_skill": "numerical_reasoning"}
+    report_view: str,
+    predictions: list[dict[str, Any]],
+    judgments: dict[str, dict[str, Any]],
+    **subset_identity: str,
 ) -> dict[str, Any]:
     """Count answer outcomes and calculate accuracy for one report subset."""
     correct = 0
@@ -106,129 +181,93 @@ def _answer_accuracy_for_subset(
     }
 
 
-def _answer_accuracy_rows(
+def _answer_accuracy_views(
     predictions: list[dict[str, Any]], judgments: dict[str, dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Build the five approved answer-accuracy report views explicitly."""
-    rows = [_answer_accuracy_for_subset("overall", predictions, judgments)]
+) -> dict[str, list[dict[str, Any]]]:
+    """Build the five condition-aware answer-accuracy views."""
+    views = _empty_report_views()
+    if not predictions:
+        return views
 
-    # 1. One row per context condition.
+    views["overall"].append(
+        _answer_accuracy_for_subset("overall", predictions, judgments)
+    )
+
     conditions = sorted({row["eval_mode"] for row in predictions})
     for condition in conditions:
-        selected = [row for row in predictions if row["eval_mode"] == condition]
-        rows.append(
+        condition_rows = [row for row in predictions if row["eval_mode"] == condition]
+        views["by_condition"].append(
             _answer_accuracy_for_subset(
-                "condition", selected, judgments, eval_mode=condition
+                "condition", condition_rows, judgments, eval_mode=condition
             )
         )
 
-    # 2. One row per FinanceBench generation method/question type.
-    question_types = sorted({row["question_type"] for row in predictions})
-    for question_type in question_types:
-        selected = [
-            row for row in predictions if row["question_type"] == question_type
-        ]
-        rows.append(
-            _answer_accuracy_for_subset(
-                "generation_method",
-                selected,
-                judgments,
-                question_type=question_type,
-            )
-        )
-
-    # 3. A multi-skill prediction contributes once to each of its skills.
-    skills = sorted(
-        {skill for row in predictions for skill in row["cognitive_skills"]}
-    )
-    for skill in skills:
-        selected = [row for row in predictions if skill in row["cognitive_skills"]]
-        rows.append(
-            _answer_accuracy_for_subset(
-                "cognitive_skill", selected, judgments, cognitive_skill=skill
-            )
-        )
-
-    # 4. One row per generation-method/cognitive-skill combination.
-    for question_type in question_types:
-        for skill in skills:
+        question_types = sorted({row["question_type"] for row in condition_rows})
+        for question_type in question_types:
             selected = [
-                row
-                for row in predictions
-                if row["question_type"] == question_type
-                and skill in row["cognitive_skills"]
+                row for row in condition_rows if row["question_type"] == question_type
             ]
-            if selected:
-                rows.append(
-                    _answer_accuracy_for_subset(
-                        "cross_tab",
-                        selected,
-                        judgments,
-                        question_type=question_type,
-                        cognitive_skill=skill,
-                    )
+            views["by_generation_method"].append(
+                _answer_accuracy_for_subset(
+                    "generation_method",
+                    selected,
+                    judgments,
+                    eval_mode=condition,
+                    question_type=question_type,
                 )
-    return rows
+            )
+
+        skills = sorted(
+            {skill for row in condition_rows for skill in row["cognitive_skills"]}
+        )
+        for skill in skills:
+            selected = [row for row in condition_rows if skill in row["cognitive_skills"]]
+            views["by_cognitive_skill"].append(
+                _answer_accuracy_for_subset(
+                    "cognitive_skill",
+                    selected,
+                    judgments,
+                    eval_mode=condition,
+                    cognitive_skill=skill,
+                )
+            )
+
+        for question_type in question_types:
+            for skill in skills:
+                selected = [
+                    row
+                    for row in condition_rows
+                    if row["question_type"] == question_type
+                    and skill in row["cognitive_skills"]
+                ]
+                if selected:
+                    views["cross_tab"].append(
+                        _answer_accuracy_for_subset(
+                            "cross_tab",
+                            selected,
+                            judgments,
+                            eval_mode=condition,
+                            question_type=question_type,
+                            cognitive_skill=skill,
+                        )
+                    )
+    return views
 
 
 def write_report(run_dir: str | Path) -> dict[str, Any]:
-    """Write overall and segmented summaries from one run's saved attempts."""
+    """Calculate one run's report data, then write its JSON and workbook."""
     run_path = Path(run_dir)
     latest_predictions = _latest_rows_by_job_id(run_path / "predictions.jsonl")
     latest_errors = _latest_rows_by_job_id(run_path / "errors.jsonl")
     latest_judgments = _latest_rows_by_job_id(run_path / "judgments.jsonl")
+
     terminal_predictions = list(latest_predictions.values())
     successful_predictions = [
-        row for row in latest_predictions.values() if row.get("status") == "success"
+        row for row in terminal_predictions if row.get("status") == "success"
     ]
     did_not_fit_predictions = [
-        row for row in latest_predictions.values() if row.get("status") == "did_not_fit"
+        row for row in terminal_predictions if row.get("status") == "did_not_fit"
     ]
-
-    predictions_table = pd.DataFrame(successful_predictions)
-    skill_predictions_table = pd.DataFrame(
-        _expand_by_cognitive_skill(successful_predictions)
-    )
-    report_rows: list[dict[str, Any]] = []
-
-    if not predictions_table.empty:
-        # 1. Overall: all successful predictions in one group.
-        report_rows.append(_average_retrieval_metrics("overall", predictions_table))
-
-        # 2. Condition: one group for each context condition.
-        for eval_mode, rows in predictions_table.groupby("eval_mode", sort=True):
-            report_rows.append(
-                _average_retrieval_metrics("condition", rows, eval_mode=eval_mode)
-            )
-
-        # 3. Generation method: one group for each FinanceBench question type.
-        for question_type, rows in predictions_table.groupby("question_type", sort=True):
-            report_rows.append(
-                _average_retrieval_metrics(
-                    "generation_method", rows, question_type=question_type
-                )
-            )
-
-        # 4. Cognitive skill: one group per normalized skill. Multi-skill
-        # predictions intentionally appear in more than one group.
-        for skill, rows in skill_predictions_table.groupby("cognitive_skill", sort=True):
-            report_rows.append(
-                _average_retrieval_metrics("cognitive_skill", rows, cognitive_skill=skill)
-            )
-
-        # 5. Cross-tab: one group for every question-type/skill combination.
-        cross_tab_groups = skill_predictions_table.groupby(
-            ["question_type", "cognitive_skill"], sort=True
-        )
-        for (question_type, skill), rows in cross_tab_groups:
-            report_rows.append(
-                _average_retrieval_metrics(
-                    "cross_tab",
-                    rows,
-                    question_type=question_type,
-                    cognitive_skill=skill,
-                )
-            )
 
     snapshot = tomllib.loads((run_path / "config.toml").read_text(encoding="utf-8"))
     planned_jobs = snapshot["selection"]["limit"] * len(
@@ -236,25 +275,33 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     )
     attempted_job_ids = set(latest_predictions) | set(latest_errors)
     failed_job_ids = set(latest_errors) - set(latest_predictions)
+
     summary = {
-        "planned": planned_jobs,
-        "successful": len(successful_predictions),
-        "did_not_fit": len(did_not_fit_predictions),
-        "failed": len(failed_job_ids),
-        "missing": max(0, planned_jobs - len(attempted_job_ids)),
-        "complete": len(successful_predictions) + len(did_not_fit_predictions)
-        == planned_jobs,
-        "report_rows": report_rows,
-        "accuracy_rows": _answer_accuracy_rows(
+        "run_status": {
+            "planned": planned_jobs,
+            "successful": len(successful_predictions),
+            "did_not_fit": len(did_not_fit_predictions),
+            "failed": len(failed_job_ids),
+            "missing": max(0, planned_jobs - len(attempted_job_ids)),
+            "complete": (
+                len(successful_predictions) + len(did_not_fit_predictions)
+                == planned_jobs
+            ),
+        },
+        "answer_accuracy": _answer_accuracy_views(
             terminal_predictions, latest_judgments
         ),
+        "retrieval_metrics": _retrieval_metric_views(successful_predictions),
     }
-    (run_path / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    csv_rows = [
-        {"metric_family": "retrieval", **row} for row in report_rows
-    ] + [
-        {"metric_family": "answer_accuracy", **row}
-        for row in summary["accuracy_rows"]
-    ]
-    pd.DataFrame(csv_rows).to_csv(run_path / "summary.csv", index=False)
+
+    (run_path / "summary.json").write_text(
+        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+    )
+    write_report_workbook(run_path / "summary.xlsx", summary)
+
+    # Remove the previous design's CSV so one run folder cannot contain two
+    # conflicting human-readable report formats after regeneration.
+    old_csv = run_path / "summary.csv"
+    if old_csv.exists():
+        old_csv.unlink()
     return summary

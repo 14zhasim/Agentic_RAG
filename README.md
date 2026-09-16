@@ -156,7 +156,7 @@ results/<run-id>/
 ├── judgments.jsonl   completed two-pass answer judgments, when present
 ├── errors.jsonl      retryable generation or judge failures, when present
 ├── summary.json      machine-readable metrics and completion status
-└── summary.csv       spreadsheet-friendly segmented metrics
+└── summary.xlsx      formatted overview, answer and retrieval sheets
 ```
 
 To see all available options:

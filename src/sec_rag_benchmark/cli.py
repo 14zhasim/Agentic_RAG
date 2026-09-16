@@ -85,7 +85,9 @@ def main(argv: list[str] | None = None) -> int:
 
             case "report":
                 summary = write_report(args.run_dir)
-                print(f"Reported {summary['successful']} successful jobs")
+                print(
+                    f"Reported {summary['run_status']['successful']} successful jobs"
+                )
 
             case "judge":
                 config = load_config(args.config)

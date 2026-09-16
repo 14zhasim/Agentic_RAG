@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 
@@ -139,7 +140,7 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "config.toml").write_text(
-        "[selection]\nconditions=['single_store']\nlimit=1\n"
+        "[selection]\nconditions=['single_store', 'oracle']\nlimit=1\n"
     )
     prediction = {
         "job_id": "q1:single_store",
@@ -151,20 +152,40 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
         "page_precision": 0.5,
         "page_mrr": 1.0,
     }
-    (run_dir / "predictions.jsonl").write_text(json.dumps(prediction) + "\n")
+    oracle_prediction = {
+        **prediction,
+        "job_id": "q1:oracle",
+        "eval_mode": "oracle",
+        "page_recall": None,
+        "page_precision": None,
+        "page_mrr": None,
+    }
+    (run_dir / "predictions.jsonl").write_text(
+        json.dumps(prediction) + "\n" + json.dumps(oracle_prediction) + "\n"
+    )
+    (run_dir / "summary.csv").write_text("obsolete\n")
 
     report = write_report(run_dir)
-    skill_rows = [
-        row
-        for row in report["report_rows"]
-        if row["report_view"] == "cognitive_skill"
-    ]
+    skill_rows = report["retrieval_metrics"]["by_cognitive_skill"]
 
     assert {row["cognitive_skill"] for row in skill_rows} == {
         "information_extraction",
         "numerical_reasoning",
     }
     assert all(row["total_predictions"] == 1 for row in skill_rows)
+    assert all(row["eval_mode"] == "single_store" for row in skill_rows)
+    assert {
+        row["eval_mode"]
+        for row in report["answer_accuracy"]["by_generation_method"]
+    } == {"oracle", "single_store"}
+    assert not (run_dir / "summary.csv").exists()
+
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        workbook_xml = workbook.read("xl/workbook.xml").decode()
+    assert all(
+        name in workbook_xml
+        for name in ("Overview", "Answer accuracy", "Retrieval metrics")
+    )
 
 
 def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
@@ -287,11 +308,8 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     assert prediction["requested_model"] == "z-ai/glm-5.3-flash"
     assert prediction["cost"] is None
     report = write_report(run_dir)
-    assert report["complete"] is True
-    overall = next(row for row in report["report_rows"] if row["report_view"] == "overall")
-    assert overall["total_predictions"] == 2
-    assert overall["page_recall"] is None
-    assert overall["page_recall_sample_size"] == 0
+    assert report["run_status"]["complete"] is True
+    assert report["retrieval_metrics"]["overall"] == []
 
 
 def test_runner_resume_skips_did_not_fit(sample):
@@ -329,8 +347,8 @@ def test_runner_resume_skips_did_not_fit(sample):
     assert not (run_dir / "errors.jsonl").exists()
 
     report = write_report(run_dir)
-    assert report["did_not_fit"] == 1
-    assert report["complete"] is True
+    assert report["run_status"]["did_not_fit"] == 1
+    assert report["run_status"]["complete"] is True
 
 
 def test_cli_prepare_validate_and_no_spend_dry_run(sample, tmp_path, capsys, monkeypatch):

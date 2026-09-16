@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 
@@ -208,9 +209,7 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
     )
 
     summary = write_report(run_dir)
-    overall = next(
-        row for row in summary["accuracy_rows"] if row["report_view"] == "overall"
-    )
+    overall = summary["answer_accuracy"]["overall"][0]
     assert overall == {
         "report_view": "overall",
         "total_predictions": 4,
@@ -222,11 +221,27 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
         "accuracy_including_did_not_fit": 0.5,
     }
     numerical = next(
-        row
-        for row in summary["accuracy_rows"]
-        if row.get("cognitive_skill") == "numerical_reasoning"
+        row for row in summary["answer_accuracy"]["by_cognitive_skill"]
+        if row["cognitive_skill"] == "numerical_reasoning"
     )
     assert numerical["did_not_fit"] == 1
+    assert numerical["eval_mode"] == "oracle"
+    for view in ("by_generation_method", "by_cognitive_skill", "cross_tab"):
+        assert all(
+            row["eval_mode"] == "oracle"
+            for row in summary["answer_accuracy"][view]
+        )
+    assert summary["retrieval_metrics"] == {
+        "overall": [],
+        "by_condition": [],
+        "by_generation_method": [],
+        "by_cognitive_skill": [],
+        "cross_tab": [],
+    }
+
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        shared_strings = workbook.read("xl/sharedStrings.xml").decode()
+    assert "No applicable retrieval results." in shared_strings
 
 
 def test_cli_judge_delegates_without_creating_a_real_client(

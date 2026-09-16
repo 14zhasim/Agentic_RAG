@@ -80,7 +80,7 @@ kept in `pyproject.toml`.
 ```bash
 uv init --package --python 3.12 --name sec-rag-benchmark --build-backend uv
 uv add "openai==3.8.0" "pandas==3.0.5" "pymupdf==1.28.2" \
-  "transformers==5.17.0" "jinja2==3.1.6"
+  "transformers==5.17.0" "jinja2==3.1.6" "xlsxwriter==3.2.9"
 uv add --dev "pytest==9.1.1"
 uv lock
 uv sync
@@ -97,7 +97,8 @@ creates or updates the local virtual environment.
 | OpenAI SDK | OpenRouter generation now; Azure DeepSeek judge next | OpenRouter uses Responses; the separate Foundry client uses Chat Completions |
 | Transformers + Jinja2 | GLM tokenizer and its chat-template renderer | Counts the formatted prompt before sending it |
 | PyMuPDF | PDF page count and text extraction | Conditions and validation operate on physical pages |
-| pandas | Grouping and CSV report output | Reporting is tabular; preparation remains plain JSON |
+| pandas | Build grouped report rows | Reporting calculations are tabular; preparation remains plain JSON |
+| XlsxWriter | Render the formatted `summary.xlsx` workbook | It supports separate sheets, section bands and explicit cell formats |
 | pytest | Automated checks | Validates the golden path without paid requests |
 
 LangChain, Chroma, Azure-specific libraries, and a vector database are not installed
@@ -163,7 +164,8 @@ src/sec_rag_benchmark/
 ├── conditions.py                  dispatch to five condition builders
 ├── generation.py                  prompt and OpenRouter request
 ├── metrics.py                     score one job and normalize skill labels
-├── reporting.py                   aggregate saved jobs into reports
+├── reporting.py                   calculate nested report data and write JSON
+├── report_workbook.py              render the report data as a workbook
 ├── execution/
 │   ├── preflight.py               no-spend condition and token checks
 │   ├── job.py                     execute one question-condition pair
@@ -181,6 +183,7 @@ flowchart LR
     CLI --> PREFLIGHT[execution/preflight.py]
     CLI --> RUN[execution/runner.py]
     CLI --> REPORT[reporting.py]
+    REPORT --> BOOK[report_workbook.py]
     CONFIG --> COND[conditions.py constants]
     PREFLIGHT --> DATA
     PREFLIGHT --> COND
@@ -194,6 +197,7 @@ flowchart LR
     DATA --> PDF
     GEN --> OR[OpenRouter via OpenAI SDK]
     REPORT --> PD[pandas]
+    BOOK --> XLSX[XlsxWriter]
 ```
 
 
@@ -1054,13 +1058,14 @@ of mixing incompatible results.
 
 ## 11. Reporting and result artifacts
 
-Read `src/sec_rag_benchmark/reporting.py` now that the saved
-prediction and error rows from `execution/runner.py` are familiar. This file contains only
-run-level aggregation: read `write_report()` first, then
-`_average_retrieval_metrics()`, which performs the repeated averaging for one
-subset.
-Continue with `test_runner_checkpoints_resumes_and_reports()` and
-`test_report_places_multi_skill_prediction_in_each_skill_view()`.
+This section describes the implemented nested JSON and workbook reports. The
+previous flat `summary.json` and wide `summary.csv` have been replaced.
+
+Read `src/sec_rag_benchmark/reporting.py` first. Its public
+`write_report()` calculates report data and writes `summary.json`. Then read
+`src/sec_rag_benchmark/report_workbook.py`, whose public workbook writer will
+turn that same data into `summary.xlsx`. This separation keeps calculations in
+one place and spreadsheet formatting in another.
 
 ### Purpose and input
 
@@ -1073,18 +1078,23 @@ contrast, `write_report()` reads all saved jobs and answers questions such as
 {"job_id":"q1:single_store","status":"success","eval_mode":"single_store","question_type":"calculated","cognitive_skills":["information_extraction","numerical_reasoning"],"page_recall":1.0,"page_precision":0.5,"page_mrr":1.0}
 ```
 
-The helper breakdown keeps the five report views visible in the public
-function while extracting the two data-preparation stages:
+The calculation path will remain visible in the public function:
 
 ```text
 write_report()
 ├── _latest_rows_by_job_id() for predictions
 ├── _latest_rows_by_job_id() for errors
 ├── _latest_rows_by_job_id() for judgments
-├── _expand_by_cognitive_skill()
-├── _average_retrieval_metrics() for each retrieval group
-├── _answer_accuracy_rows()
-└── _answer_accuracy_for_subset() for each accuracy group
+├── _retrieval_metric_views()
+│   ├── _expand_by_cognitive_skill()
+│   └── _average_retrieval_metrics()
+├── _answer_accuracy_views()
+│   └── _answer_accuracy_for_subset()
+├── write nested summary.json
+└── report_workbook.write_report_workbook()
+    ├── _write_metric_sheet()
+    ├── _write_table()
+    └── _write_condition_sections()
 ```
 
 ### `write_report()` pseudocode
@@ -1103,20 +1113,21 @@ keep successful predictions
 predictions table = one row per successful prediction
 skill table = _expand_by_cognitive_skill(successful predictions)
 
-summarize all successful predictions
-summarize each condition
-summarize each generation method
-summarize each cognitive skill
-summarize each generation-method/cognitive-skill combination
+for answer accuracy:
+    summarize all predictions
+    summarize each condition
+    within each condition, summarize each generation method
+    within each condition, summarize each cognitive skill
+    within each condition, summarize each method/skill combination
 
-join judgments to predictions by job_id
-for the same five report views:
-    count agreed judgments, disagreements, unjudged and did_not_fit
-    calculate accuracy excluding did_not_fit
-    calculate accuracy including did_not_fit as incorrect
+for retrieval metrics:
+    keep only single_store and shared_store predictions
+    create the same five summaries
 
 count planned, successful, failed and missing jobs
-write summary.json and summary.csv
+write nested summary.json
+render summary.xlsx from the same summary data
+remove an obsolete summary.csv left by an earlier report run
 return the summary
 ```
 
@@ -1137,29 +1148,21 @@ _expand_by_cognitive_skill(predictions):
 
 ```mermaid
 flowchart TD
-    A[predictions.jsonl attempts] --> B[latest_prediction_by_job_id]
-    B --> C[successful_predictions]
-    C --> D[predictions_table: one row per successful job]
-    C --> E[predictions_by_skill: copy multi-skill jobs once per skill]
-    E --> F[skill_predictions_table]
-    D --> G[Overall view]
-    D --> H[Condition groups]
-    D --> I[Generation-method groups]
-    F --> J[Cognitive-skill groups]
-    F --> K[Method-and-skill cross-tabs]
-    G --> L[_average_retrieval_metrics]
-    H --> L
-    I --> L
-    J --> L
-    K --> L
-    L --> M[report_rows]
-    B --> P[all terminal predictions]
-    Q[judgments.jsonl] --> R[_answer_accuracy_rows]
-    P --> R
-    R --> N[summary.json]
-    R --> O[summary.csv]
-    M --> N
-    M --> O
+    A[predictions.jsonl] --> B[latest result per job]
+    J[judgments.jsonl] --> C[latest judgment per job]
+    E[errors.jsonl] --> D[latest error per job]
+    B --> P[prediction and skill tables]
+    C --> Q[answer-accuracy summaries]
+    P --> Q
+    P --> R[retrieval summaries: retrieval conditions only]
+    B --> S[run-status counts]
+    D --> S
+    Q --> N[nested summary dictionary]
+    R --> N
+    S --> N
+    N --> JSON[summary.json]
+    N --> BOOK[report_workbook.py]
+    BOOK --> XLSX[summary.xlsx: three sheets]
 ```
 
 ### The important data states
@@ -1199,9 +1202,14 @@ field identifies which question that row answers:
 
 - `overall`: every successful prediction together;
 - `condition`: one subset per `eval_mode`, such as `single_store`;
-- `generation_method`: one subset per FinanceBench `question_type`;
-- `cognitive_skill`: one subset per normalized cognitive skill;
-- `cross_tab`: one subset per `question_type`/cognitive-skill combination.
+- `generation_method`: one subset per condition and FinanceBench
+  `question_type`;
+- `cognitive_skill`: one subset per condition and normalized cognitive skill;
+- `cross_tab`: one subset per condition, `question_type` and cognitive skill.
+
+Condition is deliberately retained on the last three views. This lets a reader
+compare, for example, calculated questions under `oracle` separately from
+calculated questions under `closed_book`.
 
 Each numbered block in the Python selects the rows for one view and passes that
 concrete subset to `_average_retrieval_metrics()`. For example, the condition
@@ -1239,12 +1247,60 @@ RETURN one summary row
 
 For example, the condition block calls it with the `single_store` DataFrame,
 `report_view="condition"`, and `eval_mode="single_store"`. The helper creates
-one dictionary and appends it to `report_rows`.
+one dictionary for the relevant list inside `retrieval_metrics`.
 
 `total_predictions` counts every answer in the subset. Each separate
 `<metric>_sample_size` counts only rows where that retrieval metric applies.
-An oracle summary can therefore contain 112 predictions but have a page-recall
-sample size of zero. Skill views overlap when a question has multiple labels.
+Retrieval summaries do not contain oracle, closed-book or long-context rows at
+all because those conditions did not retrieve anything. Skill views overlap
+when a question has multiple labels.
+
+### Machine-readable `summary.json`
+
+The JSON separates run status and the two metric families instead of mixing
+unrelated columns in one list:
+
+```json
+{
+  "run_status": {},
+  "answer_accuracy": {
+    "overall": [],
+    "by_condition": [],
+    "by_generation_method": [],
+    "by_cognitive_skill": [],
+    "cross_tab": []
+  },
+  "retrieval_metrics": {
+    "overall": [],
+    "by_condition": [],
+    "by_generation_method": [],
+    "by_cognitive_skill": [],
+    "cross_tab": []
+  }
+}
+```
+
+For an oracle-only run, every retrieval array is empty. The answer-accuracy
+arrays remain populated.
+
+### Human-readable `summary.xlsx`
+
+`report_workbook.py` renders three sheets:
+
+1. `Overview`: planned, successful, failed, missing, `did_not_fit`, completion
+   and overall answer accuracy.
+2. `Answer accuracy`: Overall, By condition, By generation method within
+   condition, By cognitive skill within condition, and Cross-tab within
+   condition.
+3. `Retrieval metrics`: the same five tables for `single_store` and
+   `shared_store` only.
+
+Detailed tables use a condition header band followed by indented detail rows.
+The condition is not repeated on every row, and cells are not merged. Counts
+are integers; accuracy, recall, precision and MRR use percentage formatting.
+The cognitive-skill tables state that multi-label sample sizes are not
+additive. If a run has no retrieval conditions, the retrieval sheet says
+`No applicable retrieval results.` Charts are intentionally omitted.
 
 ```text
 results/<run-id>/
@@ -1253,7 +1309,7 @@ results/<run-id>/
 ├── judgments.jsonl   append-only completed two-pass judgments
 ├── errors.jsonl      append-only retryable generation or judge failures
 ├── summary.json      machine-readable report and completion status
-└── summary.csv       spreadsheet-friendly grouped metrics
+└── summary.xlsx      three-sheet human-readable report
 ```
 
 ### Azure binary answer judge
@@ -1350,7 +1406,8 @@ In compact form:
 ```
 
 `manual_review` is created by `_combine_verdicts()`; it is not returned by
-Azure. In the report, `summary.json → accuracy_rows → disagreements`
+Azure. In the report,
+`summary.json → answer_accuracy → <report view> → disagreements`
 counts these conflicting two-pass judgments.
 
 ```mermaid
@@ -1602,7 +1659,7 @@ uv run sec-rag-benchmark run \
   --run-dir results/20260913-143052
 ```
 
-After generation, create or refresh `summary.json` and `summary.csv`. Reporting
+After generation, create or refresh `summary.json` and `summary.xlsx`. Reporting
 reads saved files and does not call an LLM. Replace the example timestamp below
 with the directory printed by your run:
 
@@ -1633,7 +1690,12 @@ instructions are in `Azure Judge Setup.md` beside this guide.
 | Each named condition builder returns the shared result shape | `test_all_conditions_and_retrieval_scopes` |
 | Single-store and shared-store pass distinct scopes to the shared retrieval builder | `test_all_conditions_and_retrieval_scopes` |
 | Document-aware recall/precision and chunk-rank MRR | `test_metrics_use_document_aware_unique_pages_and_chunk_rank` |
-| Aggregation in `reporting.py` writes the expected summary | `test_report_places_multi_skill_prediction_in_each_skill_view` and `test_runner_checkpoints_resumes_and_reports` |
+| Nested JSON contains five condition-aware views for each metric family | `test_report_places_multi_skill_prediction_in_each_skill_view` and `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
+| Retrieval reports exclude conditions that did not retrieve | `test_report_places_multi_skill_prediction_in_each_skill_view` |
+| Workbook contains Overview, Answer accuracy and Retrieval metrics sheets | `test_report_places_multi_skill_prediction_in_each_skill_view` |
+| Oracle-only workbook explains that retrieval results do not apply | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
+| Multi-label skill reporting remains non-additive | `test_report_places_multi_skill_prediction_in_each_skill_view` |
+| Rerunning a report removes obsolete `summary.csv` | `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Record requested/returned model, provider, usage, latency and cost without paid call | `test_generation_pins_provider_without_real_api_call` |
 | Preserve evidence and human justification for later judging | `test_runner_checkpoints_resumes_and_reports` |
 | Append checkpoints, resume, and report | `test_runner_checkpoints_resumes_and_reports` |
@@ -1692,7 +1754,9 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `generation.py` separates capacity checking, client construction and response
   parsing;
 - `metrics.py` contains per-job calculations only;
-- `reporting.py` owns latest-attempt selection, skill expansion and aggregation;
+- `reporting.py` owns latest-attempt selection, skill expansion and the nested
+  report calculations;
+- `report_workbook.py` owns workbook layout and formatting only;
 - `execution/preflight.py` owns the no-spend `dry_run()` path;
 - `execution/job.py` owns `execute_job()` for one question-condition pair;
 - `execution/runner.py` owns the complete `run_benchmark()` workflow and
@@ -1700,9 +1764,9 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `cli.py` defines arguments inside `main()` and uses `match/case` to make each
   terminal route visible.
 
-The public commands, arguments, result artifacts and metric definitions remain
-unchanged. The implemented refactor added focused tests for configuration
-loading and the runner's no-spend dry-run boundary.
+The public commands and metric definitions remain unchanged. Reporting now
+writes nested `summary.json` data and a three-sheet `summary.xlsx` instead of
+the former wide CSV.
 
 ### Execution subpackage implemented
 
@@ -1713,12 +1777,12 @@ optional question limit. No command, result file or benchmark calculation
 changed.
 
 The code-reading route is integrated into sections 2 and 5–12. Section 11 now
-contains the approved design for the next unimplemented slice: terminal
-`did_not_fit` outcomes and separately persisted Azure binary judgments.
+describes the implemented terminal `did_not_fit` outcomes, separately persisted
+Azure binary judgments, nested summaries and workbook renderer.
 
-The metrics/runner reconciliation is now implemented: deterministic numeric
-answer scoring has been removed from `metrics.py`, prediction rows, reports, and
-tests. Final-answer accuracy remains absent until the approved judge slice.
+The metrics/runner reconciliation is implemented: deterministic numeric answer
+scoring has been removed, and the separate judge supplies binary answer
+accuracy for reporting.
 
 ### Guide-to-code comment map
 
@@ -1740,7 +1804,9 @@ reader needs design context:
 - `metrics.py` comments explain unique document-aware pages, chunk-ranked MRR,
   and per-job cognitive-skill normalization;
 - `reporting.py` comments explain multi-label segmentation and per-metric
-  denominators;
+  denominators and follow the five nested views in this section;
+- `report_workbook.py` comments distinguish ordinary tables from condition
+  header bands and keep workbook formatting separate from metric calculation;
 - `cli.py` comments distinguish data preparation, no-spend preflight, generation,
   and report-only orchestration.
 
