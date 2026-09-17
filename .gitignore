@@ -10,3 +10,6 @@ EOF
 AGENTS.md
 CLAUDE.md
 /results/
+# Local offline library documentation (regenerate: bash scripts/fetch_library_docs.sh)
+docs/libraries/*
+!docs/libraries/SKILL.md
