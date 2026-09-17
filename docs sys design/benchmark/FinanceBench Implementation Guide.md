@@ -366,6 +366,24 @@ judge calls complete:
 `manual_review` is `True` when they disagree. A `did_not_fit` prediction has no
 candidate answer, so it is not sent to the judge.
 
+### Manual-review row
+
+When the two passes disagree, the latest validated human decision can resolve
+the answer without changing the judgment row:
+
+```python
+{
+    "job_id": "<config-hash>:q1:oracle",
+    "human_accuracy": 1,
+    "review_reason": "Equivalent value and units.",  # optional
+    "reviewer": "author",
+    "reviewed_at": "2026-09-17T14:30:00+01:00"
+}
+```
+
+`manual_reviews.jsonl` is append-only. A later correction adds another row
+with the same `job_id`; reporting uses the latest valid row.
+
 ### Failure-analysis row
 
 Reporting joins each retrieval-condition result to the oracle result for the
@@ -413,10 +431,12 @@ selected group of predictions:
     "report_view": "condition",
     "eval_mode": "oracle",
     "total_predictions": 112,
-    "agreed_judgments": 105,
-    "disagreements": 4,
+    "scored_answers": 109,
+    "correct_answers": 94,
+    "unresolved": 2,
     "unjudged": 2,
     "did_not_fit": 1,
+    "review_complete": False,
     "accuracy_excluding_did_not_fit": 0.86,
     "accuracy_including_did_not_fit": 0.85,
 }
@@ -1302,16 +1322,177 @@ whether an answer was correct.
 
 #### 2. Answer accuracy
 
-For each generated answer, the two judge passes produce one reporting state:
+For each generated answer, the two judge passes first produce one automated
+state:
 
 - `correct`: both passes return `1`;
 - `incorrect`: both passes return `0`;
-- `judge_disagreement`: the passes differ, so accuracy is `null`;
+- `judge_disagreement`: the passes differ, so automated accuracy is `null`;
 - `unjudged`: no completed judgment exists;
 - `did_not_fit`: there is no candidate answer to judge.
 
-The Answer accuracy sheet reports accuracy including and excluding
-`did_not_fit`, plus separate disagreement and unjudged counts.
+A disagreement can then be resolved by the latest validated human decision in
+`manual_reviews.jsonl`. The final Answer accuracy sheet uses agreed automated
+verdicts plus those manual decisions. It reports unresolved disagreements and
+accuracy including and excluding `did_not_fit`, but does not split headline
+accuracy by decision source. Provenance remains in the source JSONL files.
+
+### Manual adjudication of judge disagreements
+
+`src/sec_rag_benchmark/manual_review.py` exposes two complete operations:
+
+```text
+export_manual_review(run_dir)
+    read the latest predictions, judgments and existing manual reviews
+    select only genuine two-pass disagreements
+    write one editable row per disagreement to manual_review.csv
+
+import_manual_review(run_dir)
+    read and validate the complete manual_review.csv
+    append completed decisions to manual_reviews.jsonl
+    skip unchanged decisions and leave blank rows unresolved
+```
+
+The CLI delegates to them through:
+
+```bash
+uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
+uv run sec-rag-benchmark import-manual-review --run-dir results/<run-id>
+```
+
+The exported columns are ordered for human review:
+
+```text
+job_id, financebench_id, eval_mode, question,
+gold_answer, gold_evidence, human_justification, model_answer,
+reference_first_verdict, reference_first_reason,
+candidate_first_verdict, candidate_first_reason,
+human_accuracy, review_reason
+```
+
+When a prediction has several evidence objects, export combines them into one
+readable `gold_evidence` cell while preserving each document name,
+zero-indexed page number and evidence text.
+
+Only `human_accuracy` and `review_reason` are editable. A completed row needs
+`human_accuracy` equal to `0` or `1`; `review_reason` is optional. Import adds
+`reviewer="author"` and `reviewed_at` automatically. It rejects unknown or
+duplicate job IDs and reviews of agreed or `did_not_fit` jobs. The complete CSV
+is validated before anything is written. Reimporting an unchanged decision is
+a no-op; changing it appends a corrected decision, and the latest valid row
+wins.
+
+Final accuracy resolves each prediction once:
+
+```text
+agreed judge passes
+→ use automated accuracy
+
+disputed judge passes + manual review
+→ use human_accuracy
+
+disputed judge passes + no manual review
+→ unresolved; final accuracy is null
+
+did_not_fit
+→ keep as a separate terminal outcome
+```
+
+Tests cover disagreement-only export, evidence preservation, partial imports,
+invalid values and job IDs, all-or-nothing validation, unchanged reimports,
+corrected append-only decisions, latest-row resolution, combined accuracy and
+the existing condition/skill segmentations. They use saved records and make no
+model requests.
+
+#### Slice 1: export and import manual decisions
+
+This slice makes the review workflow runnable without changing calculated
+accuracy yet.
+
+Files and reading order:
+
+```text
+tests/test_manual_review.py
+→ manual_review.export_manual_review()
+    → _latest_rows_by_job_id(), _disagreement_passes(), _format_evidence()
+→ manual_review.import_manual_review()
+    → _read_review_csv(), _disagreement_passes(), _append_reviews()
+→ cli.main() command delegation
+```
+
+- [x] Write failing tests for disagreement-only export, stable CSV order,
+      evidence formatting, existing-decision prefill, partial import,
+      all-or-nothing validation, unchanged reimport and corrected append.
+- [x] Run `uv run pytest tests/test_manual_review.py -q` and confirm the new
+      module or behaviour is missing.
+- [x] Create `src/sec_rag_benchmark/manual_review.py` with the two public
+      operations and meaningful helpers shown above.
+- [x] Add `export-manual-review --run-dir ... [--overwrite]` and
+      `import-manual-review --run-dir ...` to `cli.main()`.
+- [x] Run:
+      ```bash
+      uv run pytest tests/test_manual_review.py -q
+      uv run pytest tests/test_judge.py tests/test_golden_path.py -q
+      uv lock --check
+      git diff --check
+      ```
+- [x] Reconcile this section with the actual functions, comments and tests,
+      then present the uncommitted diff for review.
+- [ ] After approval, commit the slice as
+      `feat: add manual judgment review workflow`.
+
+Comments in this slice explain why automated judgments are preserved, why the
+complete CSV is validated before writing, and why corrections append instead
+of replacing history. They do not narrate ordinary CSV or Python syntax.
+The focused suite contains nine tests; 30 judge/golden-path regressions also
+pass. A no-API export against the completed baseline produced the expected 61
+rows with no pre-existing manual decisions.
+
+#### Slice 2: use reviewed decisions in final reporting
+
+This slice makes the existing report and failure analysis consume the resolved
+answer outcome.
+
+Files and reading order:
+
+```text
+tests/test_judge.py and tests/test_failure_analysis.py
+→ reporting._resolve_judgments()
+→ reporting._answer_accuracy_for_subset()
+→ reporting.write_report()
+→ failure_analysis.build_failure_analysis()
+→ report_workbook.write_report_workbook()
+→ tests/test_golden_path.py
+```
+
+- [ ] Write failing tests showing that agreed judgments remain authoritative,
+      reviewed disagreements become scored, unreviewed disagreements remain
+      unresolved, and manual decisions enable failure classification.
+- [ ] Run the focused tests and confirm they fail against automated-only
+      reporting.
+- [ ] Add `_resolve_judgments()` to create an in-memory resolved copy without
+      modifying `judgments.jsonl`.
+- [ ] Change the accuracy rows and workbook columns to `scored_answers`,
+      `correct_answers`, `unresolved`, `unjudged`, `did_not_fit`,
+      `review_complete`, and the two existing accuracy values.
+- [ ] Pass the same resolved judgments into failure analysis.
+- [ ] Run:
+      ```bash
+      uv run pytest tests/test_judge.py tests/test_failure_analysis.py tests/test_golden_path.py -q
+      uv run pytest -q
+      uv lock --check
+      git diff --check
+      ```
+- [ ] Reconcile this section and its diagrams with the as-built code, then
+      present the uncommitted diff for review.
+- [ ] After approval, commit the slice as
+      `feat: report manually resolved answer accuracy`.
+
+The complete feature is accepted when the current 61 disagreements export as
+61 rows, partial reviews remain resumable, invalid input writes nothing, the
+report contains one final accuracy view, resolved disputes feed failure
+analysis, and a fully reviewed baseline has zero unresolved answers across all
+336 predictions.
 
 #### 3. Retrieval metrics
 
@@ -1335,8 +1516,10 @@ write_report()
 ├── _latest_rows_by_job_id() for predictions
 ├── _latest_rows_by_job_id() for errors
 ├── _latest_rows_by_job_id() for judgments
+├── _latest_rows_by_job_id() for manual reviews
 ├── calculate execution-status counts
-├── _answer_accuracy_views()
+├── resolve agreed judgments and manual decisions
+├── _answer_accuracy_views() for final accuracy
 │   └── _answer_accuracy_for_subset()
 ├── _retrieval_metric_views()
 │   ├── _expand_by_cognitive_skill()
@@ -1358,6 +1541,7 @@ write_report()
 INPUT:
     predictions.jsonl
     judgments.jsonl
+    manual_reviews.jsonl, when present
     errors.jsonl
     run configuration
 
@@ -1374,6 +1558,9 @@ predictions table = one row per successful prediction
 skill table = _expand_by_cognitive_skill(successful predictions)
 
 for answer accuracy:
+    use agreed automated judgments directly
+    use the latest manual review for a disputed judgment
+    leave an unreviewed disagreement unresolved
     summarize all predictions
     summarize each condition
     within each condition, summarize each generation method
@@ -1420,9 +1607,11 @@ _expand_by_cognitive_skill(predictions):
 flowchart TD
     A[predictions.jsonl] --> B[latest result per job]
     J[judgments.jsonl] --> C[latest judgment per job]
+    M[manual_reviews.jsonl] --> H[latest human decision per disputed job]
     E[errors.jsonl] --> D[latest error per job]
     B --> P[prediction and skill tables]
-    C --> Q[answer-accuracy summaries]
+    C --> Q[resolve final accuracy]
+    H --> Q
     P --> Q
     P --> R[retrieval summaries: retrieval conditions only]
     B --> F[match retrieval and oracle by question]
@@ -1690,7 +1879,12 @@ states and metrics in one list:
 ```
 
 For an oracle-only run, every retrieval array is empty. The answer-accuracy
-arrays remain populated. `failure_analysis.methodology` records the same
+arrays remain populated with final resolved accuracy. Each row includes
+`scored_answers`, `correct_answers`, `unresolved`, `did_not_fit` and
+`review_complete`, alongside accuracy including and excluding `did_not_fit`.
+`review_complete` is true only when the group contains neither an unresolved
+disagreement nor an unjudged answer.
+`failure_analysis.methodology` records the same
 category definitions displayed in the workbook, so downstream readers can
 interpret the counts without relying on undocumented code.
 
@@ -1701,9 +1895,9 @@ first sheet:
 
 1. `Overview`: experiment, variant, planned, successful, failed, missing,
    `did_not_fit`, completion and overall answer accuracy.
-2. `Answer accuracy`: Overall, By condition, By generation method within
-   condition, By cognitive skill within condition, and Cross-tab within
-   condition.
+2. `Answer accuracy`: final combined accuracy Overall, By condition, By
+   generation method within condition, By cognitive skill within condition,
+   and Cross-tab within condition.
 3. `Retrieval metrics`: the same five tables for `single_store` and
    `shared_store` only.
 4. `Failure analysis`: a visible category legend, failure counts by condition,
@@ -1722,6 +1916,8 @@ results/<timestamp>--<experiment>--<variant>/
 ├── config.toml        effective public run configuration
 ├── predictions.jsonl append-only success and did_not_fit outcomes
 ├── judgments.jsonl   append-only completed two-pass judgments
+├── manual_review.csv editable export of disputed judgments
+├── manual_reviews.jsonl append-only validated human decisions
 ├── errors.jsonl      append-only retryable generation or judge failures
 ├── failure_analysis.jsonl one auditable diagnosis per analysed question-condition
 ├── summary.json      machine-readable report and completion status

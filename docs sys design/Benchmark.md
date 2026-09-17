@@ -148,6 +148,16 @@ Develop testing set pipeline:
   - before the full benchmark, validate the judge against 30 published FinanceBench human-labelled answers: 15 correct, 10 incorrect and 5 refusals, using 30 unique questions, all three `question_type` categories, multiple published model/condition files and a fixed seed
   - require at least 27/30 (90%) agreement with the human labels; count a two-pass disagreement as a failed match, report the three label groups separately and manually inspect every mismatch
   - reproduce the validation source by cloning the official FinanceBench repository at commit `cc39aeb4afdf33909ee1412188bf89035950c2eb`, while keeping the clone ignored by this repository
+  - manually adjudicate every two-pass disagreement: export the disputed answers to `manual_review.csv`, record `human_accuracy` as 0 or 1 with an optional reason, then import the validated decisions into the separate append-only `manual_reviews.jsonl`
+  - use an agreed automated verdict when the judge passes agree, otherwise use the latest manual verdict; leave unreviewed disagreements unresolved and never overwrite `judgments.jsonl`
+  - the final report presents this resolved accuracy without splitting its headline results by automated versus human source; the source JSONL files retain the audit trail
+  - the operational flow is:
+    ```text
+    export-manual-review
+    → complete human_accuracy in manual_review.csv
+    → import-manual-review
+    → rerun report
+    ```
   - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
@@ -160,18 +170,22 @@ Develop a validation set pipeline (for purpose of debugging pipeline works):
   - pattern: 22 metrics-generated, 22 domain-relevant and 6 novel-generated
 - record the subset name and exact selected `financebench_id` values in each run configuration; HiREC validation subsets remain deferred until HiREC is implemented
 
-How to classify (automatic first pass from saved results, hand-label only a sample):
-- oracle correct, retrieval condition wrong → retrieval failure
-  - page recall = 0 in shared_store but > 0 in single_store → wrong document
-  - right document but page recall = 0 → wrong section/chunk
-  - page recall > 0 but < 1 → insufficient recall
-- oracle wrong → reasoning or generation failure (retrieval is not the cause)
-- did_not_fit → context-limit outcome, kept separate from all three
-- sub-types (e.g. arithmetic vs hallucination, missed table) → hand-label a small sample only, using the judge's reason plus the question's cognitive skill label
+Benchmark reporting produces four separate analyses:
 
-How to classify pipeline outcomes involving failure diagnosis
+1. **Execution status** — whether every planned job succeeded, did not fit, failed
+   or is missing.
+2. **Final answer accuracy** — the combined automated and manually adjudicated
+   correctness statistics, including unresolved and unjudged counts.
+3. **Retrieval quality** — page recall, page precision and page MRR for the two
+   retrieval conditions only.
+4. **Failure diagnosis** — why an incorrect retrieval-condition result likely
+   failed, using the oracle comparison and saved retrieval evidence below.
 
-- Keep `did_not_fit` as a separate context-limit outcome, i.e. prompt nnot fit in context window
+How to classify pipeline outcomes for failure diagnosis (automatic first pass
+from saved results, with detailed sub-types hand-labelled only for a sample):
+
+- Keep `did_not_fit` as a separate context-limit outcome, i.e. the prompt did
+  not fit in the context window.
 - unclassified missing/disputed judgments.
 - If the oracle answer is incorrect, classify the result as an oracle baseline
   failure: reasoning or generation may have failed, since retrieval was perfect

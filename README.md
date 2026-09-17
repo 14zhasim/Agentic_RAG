@@ -29,6 +29,7 @@ src/sec_rag_benchmark/
 ├── generation.py                  prompt and OpenRouter/GLM request
 ├── metrics.py                     per-job retrieval metrics
 ├── development_subsets.py         fixed smoke/pattern selection
+├── manual_review.py               export and import disputed judgments
 ├── reporting.py                   segmented result aggregation
 ├── execution/                     preflight, one-job execution and run loop
 └── cli.py                         terminal commands and orchestration
@@ -175,6 +176,16 @@ uv run sec-rag-benchmark report \
   --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
+If the two judge passes disagree, follow the manual-adjudication workflow in
+`Benchmark.md`. Its two additional commands are:
+
+```bash
+uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
+uv run sec-rag-benchmark import-manual-review --run-dir results/<run-id>
+```
+
+After importing completed reviews, rerun `report` to refresh final accuracy.
+
 Each run directory contains:
 
 ```text
@@ -182,6 +193,8 @@ results/<run-id>/
 ├── config.toml        effective configuration for this run
 ├── predictions.jsonl successful answers and terminal did_not_fit outcomes
 ├── judgments.jsonl   completed two-pass answer judgments, when present
+├── manual_review.csv editable disagreements exported for human review
+├── manual_reviews.jsonl validated append-only human decisions
 ├── errors.jsonl      retryable generation or judge failures, when present
 ├── summary.json      machine-readable metrics and completion status
 └── summary.xlsx      formatted overview, answer and retrieval sheets

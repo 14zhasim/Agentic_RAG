@@ -11,6 +11,7 @@ from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
 from .judge import judge_run
 from .judge_validation import validate_judge
+from .manual_review import export_manual_review, import_manual_review
 from .reporting import write_report
 
 
@@ -40,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     validation_parser = commands.add_parser("validate-judge")
     validation_parser.add_argument("--config", type=Path, required=True)
     validation_parser.add_argument("--run-dir", type=Path)
+    export_review_parser = commands.add_parser("export-manual-review")
+    export_review_parser.add_argument("--run-dir", type=Path, required=True)
+    export_review_parser.add_argument("--overwrite", action="store_true")
+    import_review_parser = commands.add_parser("import-manual-review")
+    import_review_parser.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -116,6 +122,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"{result['agreements']}/{result['completed']} agreements; "
                     f"passed={result['passed']}"
                 )
+
+            case "export-manual-review":
+                result = export_manual_review(
+                    args.run_dir,
+                    overwrite=args.overwrite,
+                )
+                print(f"Exported manual review: {result}")
+
+            case "import-manual-review":
+                result = import_manual_review(args.run_dir)
+                print(f"Imported manual review: {result}")
 
         return 0
     except (OSError, ValueError, RuntimeError, DataError) as error:
