@@ -246,11 +246,17 @@ Tech stack
 - `bm25s` (via LlamaIndex) — keyword index. `BM25Retriever.from_defaults(filters=MetadataFilters(...))` filters before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data. Fallback: build the retriever from an already-filtered node list (2 lines)
   - filtering applies to the chunks searched; BM25 word statistics still come from the whole corpus (same as Elasticsearch, so results stay comparable if we switch)
 - Azure Document Intelligence — parsing. OPEN: PageIndex is a live fallback if Azure's section nesting is poor
-- Voyage API — voyage-4-lite embeddings + reranker
+- Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker. Same account and same `VOYAGE_API_KEY` for both; two endpoints
+  - DECIDE DURING IMPLEMENTATION: call Voyage directly (`voyageai` client: `vo.rerank(query, documents, model, top_k)` / `vo.embed(...)`) or through LlamaIndex (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`)
+    - preference is LlamaIndex, for consistency with the rest of the pipeline — the post-processor drops onto `QueryFusionRetriever` output
+    - but direct is simpler and one less package if we are assembling the candidate list ourselves (which Exp2's custom retriever does anyway). Pick whichever is less friction on contact, and use the same choice for embeddings and reranking
+  - reranker call limits: ≤1,000 documents per call; query + any single document ≤32,000 tokens; (query tokens × documents) + all document tokens ≤600,000 per call. At ~50 chunks × ~1k tokens we use ~60k, so no batching needed
 - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing). LlamaIndex components don't call the model, so nothing clashes
 - pandas + pytest — reporting and tests (already in place)
 - LATER (document as future work): Elasticsearch as a second retriever behind the same interface — keyword, vectors (HNSW) and filters in one query. At ~10k chunks exact search is faster to build and more accurate, so it buys skills, not results
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`, `numpy`
+- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`, `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`, `numpy`
+  - plus, if Voyage goes through LlamaIndex (see decision above): `llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`
+- credentials needed in `.env` / `.env.example`: `OPENROUTER_API_KEY` (generation), `AZURE_DEEPSEEK_API_KEY` + `AZURE_DEEPSEEK_ENDPOINT` (judge), `VOYAGE_API_KEY` (embeddings + reranker), `AZURE_DOCUMENT_INTELLIGENCE_KEY` + `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (parsing)
 
 Ingest files
 

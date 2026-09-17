@@ -104,8 +104,14 @@ These invalidate answers generated at the old settings, so they come before spen
 
 ## 0.4 Tech stack set-up
 
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`, `chromadb`,
-  `azure-ai-documentintelligence`, `voyageai`, `numpy`
+- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`,
+  `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`,
+  `numpy`
+  - plus `llama-index-postprocessor-voyageai-rerank` and `llama-index-embeddings-voyageai` if Voyage
+    goes through LlamaIndex
+- credentials to add to `.env` and `.env.example`: `VOYAGE_API_KEY`,
+  `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (alongside the existing
+  `OPENROUTER_API_KEY`, `AZURE_DEEPSEEK_API_KEY`, `AZURE_DEEPSEEK_ENDPOINT`)
 - add instructions to create and activate the venv after creating the uv project; include these in
   `README.md`
 - what each tool is for
@@ -117,7 +123,12 @@ These invalidate answers generated at the old settings, so they come before spen
   - Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll
     save/load. For Exp2, pull the embeddings out and score in numpy
   - Azure Document Intelligence — parsing (PageIndex is the live fallback)
-  - Voyage API — voyage-4-lite embeddings + reranker
+  - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker; one account, one
+    `VOYAGE_API_KEY`, two endpoints
+    - DECIDE HERE: call Voyage directly (`voyageai` client) or via LlamaIndex
+      (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`). Preference
+      is LlamaIndex for consistency; direct is simpler and one less package when we assemble the
+      candidate list ourselves. Same choice for both embeddings and reranking
   - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing).
     LlamaIndex components don't call the model, so nothing clashes
   - pandas + pytest — reporting and tests (already in place)
