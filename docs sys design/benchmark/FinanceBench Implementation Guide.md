@@ -1,7 +1,5 @@
 # FinanceBench implementation guide
 
-#THOUGHTS: why we loading pdf table entry instead of actual pdf page itself
-
 Section 15 reconciles this guide with the implemented execution subpackage.
 
 Authoritative requirements: `../Benchmark.md`

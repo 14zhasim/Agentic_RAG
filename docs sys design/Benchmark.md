@@ -52,7 +52,7 @@ How to classify (automatic first pass from saved results, hand-label only a samp
 
 ## Purpose and scope
 
-Build a reproducible, plain-Python evaluation harness for the open-source FinanceBench questions whose documents are classified as 10-Ks. The harness will reproduce FinanceBench's five context conditions, support replacement retrieval pipelines, calculate deterministic page-retrieval metrics, generate answers with GLM-5.3-Flash, and later judge those answers with GPT-5.6 Luna.
+Build a reproducible, plain-Python evaluation harness for the open-source FinanceBench questions whose documents are classified as 10-Ks. The harness will reproduce FinanceBench's five context conditions, support replacement retrieval pipelines, calculate deterministic page-retrieval metrics, generate answers with GLM-5.3-Flash, and later judge those answers with DeepSeek-V4-Flash.
 
 For the current MVP, use the cloned FinanceBench repository as read-only source
 material. Deterministically prepare:
@@ -61,7 +61,7 @@ material. Deterministically prepare:
 - The prepared subset and PDFs remain out
 of Git and can be recreated with a command.
 
-Answer generation uses `z-ai/glm-5.3-flash` through OpenRouter. Final-answer judging will use `gpt-5.6-luna` through a Direct-from-Azure Microsoft Foundry deployment. Due to accuracy/cost efficiency of both models, as per https://www.vals.ai/benchmarks/fab v2
+Answer generation uses `z-ai/glm-5.3-flash` through OpenRouter. Final-answer judging will use `DeepSeek-V4-Flash` through a Direct-from-Azure Microsoft Foundry deployment. Due to accuracy/cost efficiency of both models, as per https://www.vals.ai/benchmarks/fab v2
 
 The initial dataset contains 112 questions across 64 PDFs. FinanceBench 10-Qs, 8-Ks, earnings documents.
 
@@ -144,19 +144,28 @@ Develop testing set pipeline:
     - token usage;
     - latency;
     - cost.
-- use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric using RAGAS library (details below)
-  - use Azure Foundry, use GPT-5.6 Luna
+- use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric 
+  - use Azure Foundry, use DeepSeek-V4-Flash 
   - provide it: question, reference answer + evidence + human labeller's justification, candidate answer
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
   - Azure
-- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not
-  - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
+- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not. LLM as judge  
+  - consider doing again using LLM as judge to calculate retrieval metrics: Context Recall, Context Precision, Faithfulness, Correctness using RAGAS. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
 Develop a validation set pipeline (for purpose of debugging pipeline works):
 
 - smoke test (5-10 questions): check pipeline works
 - pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+
+How to classify (automatic first pass from saved results, hand-label only a sample):
+- oracle correct, retrieval condition wrong → retrieval failure
+  - page recall = 0 in shared_store but > 0 in single_store → wrong document
+  - right document but page recall = 0 → wrong section/chunk
+  - page recall > 0 but < 1 → insufficient recall
+- oracle wrong → reasoning or generation failure (retrieval is not the cause)
+- did_not_fit → context-limit outcome, kept separate from all three
+- sub-types (e.g. arithmetic vs hallucination, missed table) → hand-label a small sample only, using the judge's reason plus the question's cognitive skill label
 
 ## NEED TO ADD: Statistical power — what our sample sizes can actually support
 
