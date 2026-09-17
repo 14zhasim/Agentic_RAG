@@ -1,6 +1,6 @@
+import tomllib
 from collections import Counter
 from pathlib import Path
-import tomllib
 
 import pytest
 
@@ -84,9 +84,10 @@ def test_cli_passes_subset_to_dry_run(tmp_path, monkeypatch, capsys):
         }
 
     monkeypatch.setattr("sec_rag_benchmark.cli.dry_run", fake_dry_run)
-    assert main(
-        ["run", "--config", str(config_path), "--subset", "smoke", "--dry-run"]
-    ) == 0
+    assert (
+        main(["run", "--config", str(config_path), "--subset", "smoke", "--dry-run"])
+        == 0
+    )
     assert captured["subset"] == "smoke"
     assert captured["limit"] is None
     assert "Planned jobs: 30" in capsys.readouterr().out

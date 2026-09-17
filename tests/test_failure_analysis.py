@@ -80,9 +80,7 @@ def test_classifies_retrieval_failures_from_documents_and_page_recall(
     chunks, page_recall, expected_subtype, manual_review
 ):
     oracle = _prediction("oracle", page_recall=None)
-    retrieval = _prediction(
-        "shared_store", chunks=chunks, page_recall=page_recall
-    )
+    retrieval = _prediction("shared_store", chunks=chunks, page_recall=page_recall)
     judgments = {
         oracle["job_id"]: _judgment(oracle["job_id"], 1),
         retrieval["job_id"]: _judgment(retrieval["job_id"], 0),
@@ -95,9 +93,9 @@ def test_classifies_retrieval_failures_from_documents_and_page_recall(
     assert result["failure_subtype"] == expected_subtype
     assert result["manual_review"] is manual_review
     assert result["target_documents"] == ["target.pdf"]
-    assert result["retrieved_target_document"] is (expected_subtype not in {
-        "no_chunks_retrieved", "wrong_document"
-    })
+    assert result["retrieved_target_document"] is (
+        expected_subtype not in {"no_chunks_retrieved", "wrong_document"}
+    )
 
 
 def test_document_name_is_part_of_page_identity():
@@ -118,7 +116,13 @@ def test_document_name_is_part_of_page_identity():
 
 
 @pytest.mark.parametrize(
-    ("retrieval_status", "retrieval_accuracy", "oracle_accuracy", "expected_status", "expected_category"),
+    (
+        "retrieval_status",
+        "retrieval_accuracy",
+        "oracle_accuracy",
+        "expected_status",
+        "expected_category",
+    ),
     [
         ("did_not_fit", None, 1, "classified", "context_limit"),
         ("success", None, 1, "unclassified", None),
@@ -177,9 +181,7 @@ def test_missing_or_disputed_oracle_is_not_given_a_causal_failure_category():
         ("success", "unjudged_oracle"),
     ],
 )
-def test_unavailable_oracle_states_remain_explicit(
-    oracle_status, expected_subtype
-):
+def test_unavailable_oracle_states_remain_explicit(oracle_status, expected_subtype):
     oracle = _prediction("oracle", status=oracle_status, page_recall=None)
     retrieval = _prediction("shared_store")
     judgments = {
@@ -199,9 +201,7 @@ def test_disputed_condition_and_missing_provenance_remain_unclassified():
         retrieval["job_id"]: _judgment(retrieval["job_id"], None),
     }
 
-    [disputed] = build_failure_analysis(
-        [oracle, retrieval], disputed_judgments
-    )
+    [disputed] = build_failure_analysis([oracle, retrieval], disputed_judgments)
     assert disputed["failure_subtype"] == "condition_judge_disagreement"
 
     retrieval["retrieved_chunks"] = [{"doc_name": "target.pdf"}]

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -111,8 +111,7 @@ def _create_or_resume_run(
         f"development_subset = {json.dumps(subset or '')}\n"
         "question_ids = ["
         + ", ".join(
-            json.dumps(question["financebench_id"])
-            for question in selected_questions
+            json.dumps(question["financebench_id"]) for question in selected_questions
         )
         + "]\n"
     )

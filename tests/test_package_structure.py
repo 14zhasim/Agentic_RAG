@@ -3,7 +3,6 @@
 from importlib import import_module
 from pathlib import Path
 
-
 NEW_MODULES = (
     "sec_rag_benchmark.dataset.financebench",
     "sec_rag_benchmark.dataset.subsets",

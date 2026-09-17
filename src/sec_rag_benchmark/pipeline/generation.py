@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 import os
 import time
+from functools import lru_cache
 from typing import Any
 
 from openai import OpenAI
 from transformers import AutoTokenizer
-
 
 SYSTEM_PROMPT = (
     "You are a careful financial analyst. Answer accurately and concisely. "
@@ -31,7 +30,10 @@ def build_messages(question: str, context: str) -> list[dict[str, str]]:
     """Build the one shared answer prompt used by every context condition."""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"<context>\n{context}\n</context>\n<question>\n{question}\n</question>"},
+        {
+            "role": "user",
+            "content": f"<context>\n{context}\n</context>\n<question>\n{question}\n</question>",
+        },
     ]
 
 
@@ -55,7 +57,7 @@ def count_prompt_tokens(messages: list[dict[str, str]], reasoning_effort: str) -
 def _selected_provider(response: Any) -> str | None:
     """Read the serving provider from opted-in OpenRouter routing metadata."""
     metadata = getattr(response, "openrouter_metadata", None)
-    if hasattr(metadata, "model_dump"):
+    if metadata is not None and hasattr(metadata, "model_dump"):
         metadata = metadata.model_dump()
     if not isinstance(metadata, dict):
         return None
@@ -124,13 +126,16 @@ def generate(
 ) -> dict[str, Any]:
     """Check context capacity, call OpenRouter, and return answer provenance."""
     _check_context_capacity(messages, config)
-    if client is None:
-        client = _create_openrouter_client(config)
+    # OpenRouter accepts a few extensions that are intentionally broader than
+    # the OpenAI SDK's static request type, so the boundary client stays Any.
+    api_client: Any = (
+        client if client is not None else _create_openrouter_client(config)
+    )
     started = time.perf_counter()
     # The OpenAI SDK sends this Responses request to OpenRouter because the
     # client uses OpenRouter's base URL. Provider routing remains an OpenRouter-
     # only body extension, while reasoning is a standard Responses parameter.
-    response = client.responses.create(
+    response = api_client.responses.create(
         model=config["model"],
         input=messages,
         temperature=config["temperature"],
@@ -140,7 +145,10 @@ def generate(
         store=False,
         extra_headers={"X-OpenRouter-Metadata": "enabled"},
         extra_body={
-            "provider": {"order": [config["upstream_provider"]], "allow_fallbacks": False},
+            "provider": {
+                "order": [config["upstream_provider"]],
+                "allow_fallbacks": False,
+            },
         },
     )
     return _read_generation_result(response, config, time.perf_counter() - started)

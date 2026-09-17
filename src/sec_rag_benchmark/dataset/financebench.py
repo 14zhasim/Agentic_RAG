@@ -2,25 +2,38 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
-from pathlib import Path
+import json
 import shutil
+from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import pymupdf
-
 
 QUESTIONS_FILE = "financebench_open_source_10k.jsonl"
 METADATA_FILE = "financebench_document_information_10k.jsonl"
 MANIFEST_FILE = "manifest.json"
 QUESTION_COLUMNS = {
-    "financebench_id", "company", "doc_name", "question_type", "question_reasoning",
-    "domain_question_num", "question", "answer", "justification",
-    "dataset_subset_label", "evidence",
+    "financebench_id",
+    "company",
+    "doc_name",
+    "question_type",
+    "question_reasoning",
+    "domain_question_num",
+    "question",
+    "answer",
+    "justification",
+    "dataset_subset_label",
+    "evidence",
 }
-METADATA_COLUMNS = {"doc_name", "company", "gics_sector", "doc_type", "doc_period", "doc_link"}
+METADATA_COLUMNS = {
+    "doc_name",
+    "company",
+    "gics_sector",
+    "doc_type",
+    "doc_period",
+    "doc_link",
+}
 
 
 class DataError(ValueError):
@@ -29,13 +42,20 @@ class DataError(ValueError):
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
     except (OSError, json.JSONDecodeError) as error:
         raise DataError(f"Cannot read {path}: {error}") from error
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    path.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
 
 
 def _hash(path: Path) -> str:
@@ -75,7 +95,9 @@ def _check_rows(
         metadata_counts[row["doc_name"]] = metadata_counts.get(row["doc_name"], 0) + 1
     for question in questions:
         if metadata_counts.get(question["doc_name"]) != 1:
-            raise DataError(f"Question has missing or ambiguous metadata: {question['doc_name']}")
+            raise DataError(
+                f"Question has missing or ambiguous metadata: {question['doc_name']}"
+            )
     if len(questions) != expected_questions or len(metadata) != expected_documents:
         raise DataError(
             f"Expected {expected_questions} questions and {expected_documents} documents; "
@@ -93,7 +115,9 @@ def _check_rows(
                 page_counts[doc_name] = pdf.page_count
         evidence_list = question.get("evidence")
         if not isinstance(evidence_list, list) or not evidence_list:
-            raise DataError(f"Evidence must be retained for {question['financebench_id']}")
+            raise DataError(
+                f"Evidence must be retained for {question['financebench_id']}"
+            )
         for evidence in evidence_list:
             page = evidence.get("evidence_page_num")
             if _evidence_doc(evidence) != doc_name:
@@ -255,7 +279,9 @@ def validate(config: dict[str, Any]) -> dict[str, int]:
     )
     # Compare the complete directory with metadata; checking only that each
     # expected PDF exists would fail to notice stale extra files.
-    expected_pdfs = {_pdf_path(output / "pdfs", row["doc_name"]).name for row in metadata}
+    expected_pdfs = {
+        _pdf_path(output / "pdfs", row["doc_name"]).name for row in metadata
+    }
     actual_pdfs = {path.name for path in (output / "pdfs").glob("*.pdf")}
     if actual_pdfs != expected_pdfs:
         raise DataError("Prepared PDF set does not match selected metadata")
@@ -268,12 +294,17 @@ def load_questions(output_dir: str | Path) -> list[dict[str, Any]]:
     output = Path(output_dir)
     questions = _read_jsonl(output / QUESTIONS_FILE)
     metadata_rows = _read_jsonl(output / METADATA_FILE)
-    metadata = {row["doc_name"]: row for row in metadata_rows} #convert list-> dict for each doc, where doc: doc_metadata
+    metadata = {
+        row["doc_name"]: row for row in metadata_rows
+    }  # convert list-> dict for each doc, where doc: doc_metadata
     if len(metadata) != len(metadata_rows):
         raise DataError("Prepared metadata is ambiguous")
     # Preserve every original question/evidence field and add metadata only in
     # memory; the prepared question JSONL schema remains unchanged.
-    return [{**question, "document_metadata": metadata[question["doc_name"]]} for question in questions]
+    return [
+        {**question, "document_metadata": metadata[question["doc_name"]]}
+        for question in questions
+    ]
 
 
 def load_run_questions(

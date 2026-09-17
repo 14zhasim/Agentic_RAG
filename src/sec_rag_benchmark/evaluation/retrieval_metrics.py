@@ -54,18 +54,14 @@ def page_metrics(
     number_of_gold_pages_retrieved = len(retrieved_gold_pages)
     page_recall = number_of_gold_pages_retrieved / len(gold_pages)
     if unique_retrieved_pages:
-        page_precision = (
-            number_of_gold_pages_retrieved / len(unique_retrieved_pages)
-        )
+        page_precision = number_of_gold_pages_retrieved / len(unique_retrieved_pages)
     else:
         page_precision = 0.0
 
     # MRR evaluates chunk order. Find the first chunk that covers at least one
     # gold (document, page-index) pair, then stop because later chunks cannot
     # improve the first relevant rank.
-    first_relevant_chunk_rank = _first_relevant_chunk_rank(
-        ranked_chunks, gold_pages
-    )
+    first_relevant_chunk_rank = _first_relevant_chunk_rank(ranked_chunks, gold_pages)
 
     if first_relevant_chunk_rank is None:
         page_mrr = 0.0

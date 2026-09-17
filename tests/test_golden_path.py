@@ -5,11 +5,6 @@ from zipfile import ZipFile
 
 import pytest
 
-from sec_rag_benchmark.pipeline.conditions import (
-    RetrieverUnavailable,
-    build_condition,
-    gold_pages,
-)
 from sec_rag_benchmark.cli import main
 from sec_rag_benchmark.config import load_config
 from sec_rag_benchmark.dataset.financebench import (
@@ -18,24 +13,35 @@ from sec_rag_benchmark.dataset.financebench import (
     prepare,
     validate,
 )
+from sec_rag_benchmark.evaluation.retrieval_metrics import (
+    cognitive_skills,
+    page_metrics,
+)
 from sec_rag_benchmark.execution.preflight import dry_run
 from sec_rag_benchmark.execution.runner import run_benchmark
+from sec_rag_benchmark.pipeline.conditions import (
+    RetrieverUnavailable,
+    build_condition,
+)
 from sec_rag_benchmark.pipeline.generation import (
     ContextLimitError,
     build_messages,
     count_prompt_tokens,
     generate,
 )
-from sec_rag_benchmark.evaluation.retrieval_metrics import cognitive_skills, page_metrics
 from sec_rag_benchmark.reporting.report import write_report
 
 
 def _write_config(path: Path, sample) -> None:
     """Write the small fixture configuration used by CLI and runner tests."""
-    dataset, generation, run_config = sample["dataset"], sample["generation"], sample["run"]
+    dataset, generation, run_config = (
+        sample["dataset"],
+        sample["generation"],
+        sample["run"],
+    )
     path.write_text(f'''[dataset]
-source_dir = "{dataset['source_dir']}"
-output_dir = "{dataset['output_dir']}"
+source_dir = "{dataset["source_dir"]}"
+output_dir = "{dataset["output_dir"]}"
 document_type = "10k"
 expected_questions = 2
 expected_documents = 2
@@ -47,10 +53,10 @@ base_url = "https://openrouter.ai/api/v1"
 upstream_provider = "z-ai"
 allow_fallbacks = false
 context_window_tokens = 1048576
-max_output_tokens = {generation['max_output_tokens']}
+max_output_tokens = {generation["max_output_tokens"]}
 token_safety_margin = 1024
 temperature = 0.0
-reasoning_effort = "{generation['reasoning_effort']}"
+reasoning_effort = "{generation["reasoning_effort"]}"
 timeout_seconds = 30.0
 max_retries = 2
 [judge]
@@ -73,11 +79,11 @@ seed = 42
 smoke_size = 2
 pattern_size = 2
 [run]
-experiment = "{run_config['experiment']}"
-variant = "{run_config['variant']}"
+experiment = "{run_config["experiment"]}"
+variant = "{run_config["variant"]}"
 conditions = ["closed_book", "oracle", "long_context"]
-retrieval_depth = {run_config['retrieval_depth']}
-results_dir = "{run_config['results_dir']}"
+retrieval_depth = {run_config["retrieval_depth"]}
+results_dir = "{run_config["results_dir"]}"
 ''')
 
 
@@ -88,9 +94,17 @@ def test_prepare_validate_and_load_preserve_source_rows(sample):
     assert [q["financebench_id"] for q in questions] == ["q1", "q2"]
     assert len(questions[1]["evidence"]) == 2
     assert questions[0]["document_metadata"]["doc_type"] == "10K"
-    source_path = Path(sample["dataset"]["source_dir"]) / "data" / "financebench_open_source.jsonl"
-    prepared_path = Path(sample["dataset"]["output_dir"]) / "financebench_open_source_10k.jsonl"
-    assert list(json.loads(source_path.read_text().splitlines()[0])) == list(json.loads(prepared_path.read_text().splitlines()[0]))
+    source_path = (
+        Path(sample["dataset"]["source_dir"])
+        / "data"
+        / "financebench_open_source.jsonl"
+    )
+    prepared_path = (
+        Path(sample["dataset"]["output_dir"]) / "financebench_open_source_10k.jsonl"
+    )
+    assert list(json.loads(source_path.read_text().splitlines()[0])) == list(
+        json.loads(prepared_path.read_text().splitlines()[0])
+    )
 
 
 def test_prepare_rejects_missing_pdf_and_ambiguous_metadata(sample):
@@ -109,32 +123,63 @@ def test_prepare_rejects_missing_pdf_and_ambiguous_metadata(sample):
         prepare(sample["dataset"])
 
 
-@pytest.mark.parametrize("mutation, message", [
-    (lambda rows: rows[1].update(financebench_id="q1"), "unique"),
-    (lambda rows: rows[0]["evidence"][0].update(evidence_page_num=9), "page index"),
-])
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda rows: rows[1].update(financebench_id="q1"), "unique"),
+        (lambda rows: rows[0]["evidence"][0].update(evidence_page_num=9), "page index"),
+    ],
+)
 def test_validation_rejects_bad_question_data(sample, mutation, message):
     prepare(sample["dataset"])
     path = Path(sample["dataset"]["output_dir"]) / "financebench_open_source_10k.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    mutation(rows); path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-    with pytest.raises(DataError, match=message): validate(sample["dataset"])
+    mutation(rows)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    with pytest.raises(DataError, match=message):
+        validate(sample["dataset"])
 
 
 def test_all_conditions_and_retrieval_scopes(sample):
-    prepare(sample["dataset"]); question = load_questions(sample["dataset"]["output_dir"])[1]
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]
     pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
-    assert build_condition(question, "closed_book", pdf_dir, ("a.pdf", "b.pdf"))["context"] == ""
+    assert (
+        build_condition(question, "closed_book", pdf_dir, ("a.pdf", "b.pdf"))["context"]
+        == ""
+    )
     oracle = build_condition(question, "oracle", pdf_dir, ("a.pdf", "b.pdf"))
     assert oracle["context_pages"] == [("b.pdf", 0), ("b.pdf", 1)]
-    assert "B zero" in build_condition(question, "long_context", pdf_dir, ("a.pdf", "b.pdf"))["context"]
+    assert (
+        "B zero"
+        in build_condition(question, "long_context", pdf_dir, ("a.pdf", "b.pdf"))[
+            "context"
+        ]
+    )
     calls = []
+
     def retrieve(query, scope, top_k):
-        calls.append(scope); return [{"chunk_id": "c", "text": "x", "doc_name": "b.pdf", "pages": [1], "score": .9, "rank": 1}]
-    build_condition(question, "single_store", pdf_dir, ("a.pdf", "b.pdf"), retriever=retrieve)
-    build_condition(question, "shared_store", pdf_dir, ("a.pdf", "b.pdf"), retriever=retrieve)
+        calls.append(scope)
+        return [
+            {
+                "chunk_id": "c",
+                "text": "x",
+                "doc_name": "b.pdf",
+                "pages": [1],
+                "score": 0.9,
+                "rank": 1,
+            }
+        ]
+
+    build_condition(
+        question, "single_store", pdf_dir, ("a.pdf", "b.pdf"), retriever=retrieve
+    )
+    build_condition(
+        question, "shared_store", pdf_dir, ("a.pdf", "b.pdf"), retriever=retrieve
+    )
     assert calls == [("b.pdf",), ("a.pdf", "b.pdf")]
-    with pytest.raises(RetrieverUnavailable): build_condition(question, "single_store", pdf_dir, (), retriever=None)
+    with pytest.raises(RetrieverUnavailable):
+        build_condition(question, "single_store", pdf_dir, (), retriever=None)
 
 
 def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
@@ -144,16 +189,22 @@ def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
         {"doc_name": "a.pdf", "pages": [2], "rank": 3},
     ]
     assert page_metrics([("a.pdf", 2), ("a.pdf", 5)], chunks, 5) == {
-        "page_recall": 1.0, "page_precision": 2 / 3, "page_mrr": 0.5,
+        "page_recall": 1.0,
+        "page_precision": 2 / 3,
+        "page_mrr": 0.5,
     }
     # The duplicate a.pdf page 2 counts once, while wrong.pdf page 2 is a
     # different document-aware page. Limiting retrieval to rank 1 finds no gold.
     assert page_metrics([("a.pdf", 2)], chunks, 1) == {
-        "page_recall": 0.0, "page_precision": 0.0, "page_mrr": 0.0,
+        "page_recall": 0.0,
+        "page_precision": 0.0,
+        "page_mrr": 0.0,
     }
     # No retrieved chunks means no retrieved pages and no first relevant rank.
     assert page_metrics([("a.pdf", 2)], [], 5) == {
-        "page_recall": 0.0, "page_precision": 0.0, "page_mrr": 0.0,
+        "page_recall": 0.0,
+        "page_precision": 0.0,
+        "page_mrr": 0.0,
     }
     assert cognitive_skills("Information extraction OR Numerical reasoning") == [
         "information_extraction",
@@ -166,10 +217,19 @@ def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
     [
         (None, ["unlabelled"]),
         ("Information extraction", ["information_extraction"]),
-        ("Numerical reasoning OR information extraction", ["numerical_reasoning", "information_extraction"]),
+        (
+            "Numerical reasoning OR information extraction",
+            ["numerical_reasoning", "information_extraction"],
+        ),
         ("Logical reasoning (based on numerical reasoning)", ["logical_reasoning"]),
-        ("Logical reasoning (based on numerical reasoning) OR Logical reasoning", ["logical_reasoning"]),
-        ("Information extraction OR Logical reasoning OR", ["information_extraction", "logical_reasoning"]),
+        (
+            "Logical reasoning (based on numerical reasoning) OR Logical reasoning",
+            ["logical_reasoning"],
+        ),
+        (
+            "Information extraction OR Logical reasoning OR",
+            ["information_extraction", "logical_reasoning"],
+        ),
     ],
 )
 def test_cognitive_skills_strictly_normalize_known_labels(raw_label, expected):
@@ -195,9 +255,7 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
         "question_type": "calculated",
         "cognitive_skills": ["information_extraction", "numerical_reasoning"],
         "gold_pages": [["target.pdf", 2]],
-        "retrieved_chunks": [
-            {"doc_name": "target.pdf", "pages": [2], "rank": 1}
-        ],
+        "retrieved_chunks": [{"doc_name": "target.pdf", "pages": [2], "rank": 1}],
         "page_recall": 1.0,
         "page_precision": 0.5,
         "page_mrr": 1.0,
@@ -225,8 +283,7 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
     assert all(row["total_predictions"] == 1 for row in skill_rows)
     assert all(row["eval_mode"] == "single_store" for row in skill_rows)
     assert {
-        row["eval_mode"]
-        for row in report["answer_accuracy"]["by_generation_method"]
+        row["eval_mode"] for row in report["answer_accuracy"]["by_generation_method"]
     } == {"oracle", "single_store"}
     assert report["run_status"]["by_condition"] == [
         {
@@ -298,9 +355,7 @@ def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):
         "page_precision": None,
         "page_mrr": None,
     }
-    (run_dir / "predictions.jsonl").write_text(
-        json.dumps(oracle_prediction) + "\n"
-    )
+    (run_dir / "predictions.jsonl").write_text(json.dumps(oracle_prediction) + "\n")
     (run_dir / "errors.jsonl").write_text(
         json.dumps(
             {
@@ -342,10 +397,12 @@ def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):
 def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
     captured = {}
     template_call = {}
+
     class FakeTokenizer:
         def apply_chat_template(self, messages, **kwargs):
             template_call.update(messages=messages, **kwargs)
             return {"input_ids": [1, 2, 3]}
+
     tokenizer = FakeTokenizer()
     monkeypatch.setattr(
         "sec_rag_benchmark.pipeline.generation.get_tokenizer", lambda: tokenizer
@@ -358,12 +415,24 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
         "tokenize": True,
         "reasoning_effort": "low",
     }
-    response = SimpleNamespace(id="r1", model="glm", output_text="42",
-        openrouter_metadata={"endpoints": {"available": [
-            {"provider": "Z.AI", "selected": True},
-        ]}},
-        usage=SimpleNamespace(model_dump=lambda: {"total_tokens": 10, "cost": 0.001}))
-    def create(**kwargs): captured.update(kwargs); return response
+    response = SimpleNamespace(
+        id="r1",
+        model="glm",
+        output_text="42",
+        openrouter_metadata={
+            "endpoints": {
+                "available": [
+                    {"provider": "Z.AI", "selected": True},
+                ]
+            }
+        },
+        usage=SimpleNamespace(model_dump=lambda: {"total_tokens": 10, "cost": 0.001}),
+    )
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return response
+
     client = SimpleNamespace(responses=SimpleNamespace(create=create))
     result = generate(messages, sample["generation"], client=client)
     assert result["answer"] == "42"
@@ -378,26 +447,40 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
     assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
     assert captured["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
-    assert captured["extra_body"]["provider"] == {"order": ["z-ai"], "allow_fallbacks": False}
+    assert captured["extra_body"]["provider"] == {
+        "order": ["z-ai"],
+        "allow_fallbacks": False,
+    }
 
 
 def test_generation_rejects_empty_output_and_oversized_prompt(sample, monkeypatch):
     monkeypatch.setattr(
         "sec_rag_benchmark.pipeline.generation.get_tokenizer",
-        lambda: SimpleNamespace(apply_chat_template=lambda *args, **kwargs: {"input_ids": [1, 2, 3]}),
+        lambda: SimpleNamespace(
+            apply_chat_template=lambda *args, **kwargs: {"input_ids": [1, 2, 3]}
+        ),
     )
     response = SimpleNamespace(id="r1", model="glm", output_text="", usage=None)
-    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: response))
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: response)
+    )
     with pytest.raises(RuntimeError, match="empty answer"):
         generate(build_messages("Q", "C"), sample["generation"], client=client)
 
     response.output_text = "42"
-    assert generate(build_messages("Q", "C"), sample["generation"], client=client)["provider"] is None
+    assert (
+        generate(build_messages("Q", "C"), sample["generation"], client=client)[
+            "provider"
+        ]
+        is None
+    )
 
     called = False
+
     def should_not_run(**kwargs):
         nonlocal called
         called = True
+
     client.responses.create = should_not_run
     tiny_context = {**sample["generation"], "context_window_tokens": 1}
     with pytest.raises(ContextLimitError, match="context window"):
@@ -460,22 +543,35 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
     _write_config(config_path, sample)
     config = load_config(config_path)
-    def fake(messages, config): return {"answer": "42", "requested_model": config["model"], "request_id": "r", "returned_model": "glm", "provider": "Z.AI", "usage": {}, "cost": None, "latency_seconds": 0.1}
+
+    def fake(messages, config):
+        return {
+            "answer": "42",
+            "requested_model": config["model"],
+            "request_id": "r",
+            "returned_model": "glm",
+            "provider": "Z.AI",
+            "usage": {},
+            "cost": None,
+            "latency_seconds": 0.1,
+        }
+
     first_run = run_benchmark(
         config, config_path, conditions=["closed_book"], generator=fake
     )
     run_dir = first_run["run_dir"]
     assert first_run["generated"] == 2
-    assert run_dir.name.endswith(
-        "--financebench--baseline-context-conditions-v1"
+    assert run_dir.name.endswith("--financebench--baseline-context-conditions-v1")
+    assert (
+        run_benchmark(
+            config,
+            config_path,
+            conditions=["closed_book"],
+            requested_run_dir=run_dir,
+            generator=fake,
+        )["skipped"]
+        == 2
     )
-    assert run_benchmark(
-        config,
-        config_path,
-        conditions=["closed_book"],
-        requested_run_dir=run_dir,
-        generator=fake,
-    )["skipped"] == 2
     questions = load_questions(sample["dataset"]["output_dir"])
     prediction = json.loads((run_dir / "predictions.jsonl").read_text().splitlines()[0])
     assert "numeric_accuracy" not in prediction
@@ -533,7 +629,9 @@ def test_runner_resume_skips_did_not_fit(sample):
     assert report["run_status"]["complete"] is True
 
 
-def test_cli_prepare_validate_and_no_spend_dry_run(sample, tmp_path, capsys, monkeypatch):
+def test_cli_prepare_validate_and_no_spend_dry_run(
+    sample, tmp_path, capsys, monkeypatch
+):
     monkeypatch.setattr(
         "sec_rag_benchmark.execution.preflight.count_prompt_tokens",
         lambda messages, effort: 10,

@@ -108,7 +108,9 @@ def test_export_selects_disagreements_and_formats_review_context(tmp_path):
     assert rows[0]["job_id"] == disputed
     assert rows[0]["reference_first_verdict"] == "1"
     assert rows[0]["candidate_first_verdict"] == "0"
-    assert "Document: a.pdf\nPage: 7\nRevenue was $42 million." in rows[0]["gold_evidence"]
+    assert (
+        "Document: a.pdf\nPage: 7\nRevenue was $42 million." in rows[0]["gold_evidence"]
+    )
     assert "---" in rows[0]["gold_evidence"]
     assert "Page: 8\nThe note confirms the value." in rows[0]["gold_evidence"]
     assert rows[0]["human_accuracy"] == ""
@@ -187,7 +189,10 @@ def test_import_supports_partial_unchanged_and_corrected_reviews(tmp_path):
     [
         (lambda row: row.update(human_accuracy="1.0"), "human_accuracy"),
         (lambda row: row.update(review_reason="reason only"), "human_accuracy"),
-        (lambda row: row.update(job_id="run:missing:oracle", human_accuracy="1"), "unknown"),
+        (
+            lambda row: row.update(job_id="run:missing:oracle", human_accuracy="1"),
+            "unknown",
+        ),
     ],
 )
 def test_import_rejects_invalid_rows_before_writing(tmp_path, mutate, message):
@@ -242,7 +247,11 @@ def test_cli_delegates_manual_review_commands(tmp_path, monkeypatch, capsys):
 
     def fake_export(selected_run_dir, *, overwrite=False):
         captured.append(("export", selected_run_dir, overwrite))
-        return {"path": selected_run_dir / "manual_review.csv", "disagreements": 2, "prefilled": 0}
+        return {
+            "path": selected_run_dir / "manual_review.csv",
+            "disagreements": 2,
+            "prefilled": 0,
+        }
 
     def fake_import(selected_run_dir):
         captured.append(("import", selected_run_dir))

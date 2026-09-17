@@ -7,7 +7,6 @@ from typing import Any
 
 import xlsxwriter
 
-
 ANSWER_COLUMNS = [
     "total_predictions",
     "scored_answers",
@@ -132,7 +131,9 @@ def _formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
         ),
         "text": workbook.add_format({"font_color": "#1F2937"}),
         "indented": workbook.add_format({"font_color": "#1F2937", "indent": 1}),
-        "integer": workbook.add_format({"num_format": "#,##0", "font_color": "#1F2937"}),
+        "integer": workbook.add_format(
+            {"num_format": "#,##0", "font_color": "#1F2937"}
+        ),
         "percent": workbook.add_format({"num_format": "0.0%", "font_color": "#1F2937"}),
         "note": workbook.add_format({"italic": True, "font_color": "#475569"}),
         "wrapped": workbook.add_format(
@@ -159,9 +160,7 @@ def _write_table(
         for column_index, column in enumerate(columns):
             value = row.get(column)
             cell_format = (
-                formats["percent"]
-                if column in PERCENT_COLUMNS
-                else formats["integer"]
+                formats["percent"] if column in PERCENT_COLUMNS else formats["integer"]
             )
             if column in {"eval_mode", "question_type", "cognitive_skill"}:
                 cell_format = formats["text"]
@@ -191,7 +190,9 @@ def _write_condition_sections(
         current_row += 1
 
         for column_index, column in enumerate(columns):
-            worksheet.write(current_row, column_index, LABELS[column], formats["header"])
+            worksheet.write(
+                current_row, column_index, LABELS[column], formats["header"]
+            )
         current_row += 1
 
         condition_rows = [row for row in rows if row["eval_mode"] == condition]
@@ -202,9 +203,7 @@ def _write_condition_sections(
                     cell_format = formats["percent"]
                 elif column in {"question_type", "cognitive_skill"}:
                     cell_format = (
-                        formats["indented"]
-                        if column_index == 0
-                        else formats["text"]
+                        formats["indented"] if column_index == 0 else formats["text"]
                     )
                 else:
                     cell_format = formats["integer"]

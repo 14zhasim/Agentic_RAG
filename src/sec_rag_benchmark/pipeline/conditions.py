@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pymupdf
-
 
 CONDITIONS = {"closed_book", "oracle", "long_context", "single_store", "shared_store"}
 Retriever = Callable[[str, tuple[str, ...], int], list[dict[str, Any]]]
@@ -63,9 +63,7 @@ def _build_oracle(question: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_long_context(
-    question: dict[str, Any], pdf_dir: Path
-) -> dict[str, Any]:
+def _build_long_context(question: dict[str, Any], pdf_dir: Path) -> dict[str, Any]:
     """Supply the complete question filing in physical page order."""
     pages = _pdf_pages(pdf_dir, question["doc_name"])
     context_pages = [(question["doc_name"], index) for index in range(len(pages))]
@@ -114,9 +112,7 @@ def _build_single_store(
     question: dict[str, Any], retriever: Retriever | None, top_k: int
 ) -> dict[str, Any]:
     """Retrieve only from the filing associated with the question."""
-    return _build_retrieval_context(
-        question, (question["doc_name"],), retriever, top_k
-    )
+    return _build_retrieval_context(question, (question["doc_name"],), retriever, top_k)
 
 
 def _build_shared_store(

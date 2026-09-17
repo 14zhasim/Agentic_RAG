@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 RETRIEVAL_CONDITIONS = {"single_store", "shared_store"}
 
 # This legend is written to summary.json and the workbook. Keeping it beside
@@ -18,9 +17,7 @@ METHODOLOGY = {
         "retrieval cannot be isolated as the cause."
     ),
     "no_chunks_retrieved": "The retriever returned no chunks.",
-    "wrong_document": (
-        "Chunks were returned, but none came from a target filing."
-    ),
+    "wrong_document": ("Chunks were returned, but none came from a target filing."),
     "wrong_section_or_chunk": (
         "A target filing was retrieved, but no retrieved page was a gold page."
     ),
@@ -98,7 +95,7 @@ def build_failure_analysis(
         retrieved_page_pairs: set[tuple[str, int]] = set()
         retrieved_documents: set[str] = set()
         chunk_provenance_is_valid = isinstance(chunks, list)
-        if chunk_provenance_is_valid:
+        if isinstance(chunks, list):
             for chunk in chunks:
                 doc_name = chunk.get("doc_name")
                 pages = chunk.get("pages")
@@ -120,9 +117,7 @@ def build_failure_analysis(
             if gold_page_pairs
             else None
         )
-        retrieved_target_document = bool(
-            set(target_documents) & retrieved_documents
-        )
+        retrieved_target_document = bool(set(target_documents) & retrieved_documents)
 
         row = {
             "job_id": prediction["job_id"],
@@ -211,7 +206,7 @@ def build_failure_analysis(
             unavailable_subtype = None
             unavailable_rule = None
 
-        if unavailable_subtype is not None:
+        if unavailable_subtype is not None and unavailable_rule is not None:
             analysis_rows.append(
                 _mark(
                     row,
@@ -224,6 +219,9 @@ def build_failure_analysis(
             )
             continue
 
+        # Reaching this point proves that both the oracle row and its agreed
+        # judgment exist; the earlier branches handle every missing case.
+        assert oracle_judgment is not None
         if oracle_judgment["accuracy"] == 0:
             analysis_rows.append(
                 _mark(
@@ -343,7 +341,9 @@ def summarize_failure_analysis(
     count_rows = []
     for identity, count in sorted(
         grouped_counts.items(),
-        key=lambda item: tuple("" if value is None else str(value) for value in item[0]),
+        key=lambda item: tuple(
+            "" if value is None else str(value) for value in item[0]
+        ),
     ):
         condition, status, category, subtype = identity
         count_rows.append(

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
 import os
-from pathlib import Path
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
-
 
 SYSTEM_PROMPT = (
     "You grade only the CANDIDATE ANSWER against the REFERENCE ANSWER, "

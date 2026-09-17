@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 REVIEW_COLUMNS = [
     "job_id",
@@ -45,11 +44,13 @@ def _disagreement_passes(judgment: dict[str, Any]) -> dict[str, dict[str, Any]] 
     if judgment.get("accuracy") is not None:
         return None
 
-    passes = {
-        item.get("prompt_order"): item
-        for item in judgment.get("passes", [])
-        if isinstance(item, dict)
-    }
+    passes: dict[str, dict[str, Any]] = {}
+    for item in judgment.get("passes", []):
+        if not isinstance(item, dict):
+            continue
+        prompt_order = item.get("prompt_order")
+        if isinstance(prompt_order, str):
+            passes[prompt_order] = item
     required_orders = {"reference_first", "candidate_first"}
     if set(passes) != required_orders:
         raise ValueError(f"Judgment {judgment.get('job_id')} is missing judge passes")
@@ -84,9 +85,7 @@ def export_manual_review(
     run_path = Path(run_dir)
     output_path = run_path / "manual_review.csv"
     if output_path.exists() and not overwrite:
-        raise ValueError(
-            f"{output_path} already exists; use --overwrite to replace it"
-        )
+        raise ValueError(f"{output_path} already exists; use --overwrite to replace it")
 
     predictions = _latest_rows_by_job_id(run_path / "predictions.jsonl")
     judgments = _latest_rows_by_job_id(run_path / "judgments.jsonl")
@@ -172,7 +171,7 @@ def import_manual_review(run_dir: str | Path) -> dict[str, int]:
     seen_job_ids: set[str] = set()
     skipped = 0
     unresolved = 0
-    reviewed_at = datetime.now(timezone.utc).isoformat()
+    reviewed_at = datetime.now(UTC).isoformat()
 
     for row_number, row in enumerate(csv_rows, start=2):
         job_id = row["job_id"].strip()
@@ -199,9 +198,7 @@ def import_manual_review(run_dir: str | Path) -> dict[str, int]:
             unresolved += 1
             continue
         if accuracy_text not in {"0", "1"}:
-            raise ValueError(
-                f"Row {row_number} human_accuracy must be exactly 0 or 1"
-            )
+            raise ValueError(f"Row {row_number} human_accuracy must be exactly 0 or 1")
 
         human_accuracy = int(accuracy_text)
         previous = latest_reviews.get(job_id)

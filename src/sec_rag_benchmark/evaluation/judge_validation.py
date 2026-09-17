@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import UTC, datetime
 import hashlib
 import json
-from pathlib import Path
 import random
 import shutil
+from collections import Counter
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..dataset.financebench import load_questions
 from ..pipeline.conditions import gold_pages
 from .judge import judge_run
 from .retrieval_metrics import cognitive_skills
-
 
 HUMAN_LABEL_TO_ACCURACY = {
     "Correct Answer": 1,
@@ -113,8 +112,7 @@ def _select_candidates(
     )
     random.Random(validation_config["seed"]).shuffle(ordered_candidates)
     shuffled_position = {
-        id(candidate): position
-        for position, candidate in enumerate(ordered_candidates)
+        id(candidate): position for position, candidate in enumerate(ordered_candidates)
     }
 
     quotas = {
@@ -333,9 +331,13 @@ def validate_judge(
     client: Any | None = None,
 ) -> dict[str, Any]:
     """Create or resume one human-label validation and write its summary."""
-    run_path = Path(requested_run_dir) if requested_run_dir else (
-        Path(config["run"]["results_dir"])
-        / f"judge-validation-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+    run_path = (
+        Path(requested_run_dir)
+        if requested_run_dir
+        else (
+            Path(config["run"]["results_dir"])
+            / f"judge-validation-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+        )
     )
     sample_path = run_path / "validation_sample.jsonl"
     if sample_path.exists():

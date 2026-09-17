@@ -10,7 +10,6 @@ from ..dataset.subsets import select_development_subset
 from ..pipeline.conditions import CONDITIONS, build_condition
 from ..pipeline.generation import build_messages, count_prompt_tokens
 
-
 RETRIEVAL_CONDITIONS = {"single_store", "shared_store"}
 
 
@@ -50,9 +49,7 @@ def dry_run(
             )
             messages = build_messages(question["question"], condition["context"])
             prompt_token_counts.append(
-                count_prompt_tokens(
-                    messages, config["generation"]["reasoning_effort"]
-                )
+                count_prompt_tokens(messages, config["generation"]["reasoning_effort"])
             )
 
         maximum_prompt_tokens[condition_name] = max(prompt_token_counts, default=0)

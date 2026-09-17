@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import tomllib
+from pathlib import Path
 from typing import Any
 
 from .pipeline.conditions import CONDITIONS
@@ -44,8 +44,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("retrieval_depth must be positive")
 
     generation = config["generation"]
-    if generation["provider"] != "openrouter" or generation["allow_fallbacks"] is not False:
-        raise ValueError("Golden-path generation requires OpenRouter with fallbacks disabled")
+    if (
+        generation["provider"] != "openrouter"
+        or generation["allow_fallbacks"] is not False
+    ):
+        raise ValueError(
+            "Golden-path generation requires OpenRouter with fallbacks disabled"
+        )
     if generation["reasoning_effort"] not in {"low", "high", "max"}:
         raise ValueError("reasoning_effort must be low, high, or max for GLM-5.3-Flash")
 
@@ -56,9 +61,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
     )
     if min(token_settings) < 0:
         raise ValueError("Token limits and margins cannot be negative")
-    reserved_tokens = generation["max_output_tokens"] + generation["token_safety_margin"]
+    reserved_tokens = (
+        generation["max_output_tokens"] + generation["token_safety_margin"]
+    )
     if reserved_tokens >= generation["context_window_tokens"]:
-        raise ValueError("Output tokens and safety margin must leave room for the input prompt")
+        raise ValueError(
+            "Output tokens and safety margin must leave room for the input prompt"
+        )
 
     judge = config["judge"]
     if judge["provider"] != "azure":
@@ -68,7 +77,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if judge["max_output_tokens"] <= 0:
         raise ValueError("Judge max_output_tokens must be positive")
     if judge["timeout_seconds"] <= 0 or judge["max_retries"] < 0:
-        raise ValueError("Judge timeout must be positive and retries cannot be negative")
+        raise ValueError(
+            "Judge timeout must be positive and retries cannot be negative"
+        )
 
     validation = config["judge_validation"]
     if not re.fullmatch(r"[0-9a-f]{40}", validation["source_commit"]):
@@ -89,8 +100,6 @@ def load_config(path: str | Path) -> dict[str, Any]:
     for size_key in ("smoke_size", "pattern_size"):
         subset_size = subsets[size_key]
         if subset_size <= 0 or subset_size > config["dataset"]["expected_questions"]:
-            raise ValueError(
-                f"{size_key} must be between 1 and expected_questions"
-            )
+            raise ValueError(f"{size_key} must be between 1 and expected_questions")
 
     return config

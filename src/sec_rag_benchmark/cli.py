@@ -7,11 +7,11 @@ from pathlib import Path
 
 from .config import load_config
 from .dataset.financebench import DataError, prepare, validate
-from .execution.preflight import dry_run
-from .execution.runner import run_benchmark
 from .evaluation.judge import judge_run
 from .evaluation.judge_validation import validate_judge
 from .evaluation.manual_review import export_manual_review, import_manual_review
+from .execution.preflight import dry_run
+from .execution.runner import run_benchmark
 from .reporting.report import write_report
 
 
@@ -101,9 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
             case "report":
                 summary = write_report(args.run_dir)
-                print(
-                    f"Reported {summary['run_status']['successful']} successful jobs"
-                )
+                print(f"Reported {summary['run_status']['successful']} successful jobs")
 
             case "judge":
                 config = load_config(args.config)

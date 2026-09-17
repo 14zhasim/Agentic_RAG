@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..evaluation.retrieval_metrics import cognitive_skills, page_metrics
 from ..pipeline.conditions import Retriever, build_condition, gold_pages
 from ..pipeline.generation import build_messages, generate
-
 
 Generator = Callable[[list[dict[str, str]], dict[str, Any]], dict[str, Any]]
 RETRIEVAL_CONDITIONS = {"single_store", "shared_store"}
@@ -41,16 +41,19 @@ def execute_job(
         generation_config,
     )
 
+    retrieval_metrics: dict[str, float | None] = {}
     if condition_name in RETRIEVAL_CONDITIONS:
-        retrieval_metrics = page_metrics(
-            gold_pages(question), condition["retrieved_chunks"], retrieval_depth
+        retrieval_metrics.update(
+            page_metrics(
+                gold_pages(question), condition["retrieved_chunks"], retrieval_depth
+            )
         )
     else:
-        retrieval_metrics = {
-            "page_recall": None,
-            "page_precision": None,
-            "page_mrr": None,
-        }
+        retrieval_metrics.update(
+            page_recall=None,
+            page_precision=None,
+            page_mrr=None,
+        )
 
     # The saved row contains everything needed for reporting and the future
     # judge, which can therefore run without regenerating this answer.

@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tomllib
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from .failure_analysis import build_failure_analysis, summarize_failure_analysis
 from .workbook import write_report_workbook
-
 
 REPORT_VIEWS = (
     "overall",
@@ -108,15 +107,11 @@ def _retrieval_metric_views(
 
     predictions_table = pd.DataFrame(retrieval_predictions)
     skill_table = pd.DataFrame(_expand_by_cognitive_skill(retrieval_predictions))
-    views["overall"].append(
-        _average_retrieval_metrics("overall", predictions_table)
-    )
+    views["overall"].append(_average_retrieval_metrics("overall", predictions_table))
 
     for condition, condition_rows in predictions_table.groupby("eval_mode", sort=True):
         views["by_condition"].append(
-            _average_retrieval_metrics(
-                "condition", condition_rows, eval_mode=condition
-            )
+            _average_retrieval_metrics("condition", condition_rows, eval_mode=condition)
         )
 
         # Detailed comparisons stay inside their condition. Otherwise an
@@ -247,7 +242,9 @@ def _answer_accuracy_views(
             {skill for row in condition_rows for skill in row["cognitive_skills"]}
         )
         for skill in skills:
-            selected = [row for row in condition_rows if skill in row["cognitive_skills"]]
+            selected = [
+                row for row in condition_rows if skill in row["cognitive_skills"]
+            ]
             views["by_cognitive_skill"].append(
                 _answer_accuracy_for_subset(
                     "cognitive_skill",
@@ -294,9 +291,7 @@ def _execution_status(
     attempted_job_ids = set(predictions) | set(errors)
 
     successful = sum(row.get("status") == "success" for row in terminal_rows)
-    did_not_fit = sum(
-        row.get("status") == "did_not_fit" for row in terminal_rows
-    )
+    did_not_fit = sum(row.get("status") == "did_not_fit" for row in terminal_rows)
     run_config = snapshot.get("run", {})
     status = {
         # Legacy smoke-test directories predate explicit run labels. New
@@ -316,9 +311,7 @@ def _execution_status(
         condition_predictions = [
             row for row in terminal_rows if row.get("eval_mode") == condition
         ]
-        condition_prediction_ids = {
-            row["job_id"] for row in condition_predictions
-        }
+        condition_prediction_ids = {row["job_id"] for row in condition_predictions}
         condition_failed_ids = {
             job_id
             for job_id in failed_job_ids
@@ -352,12 +345,8 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     latest_predictions = _latest_rows_by_job_id(run_path / "predictions.jsonl")
     latest_errors = _latest_rows_by_job_id(run_path / "errors.jsonl")
     latest_judgments = _latest_rows_by_job_id(run_path / "judgments.jsonl")
-    latest_manual_reviews = _latest_rows_by_job_id(
-        run_path / "manual_reviews.jsonl"
-    )
-    resolved_judgments = _resolve_judgments(
-        latest_judgments, latest_manual_reviews
-    )
+    latest_manual_reviews = _latest_rows_by_job_id(run_path / "manual_reviews.jsonl")
+    resolved_judgments = _resolve_judgments(latest_judgments, latest_manual_reviews)
 
     terminal_predictions = list(latest_predictions.values())
     successful_predictions = [
@@ -365,15 +354,11 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     ]
 
     snapshot = tomllib.loads((run_path / "config.toml").read_text(encoding="utf-8"))
-    failure_rows = build_failure_analysis(
-        terminal_predictions, resolved_judgments
-    )
+    failure_rows = build_failure_analysis(terminal_predictions, resolved_judgments)
     failure_summary = summarize_failure_analysis(failure_rows)
 
     summary = {
-        "run_status": _execution_status(
-            snapshot, latest_predictions, latest_errors
-        ),
+        "run_status": _execution_status(snapshot, latest_predictions, latest_errors),
         "answer_accuracy": _answer_accuracy_views(
             terminal_predictions, resolved_judgments
         ),
@@ -384,9 +369,7 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     # Failure analysis is derived from the latest predictions and judgments.
     # Replace it on every report run rather than preserving stale attempts.
     (run_path / "failure_analysis.jsonl").write_text(
-        "".join(
-            json.dumps(row, ensure_ascii=False) + "\n" for row in failure_rows
-        ),
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in failure_rows),
         encoding="utf-8",
     )
     (run_path / "summary.json").write_text(

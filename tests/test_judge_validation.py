@@ -46,9 +46,7 @@ def _validation_fixture(tmp_path: Path) -> dict:
         metadata.append({"doc_name": doc_name})
 
     _write_jsonl(prepared / "financebench_open_source_10k.jsonl", questions)
-    _write_jsonl(
-        prepared / "financebench_document_information_10k.jsonl", metadata
-    )
+    _write_jsonl(prepared / "financebench_document_information_10k.jsonl", metadata)
 
     labels = [
         "Correct Answer",
@@ -133,9 +131,24 @@ def test_create_validation_sample_is_reproducible_and_balanced(tmp_path):
 
 def test_judge_validation_scores_matches_nulls_and_threshold():
     sample = [
-        {"job_id": "v:q1", "financebench_id": "q1", "human_label": "Correct Answer", "expected_accuracy": 1},
-        {"job_id": "v:q2", "financebench_id": "q2", "human_label": "Incorrect Answer", "expected_accuracy": 0},
-        {"job_id": "v:q3", "financebench_id": "q3", "human_label": "Refusal", "expected_accuracy": 0},
+        {
+            "job_id": "v:q1",
+            "financebench_id": "q1",
+            "human_label": "Correct Answer",
+            "expected_accuracy": 1,
+        },
+        {
+            "job_id": "v:q2",
+            "financebench_id": "q2",
+            "human_label": "Incorrect Answer",
+            "expected_accuracy": 0,
+        },
+        {
+            "job_id": "v:q3",
+            "financebench_id": "q3",
+            "human_label": "Refusal",
+            "expected_accuracy": 0,
+        },
     ]
     judgments = {
         "v:q1": {"job_id": "v:q1", "accuracy": 1},
@@ -192,7 +205,13 @@ def test_validate_judge_reuses_completed_results(tmp_path):
         return SimpleNamespace(
             id=f"request-{calls}",
             model="DeepSeek-V4-Flash",
-            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"verdict": verdict, "reason": "checked"})))],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"verdict": verdict, "reason": "checked"})
+                    )
+                )
+            ],
             usage=None,
         )
 

@@ -24,6 +24,7 @@ validated against published labels. HiREC/LOFin support remains deferred.
 ```text
 configs/financebench.toml          editable dataset, generation and run settings
 src/sec_rag_benchmark/
+├── config.py                      load and validate benchmark settings
 ├── dataset/                       preparation and development subsets
 ├── pipeline/                      context construction and generation
 ├── execution/                     preflight, one-job execution and run loop
@@ -67,10 +68,23 @@ ignored by this repository and can be recreated on another machine.
 Create the local Python environment and install the exact locked dependencies:
 
 ```bash
-uv sync
-uv lock --check
-uv run pytest -q
+uv sync --locked
 ```
+
+Before claiming a change is complete, run the full local quality suite:
+
+```bash
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run mypy src
+uv run pytest -q
+uv lock --check
+git diff --check
+```
+
+If the formatting check fails, apply the formatter with
+`uv run ruff format src tests`, then rerun the suite. GitHub Actions repeats
+these no-spend checks on every push and pull request.
 
 `pyproject.toml` contains the direct dependency pins and defines the
 `sec-rag-benchmark` command. `uv.lock` pins the complete dependency graph;

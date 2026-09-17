@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
@@ -9,7 +8,6 @@ from sec_rag_benchmark.cli import main
 from sec_rag_benchmark.evaluation.judge import (
     SYSTEM_PROMPT,
     _build_judge_messages,
-    _combine_verdicts,
     _create_azure_client,
     _request_verdict,
     judge_run,
@@ -73,9 +71,7 @@ class FakeChatCompletions:
 
 def _client(verdicts: list[int]):
     completions = FakeChatCompletions(verdicts)
-    return SimpleNamespace(
-        chat=SimpleNamespace(completions=completions)
-    ), completions
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions)), completions
 
 
 @pytest.mark.parametrize(
@@ -120,8 +116,12 @@ def test_prompt_orders_include_every_required_financebench_field():
     ):
         assert value in reference_first
         assert value in candidate_first
-    assert reference_first.index("REFERENCE ANSWER") < reference_first.index("CANDIDATE ANSWER")
-    assert candidate_first.index("CANDIDATE ANSWER") < candidate_first.index("REFERENCE ANSWER")
+    assert reference_first.index("REFERENCE ANSWER") < reference_first.index(
+        "CANDIDATE ANSWER"
+    )
+    assert candidate_first.index("CANDIDATE ANSWER") < candidate_first.index(
+        "REFERENCE ANSWER"
+    )
 
     # These rules prevent the judge from grading the reference/evidence instead
     # of the candidate when the two answer blocks change order.
@@ -144,11 +144,17 @@ def test_request_validation_and_missing_credentials(monkeypatch):
     malformed = SimpleNamespace(
         id="bad",
         model="DeepSeek-V4-Flash",
-        choices=[SimpleNamespace(message=SimpleNamespace(content='{"verdict": 2, "reason": "bad"}'))],
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"verdict": 2, "reason": "bad"}')
+            )
+        ],
         usage=None,
     )
     bad_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: malformed))
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **kwargs: malformed)
+        )
     )
     with pytest.raises(ValueError, match="verdict"):
         _request_verdict([], _config(), bad_client)
@@ -163,7 +169,11 @@ def test_api_failure_is_retryable_and_did_not_fit_is_not_judged(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     success = _prediction()
-    did_not_fit = {**_prediction("run:q2:long_context"), "status": "did_not_fit", "model_answer": None}
+    did_not_fit = {
+        **_prediction("run:q2:long_context"),
+        "status": "did_not_fit",
+        "model_answer": None,
+    }
     (run_dir / "predictions.jsonl").write_text(
         json.dumps(success) + "\n" + json.dumps(did_not_fit) + "\n"
     )
@@ -181,7 +191,9 @@ def test_api_failure_is_retryable_and_did_not_fit_is_not_judged(tmp_path):
     assert judge_run(run_dir, _config(), client=client)["failed"] == 1
     assert calls == 2
     assert not (run_dir / "judgments.jsonl").exists()
-    errors = [json.loads(line) for line in (run_dir / "errors.jsonl").read_text().splitlines()]
+    errors = [
+        json.loads(line) for line in (run_dir / "errors.jsonl").read_text().splitlines()
+    ]
     assert all(row["stage"] == "judge" for row in errors)
     assert all(row["job_id"] == success["job_id"] for row in errors)
 
@@ -250,15 +262,15 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
         "accuracy_including_did_not_fit": 1 / 3,
     }
     numerical = next(
-        row for row in summary["answer_accuracy"]["by_cognitive_skill"]
+        row
+        for row in summary["answer_accuracy"]["by_cognitive_skill"]
         if row["cognitive_skill"] == "numerical_reasoning"
     )
     assert numerical["did_not_fit"] == 1
     assert numerical["eval_mode"] == "oracle"
     for view in ("by_generation_method", "by_cognitive_skill", "cross_tab"):
         assert all(
-            row["eval_mode"] == "oracle"
-            for row in summary["answer_accuracy"][view]
+            row["eval_mode"] == "oracle" for row in summary["answer_accuracy"][view]
         )
     assert summary["retrieval_metrics"] == {
         "overall": [],
@@ -353,15 +365,18 @@ results_dir = "results"
         return {"judged": 1, "skipped": 0, "failed": 0}
 
     monkeypatch.setattr("sec_rag_benchmark.cli.judge_run", fake_judge)
-    assert main(
-        [
-            "judge",
-            "--config",
-            str(config_path),
-            "--run-dir",
-            str(run_dir),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "judge",
+                "--config",
+                str(config_path),
+                "--run-dir",
+                str(run_dir),
+            ]
+        )
+        == 0
+    )
     assert captured["run_dir"] == run_dir
     assert captured["config"]["deployment"] == "DeepSeek-V4-Flash"
     assert "'judged': 1" in capsys.readouterr().out
