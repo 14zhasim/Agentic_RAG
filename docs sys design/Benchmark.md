@@ -38,6 +38,7 @@ Generation failure
 ├── hallucination
 └── formatting
 
+
 (sources for benchmark based off resources in lit review folder: pdf of the benchmark papers, info in matrix, their github repo - summarised under 'benchmarking.md')
 
 ## Purpose and scope
@@ -121,12 +122,17 @@ Develop testing set pipeline:
   - a prompt that does not fit is recorded as a third outcome, `did_not_fit` — not correct, not incorrect, not an error. This keeps _n_ constant across conditions (so the paired McNemar comparison still works) and keeps the evidence for the claim that long-context is limited by context window size. Report accuracy both including and excluding these rows.
   - `did_not_fit` is terminal and must not be retried on resume; API errors are transient and must be retried
 - integrate FinanceBench 5 context conditions (read section below) into our pipeline, for the retrieval metrics below, using placeholders for our RAG pipeline
+- fix result-affecting settings before paid benchmark runs: use `high` GLM reasoning effort, reserve up to 8,192 output tokens for reasoning plus the visible answer, and retrieve the top 10 chunks for `single_store` and `shared_store`
+- label every run with an explicit experiment and variant; retain both labels in its directory name, configuration snapshot and reports
 - configure results reporting:
+  - execution status: classify every planned question-condition job as `success`, terminal `did_not_fit`, retryable `failed`, or `missing`; report each count overall and by condition
+  - answer accuracy: classify generated answers as agreed `correct`, agreed `incorrect`, `judge_disagreement`, or `unjudged`; keep `did_not_fit` separate and report accuracy both including and excluding it
+  - retrieval quality: for `single_store` and `shared_store` only, report page recall, page precision and page MRR with the contributing sample size for each metric; retrieval metrics are not applicable to conditions that do not retrieve
+  - failure diagnosis: compare each retrieval-condition answer with the oracle answer for the same question, then apply the automatic classification rules below while preserving unclassifiable and manual-review cases
   - for FinanceBench: report results segmented across generation method + cognitive skill + condition, with sample count for each segment
     - `question_type` is clean and used as-is: metrics-generated (50), domain-relevant (48), novel-generated (14)
-    - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split on a standalone `OR`, casefold-compare, fold the parenthetical variant into Logical reasoning, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
+    - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split case-insensitively on a standalone `OR`, discard only the known trailing empty part, casefold-compare complete labels, fold `Logical reasoning (based on numerical reasoning)` into Logical reasoning only, deduplicate skills within a question, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
     - after normalising: Numerical reasoning 57, Information extraction 36, Logical reasoning 21, unlabelled 14 — summing to 128, since 16 questions carry >1 skill. Segment counts exceeding the sample size is expected and is why each segment reports its own _n_.
-  - with this segmentation, report: page recall, page precision, page MRR (count number of unique pages retrieved, MRR is first chunk from golden page)
   - for each answer, record:
     - requested model;
     - returned model;
@@ -134,28 +140,71 @@ Develop testing set pipeline:
     - token usage;
     - latency;
     - cost.
-- use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric 
-  - use Azure Foundry, use DeepSeek-V4-Flash 
+- use Zheng et al. to create a two-pass LLM-as-a-judge for the final answer accuracy metric
+  - use DeepSeek-V4-Flash through Azure Foundry
   - provide it: question, reference answer + evidence + human labeller's justification, candidate answer
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
-  - Azure
-- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not. LLM as judge  
-  - consider doing again using LLM as judge to calculate retrieval metrics: Context Recall, Context Precision, Faithfulness, Correctness using RAGAS. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
+- Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not
+  - before the full benchmark, validate the judge against 30 published FinanceBench human-labelled answers: 15 correct, 10 incorrect and 5 refusals, using 30 unique questions, all three `question_type` categories, multiple published model/condition files and a fixed seed
+  - require at least 27/30 (90%) agreement with the human labels; count a two-pass disagreement as a failed match, report the three label groups separately and manually inspect every mismatch
+  - reproduce the validation source by cloning the official FinanceBench repository at commit `cc39aeb4afdf33909ee1412188bf89035950c2eb`, while keeping the clone ignored by this repository
+  - manually adjudicate every two-pass disagreement: export the disputed answers to `manual_review.csv`, record `human_accuracy` as 0 or 1 with an optional reason, then import the validated decisions into the separate append-only `manual_reviews.jsonl`
+  - use an agreed automated verdict when the judge passes agree, otherwise use the latest manual verdict; leave unreviewed disagreements unresolved and never overwrite `judgments.jsonl`
+  - the final report presents this resolved accuracy without splitting its headline results by automated versus human source; the source JSONL files retain the audit trail
+  - the operational flow is:
+    ```text
+    export-manual-review
+    → complete human_accuracy in manual_review.csv
+    → import-manual-review
+    → rerun report
+    ```
+  - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 
 Develop a validation set pipeline (for purpose of debugging pipeline works):
 
-- smoke test (5-10 questions): check pipeline works
-- pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+- smoke test: 10 FinanceBench questions for checking that the pipeline works
+- pattern check: 50 FinanceBench questions for finding repeatable failure patterns during development
+- select both subsets reproducibly with seed 42 and stratify them proportionally by `question_type`
+  - smoke: 5 metrics-generated, 4 domain-relevant and 1 novel-generated
+  - pattern: 22 metrics-generated, 22 domain-relevant and 6 novel-generated
+- record the subset name and exact selected `financebench_id` values in each run configuration; HiREC validation subsets remain deferred until HiREC is implemented
 
-How to classify (automatic first pass from saved results, hand-label only a sample):
-- oracle correct, retrieval condition wrong → retrieval failure
-  - page recall = 0 in shared_store but > 0 in single_store → wrong document
-  - right document but page recall = 0 → wrong section/chunk
-  - page recall > 0 but < 1 → insufficient recall
-- oracle wrong → reasoning or generation failure (retrieval is not the cause)
-- did_not_fit → context-limit outcome, kept separate from all three
-- sub-types (e.g. arithmetic vs hallucination, missed table) → hand-label a small sample only, using the judge's reason plus the question's cognitive skill label
+Benchmark reporting produces four separate analyses:
+
+1. **Execution status** — whether every planned job succeeded, did not fit, failed
+   or is missing.
+2. **Final answer accuracy** — the combined automated and manually adjudicated
+   correctness statistics, including unresolved and unjudged counts.
+3. **Retrieval quality** — page recall, page precision and page MRR for the two
+   retrieval conditions only.
+4. **Failure diagnosis** — why an incorrect retrieval-condition result likely
+   failed, using the oracle comparison and saved retrieval evidence below.
+
+How to classify pipeline outcomes for failure diagnosis (automatic first pass
+from saved results, with detailed sub-types hand-labelled only for a sample):
+
+- Keep `did_not_fit` as a separate context-limit outcome, i.e. the prompt did
+  not fit in the context window.
+- unclassified missing/disputed judgments.
+- If the oracle answer is incorrect, classify the result as an oracle baseline
+  failure: reasoning or generation may have failed, since retrieval was perfect
+- If the oracle answer is correct and a retrieval-condition answer is
+  incorrect, classify it as a retrieval-context failure:
+  - no chunks are retrieved → no chunks retrieved;
+  - chunks are retrieved, but none comes from the target filing → wrong document;
+  - at least one chunk comes from the target filing, but page recall is zero →
+    wrong section or chunk;
+  - page recall is greater than zero but less than one → partial gold-page
+    recall; this records the observed benchmark coverage but does not prove that
+    the missing gold pages caused the incorrect answer;
+  - page recall is one but the answer remains incorrect → gold pages were
+    retrieved but the answer failed, requiring manual review.
+- Hand-label detailed sub-types such as arithmetic failure, hallucination,
+  missed table content, poor chunk boundaries or distracting context only for
+  a sample, using the judge's reason and the question's cognitive-skill labels.
+- Reports must include a visible legend and preserve the inputs and rule used
+  for every automatic classification.
 
 ## NEED TO ADD: Statistical power — what our sample sizes can actually support
 

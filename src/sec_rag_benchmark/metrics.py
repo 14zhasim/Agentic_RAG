@@ -1,11 +1,12 @@
 """Calculate retrieval metrics and normalize FinanceBench skill labels.
 
-Final-answer accuracy is deliberately absent. As described in the implementation
-guide, a later Azure/RAGAS pass will judge saved answers separately.
+Final-answer accuracy is deliberately absent. The separate Azure judge reads
+saved predictions later, so retrieval calculation never triggers a model call.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -78,15 +79,35 @@ def page_metrics(
     }
 
 
-SKILLS = (
-    ("information extraction", "information_extraction"),
-    ("numerical reasoning", "numerical_reasoning"),
-    ("logical reasoning", "logical_reasoning"),
-)
+SKILL_LABELS = {
+    "information extraction": "information_extraction",
+    "numerical reasoning": "numerical_reasoning",
+    "logical reasoning": "logical_reasoning",
+    "logical reasoning (based on numerical reasoning)": "logical_reasoning",
+}
 
 
 def cognitive_skills(value: str | None) -> list[str]:
-    """Normalize FinanceBench's free-text reasoning labels for segmentation."""
-    normalized = (value or "").casefold()
-    found = [label for phrase, label in SKILLS if phrase in normalized]
-    return found or ["unspecified"]
+    """Strictly map FinanceBench reasoning labels to reporting categories."""
+    if value is None:
+        return ["unlabelled"]
+
+    # FinanceBench joins multiple labels with the word OR. Splitting before
+    # mapping prevents the parenthetical logical label from being mistaken for
+    # a second numerical-reasoning label merely because it contains that text.
+    raw_parts = re.split(r"\s+\bOR\b(?:\s+|$)", value.strip(), flags=re.IGNORECASE)
+    mapped_skills: list[str] = []
+    for raw_part in raw_parts:
+        part = raw_part.strip()
+        if not part:
+            # One source row ends with a trailing OR. It represents no label.
+            continue
+        skill = SKILL_LABELS.get(part.casefold())
+        if skill is None:
+            raise ValueError(f"Unknown cognitive skill label: {part!r}")
+        if skill not in mapped_skills:
+            mapped_skills.append(skill)
+
+    if not mapped_skills:
+        raise ValueError("Unknown cognitive skill label: no mapped labels")
+    return mapped_skills

@@ -10,12 +10,14 @@ The harness currently supports:
 - `oracle`: FinanceBench gold evidence pages;
 - `long_context`: the complete relevant filing;
 - no-spend dry runs;
+- fixed 10-question smoke and 50-question pattern development subsets;
 - append-only answer checkpointing and resumption;
 - page recall, page precision and page MRR;
 - reports segmented by condition, question type and cognitive skill.
 
 `single_store` and `shared_store` are defined but require the future retriever.
-The Azure/RAGAS answer judge and HiREC/LOFin support are also deferred.
+The Azure DeepSeek binary answer judge is implemented, paid-smoke tested and
+validated against published labels. HiREC/LOFin support remains deferred.
 
 ## Project structure
 
@@ -25,8 +27,11 @@ src/sec_rag_benchmark/
 ├── data.py                        prepare, validate and load FinanceBench
 ├── conditions.py                  construct the five context conditions
 ├── generation.py                  prompt and OpenRouter/GLM request
-├── metrics.py                     retrieval metrics and report aggregation
-├── runner.py                      job loop, checkpoints and resumption
+├── metrics.py                     per-job retrieval metrics
+├── development_subsets.py         fixed smoke/pattern selection
+├── manual_review.py               export and import disputed judgments
+├── reporting.py                   segmented result aggregation
+├── execution/                     preflight, one-job execution and run loop
 └── cli.py                         terminal commands and orchestration
 tests/                             no-spend automated tests
 data/financebench/                 generated 10-K subset; ignored by Git
@@ -55,7 +60,12 @@ From the repository root, clone FinanceBench if
 
 ```bash
 git clone https://github.com/patronus-ai/financebench.git benchmarks/financebench
+git -C benchmarks/financebench checkout cc39aeb4afdf33909ee1412188bf89035950c2eb
 ```
+
+The pinned clone supplies the source questions, PDFs and published
+human-labelled model results used to validate the answer judge. It remains
+ignored by this repository and can be recreated on another machine.
 
 Create the local Python environment and install the exact locked dependencies:
 
@@ -101,6 +111,24 @@ uv run sec-rag-benchmark run \
   --dry-run
 ```
 
+For repeatable development checks, use the named subsets. These preserve the
+FinanceBench `question_type` proportions and use the same question IDs on every
+machine:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset smoke \
+  --dry-run
+
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset pattern \
+  --dry-run
+```
+
+Remove `--dry-run` only when you intend to make paid generation requests.
+
 ## Run paid generation
 
 Create an ignored `.env` file in the repository root:
@@ -125,7 +153,8 @@ uv run sec-rag-benchmark run \
   --conditions closed_book oracle long_context
 ```
 
-The CLI creates a timestamped directory such as `results/20260913-143052/` and
+The CLI creates a labelled directory such as
+`results/20260913-143052--financebench--baseline-context-conditions-v1/` and
 prints its path. Keep the path if you need to resume or report the run.
 
 ## Resume and report a run
@@ -137,24 +166,38 @@ conditions. Successful job IDs are skipped:
 uv run sec-rag-benchmark run \
   --config configs/financebench.toml \
   --conditions closed_book oracle long_context \
-  --run-dir results/20260913-143052
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 Create or refresh the reports without calling a model:
 
 ```bash
-uv run sec-rag-benchmark report --run-dir results/20260913-143052
+uv run sec-rag-benchmark report \
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
+
+If the two judge passes disagree, follow the manual-adjudication workflow in
+`Benchmark.md`. Its two additional commands are:
+
+```bash
+uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
+uv run sec-rag-benchmark import-manual-review --run-dir results/<run-id>
+```
+
+After importing completed reviews, rerun `report` to refresh final accuracy.
 
 Each run directory contains:
 
 ```text
 results/<run-id>/
 ├── config.toml        effective configuration for this run
-├── predictions.jsonl successful generated answers
-├── errors.jsonl      failed attempts, when present
+├── predictions.jsonl successful answers and terminal did_not_fit outcomes
+├── judgments.jsonl   completed two-pass answer judgments, when present
+├── manual_review.csv editable disagreements exported for human review
+├── manual_reviews.jsonl validated append-only human decisions
+├── errors.jsonl      retryable generation or judge failures, when present
 ├── summary.json      machine-readable metrics and completion status
-└── summary.csv       spreadsheet-friendly segmented metrics
+└── summary.xlsx      formatted overview, answer and retrieval sheets
 ```
 
 To see all available options:
@@ -164,7 +207,29 @@ uv run sec-rag-benchmark --help
 uv run sec-rag-benchmark run --help
 ```
 
-The `judge` command currently exits with an explicit not-implemented message.
+Judge one successful answer first and inspect `judgments.jsonl` before a full
+run:
+
+```bash
+uv run sec-rag-benchmark judge \
+  --config configs/financebench.toml \
+  --run-dir results/<one-answer-run>
+```
+
+This sends two paid Azure requests for each previously unjudged answer. Azure
+setup and troubleshooting are documented in
+[`Azure Judge Setup.md`](docs%20sys%20design/benchmark/Azure%20Judge%20Setup.md).
+
+Before judging the full benchmark, validate the judge against the fixed
+published human-labelled sample. This makes at most 60 paid Azure requests:
+
+```bash
+uv run sec-rag-benchmark validate-judge \
+  --config configs/financebench.toml
+```
+
+The command prints its resumable directory. Inspect `judge_validation.json`
+for the overall result, per-label agreement and mismatches requiring review.
 
 ## Detailed documentation
 

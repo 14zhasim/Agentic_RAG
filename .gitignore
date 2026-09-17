@@ -1,7 +1,7 @@
 /benchmarks/
 /data/
 __pycache__/
-*.pyc 
+*.pyc
 .venv/
 .env
 EOF
@@ -10,6 +10,7 @@ EOF
 AGENTS.md
 CLAUDE.md
 /results/
+/.superpowers/
 # Local offline library documentation (regenerate: bash scripts/fetch_library_docs.sh)
 docs/libraries/*
 !docs/libraries/SKILL.md

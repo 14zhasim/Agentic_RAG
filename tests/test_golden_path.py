@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 
@@ -10,7 +11,12 @@ from sec_rag_benchmark.config import load_config
 from sec_rag_benchmark.data import DataError, load_questions, prepare, validate
 from sec_rag_benchmark.execution.preflight import dry_run
 from sec_rag_benchmark.execution.runner import run_benchmark
-from sec_rag_benchmark.generation import build_messages, count_prompt_tokens, generate
+from sec_rag_benchmark.generation import (
+    ContextLimitError,
+    build_messages,
+    count_prompt_tokens,
+    generate,
+)
 from sec_rag_benchmark.metrics import cognitive_skills, page_metrics
 from sec_rag_benchmark.reporting import write_report
 
@@ -32,15 +38,36 @@ base_url = "https://openrouter.ai/api/v1"
 upstream_provider = "z-ai"
 allow_fallbacks = false
 context_window_tokens = 1048576
-max_output_tokens = 2048
+max_output_tokens = {generation['max_output_tokens']}
 token_safety_margin = 1024
 temperature = 0.0
-reasoning_effort = "low"
+reasoning_effort = "{generation['reasoning_effort']}"
 timeout_seconds = 30.0
 max_retries = 2
+[judge]
+provider = "azure"
+model = "DeepSeek-V4-Flash"
+deployment = "DeepSeek-V4-Flash"
+prompt_version = "financebench-binary-judge-v2"
+max_output_tokens = 512
+timeout_seconds = 30.0
+max_retries = 2
+[judge_validation]
+source_commit = "cc39aeb4afdf33909ee1412188bf89035950c2eb"
+seed = 42
+correct_examples = 15
+incorrect_examples = 10
+refusal_examples = 5
+minimum_agreement = 0.90
+[development_subsets]
+seed = 42
+smoke_size = 2
+pattern_size = 2
 [run]
+experiment = "{run_config['experiment']}"
+variant = "{run_config['variant']}"
 conditions = ["closed_book", "oracle", "long_context"]
-retrieval_depth = 5
+retrieval_depth = {run_config['retrieval_depth']}
 results_dir = "{run_config['results_dir']}"
 ''')
 
@@ -119,39 +146,188 @@ def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
     assert page_metrics([("a.pdf", 2)], [], 5) == {
         "page_recall": 0.0, "page_precision": 0.0, "page_mrr": 0.0,
     }
-    assert cognitive_skills("Information extraction and numerical reasoning") == ["information_extraction", "numerical_reasoning"]
+    assert cognitive_skills("Information extraction OR Numerical reasoning") == [
+        "information_extraction",
+        "numerical_reasoning",
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw_label, expected",
+    [
+        (None, ["unlabelled"]),
+        ("Information extraction", ["information_extraction"]),
+        ("Numerical reasoning OR information extraction", ["numerical_reasoning", "information_extraction"]),
+        ("Logical reasoning (based on numerical reasoning)", ["logical_reasoning"]),
+        ("Logical reasoning (based on numerical reasoning) OR Logical reasoning", ["logical_reasoning"]),
+        ("Information extraction OR Logical reasoning OR", ["information_extraction", "logical_reasoning"]),
+    ],
+)
+def test_cognitive_skills_strictly_normalize_known_labels(raw_label, expected):
+    assert cognitive_skills(raw_label) == expected
+
+
+def test_cognitive_skills_reject_unknown_labels():
+    with pytest.raises(ValueError, match="Unknown cognitive skill"):
+        cognitive_skills("New reasoning taxonomy")
 
 
 def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "config.toml").write_text(
-        "[selection]\nconditions=['single_store']\nlimit=1\n"
+        "[selection]\nconditions=['single_store', 'oracle']\nlimit=1\n"
     )
     prediction = {
         "job_id": "q1:single_store",
+        "financebench_id": "q1",
         "status": "success",
         "eval_mode": "single_store",
         "question_type": "calculated",
         "cognitive_skills": ["information_extraction", "numerical_reasoning"],
+        "gold_pages": [["target.pdf", 2]],
+        "retrieved_chunks": [
+            {"doc_name": "target.pdf", "pages": [2], "rank": 1}
+        ],
         "page_recall": 1.0,
         "page_precision": 0.5,
         "page_mrr": 1.0,
     }
-    (run_dir / "predictions.jsonl").write_text(json.dumps(prediction) + "\n")
+    oracle_prediction = {
+        **prediction,
+        "job_id": "q1:oracle",
+        "eval_mode": "oracle",
+        "page_recall": None,
+        "page_precision": None,
+        "page_mrr": None,
+    }
+    (run_dir / "predictions.jsonl").write_text(
+        json.dumps(prediction) + "\n" + json.dumps(oracle_prediction) + "\n"
+    )
+    (run_dir / "summary.csv").write_text("obsolete\n")
 
     report = write_report(run_dir)
-    skill_rows = [
-        row
-        for row in report["report_rows"]
-        if row["report_view"] == "cognitive_skill"
-    ]
+    skill_rows = report["retrieval_metrics"]["by_cognitive_skill"]
 
     assert {row["cognitive_skill"] for row in skill_rows} == {
         "information_extraction",
         "numerical_reasoning",
     }
     assert all(row["total_predictions"] == 1 for row in skill_rows)
+    assert all(row["eval_mode"] == "single_store" for row in skill_rows)
+    assert {
+        row["eval_mode"]
+        for row in report["answer_accuracy"]["by_generation_method"]
+    } == {"oracle", "single_store"}
+    assert report["run_status"]["by_condition"] == [
+        {
+            "eval_mode": "oracle",
+            "planned": 1,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 0,
+            "complete": True,
+        },
+        {
+            "eval_mode": "single_store",
+            "planned": 1,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 0,
+            "complete": True,
+        },
+    ]
+    analysis_path = run_dir / "failure_analysis.jsonl"
+    first_analysis = analysis_path.read_text()
+    [analysis_row] = [json.loads(line) for line in first_analysis.splitlines()]
+    assert analysis_row["failure_subtype"] == "unjudged_condition"
+    assert report["failure_analysis"]["unclassified_count"] == 1
+
+    # This file is a derived report, not append-only attempt history. Running
+    # the report again must replace it rather than duplicate its rows.
+    write_report(run_dir)
+    assert analysis_path.read_text() == first_analysis
+    assert not (run_dir / "summary.csv").exists()
+
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        workbook_xml = workbook.read("xl/workbook.xml").decode()
+        shared_strings = workbook.read("xl/sharedStrings.xml").decode()
+    assert all(
+        name in workbook_xml
+        for name in (
+            "Overview",
+            "Answer accuracy",
+            "Retrieval metrics",
+            "Failure analysis",
+        )
+    )
+    assert "Classification legend" in shared_strings
+    assert "Scored answers" in shared_strings
+    assert "Correct answers" in shared_strings
+    assert "Unresolved" in shared_strings
+    assert "Review complete" in shared_strings
+
+
+def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.toml").write_text(
+        "[selection]\nconditions=['shared_store', 'oracle']\nlimit=2\n"
+    )
+    oracle_prediction = {
+        "job_id": "run:q1:oracle",
+        "financebench_id": "q1",
+        "status": "success",
+        "eval_mode": "oracle",
+        "question_type": "calculated",
+        "cognitive_skills": ["numerical_reasoning"],
+        "gold_pages": [["target.pdf", 2]],
+        "retrieved_chunks": [],
+        "page_recall": None,
+        "page_precision": None,
+        "page_mrr": None,
+    }
+    (run_dir / "predictions.jsonl").write_text(
+        json.dumps(oracle_prediction) + "\n"
+    )
+    (run_dir / "errors.jsonl").write_text(
+        json.dumps(
+            {
+                "job_id": "run:q1:shared_store",
+                "status": "error",
+                "error": "temporary failure",
+            }
+        )
+        + "\n"
+    )
+
+    report = write_report(run_dir)
+
+    assert report["run_status"]["successful"] == 1
+    assert report["run_status"]["failed"] == 1
+    assert report["run_status"]["missing"] == 2
+    assert report["run_status"]["by_condition"] == [
+        {
+            "eval_mode": "oracle",
+            "planned": 2,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 1,
+            "complete": False,
+        },
+        {
+            "eval_mode": "shared_store",
+            "planned": 2,
+            "successful": 0,
+            "did_not_fit": 0,
+            "failed": 1,
+            "missing": 1,
+            "complete": False,
+        },
+    ]
 
 
 def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
@@ -187,8 +363,8 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
     assert result["cost"] == 0.001
     assert result["latency_seconds"] >= 0
     assert captured["input"] == messages
-    assert captured["max_output_tokens"] == 2048
-    assert captured["reasoning"] == {"effort": "low"}
+    assert captured["max_output_tokens"] == 8192
+    assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
     assert captured["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
     assert captured["extra_body"]["provider"] == {"order": ["z-ai"], "allow_fallbacks": False}
@@ -213,7 +389,7 @@ def test_generation_rejects_empty_output_and_oversized_prompt(sample, monkeypatc
         called = True
     client.responses.create = should_not_run
     tiny_context = {**sample["generation"], "context_window_tokens": 1}
-    with pytest.raises(ValueError, match="context window"):
+    with pytest.raises(ContextLimitError, match="context window"):
         generate(build_messages("Q", "C"), tiny_context, client=client)
     assert called is False
 
@@ -225,6 +401,9 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
     config = load_config(config_path)
     assert Path(config["dataset"]["source_dir"]).is_absolute()
     assert Path(config["run"]["results_dir"]).is_absolute()
+    assert config["generation"]["reasoning_effort"] == "high"
+    assert config["generation"]["max_output_tokens"] == 8192
+    assert config["run"]["retrieval_depth"] == 10
 
     config_path.write_text(
         config_path.read_text().replace(
@@ -232,6 +411,15 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
         )
     )
     with pytest.raises(ValueError, match="unknown conditions"):
+        load_config(config_path)
+
+    _write_config(config_path, sample)
+    config_path.write_text(
+        config_path.read_text().replace(
+            'variant = "baseline-context-conditions-v1"', 'variant = "unsafe label"'
+        )
+    )
+    with pytest.raises(ValueError, match="experiment and variant"):
         load_config(config_path)
 
 
@@ -261,11 +449,22 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
     _write_config(config_path, sample)
     config = load_config(config_path)
-    run_dir = Path(sample["run"]["results_dir"]) / "test-run"
     def fake(messages, config): return {"answer": "42", "requested_model": config["model"], "request_id": "r", "returned_model": "glm", "provider": "Z.AI", "usage": {}, "cost": None, "latency_seconds": 0.1}
-    kwargs = dict(conditions=["closed_book"], requested_run_dir=run_dir, generator=fake)
-    assert run_benchmark(config, config_path, **kwargs)["generated"] == 2
-    assert run_benchmark(config, config_path, **kwargs)["skipped"] == 2
+    first_run = run_benchmark(
+        config, config_path, conditions=["closed_book"], generator=fake
+    )
+    run_dir = first_run["run_dir"]
+    assert first_run["generated"] == 2
+    assert run_dir.name.endswith(
+        "--financebench--baseline-context-conditions-v1"
+    )
+    assert run_benchmark(
+        config,
+        config_path,
+        conditions=["closed_book"],
+        requested_run_dir=run_dir,
+        generator=fake,
+    )["skipped"] == 2
     questions = load_questions(sample["dataset"]["output_dir"])
     prediction = json.loads((run_dir / "predictions.jsonl").read_text().splitlines()[0])
     assert "numeric_accuracy" not in prediction
@@ -274,11 +473,53 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     assert prediction["requested_model"] == "z-ai/glm-5.3-flash"
     assert prediction["cost"] is None
     report = write_report(run_dir)
-    assert report["complete"] is True
-    overall = next(row for row in report["report_rows"] if row["report_view"] == "overall")
-    assert overall["total_predictions"] == 2
-    assert overall["page_recall"] is None
-    assert overall["page_recall_sample_size"] == 0
+    assert report["run_status"]["complete"] is True
+    assert report["run_status"]["experiment"] == "financebench"
+    assert report["run_status"]["variant"] == "baseline-context-conditions-v1"
+    assert report["retrieval_metrics"]["overall"] == []
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        strings = workbook.read("xl/sharedStrings.xml").decode()
+    assert "financebench" in strings
+    assert "baseline-context-conditions-v1" in strings
+
+
+def test_runner_resume_skips_did_not_fit(sample):
+    prepare(sample["dataset"])
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    run_dir = Path(sample["run"]["results_dir"]) / "did-not-fit-run"
+    calls = 0
+
+    def oversized(messages, generation_config):
+        nonlocal calls
+        calls += 1
+        raise ContextLimitError(
+            "Complete prompt and output reserve exceed the context window"
+        )
+
+    kwargs = {
+        "conditions": ["long_context"],
+        "limit": 1,
+        "requested_run_dir": run_dir,
+        "generator": oversized,
+    }
+    first_result = run_benchmark(config, config_path, **kwargs)
+    second_result = run_benchmark(config, config_path, **kwargs)
+
+    assert first_result["did_not_fit"] == 1
+    assert second_result["skipped"] == 1
+    assert calls == 1
+    prediction = json.loads((run_dir / "predictions.jsonl").read_text().strip())
+    assert prediction["status"] == "did_not_fit"
+    assert prediction["model_answer"] is None
+    assert prediction["requested_model"] == "z-ai/glm-5.3-flash"
+    assert prediction["gold_pages"]
+    assert not (run_dir / "errors.jsonl").exists()
+
+    report = write_report(run_dir)
+    assert report["run_status"]["did_not_fit"] == 1
+    assert report["run_status"]["complete"] is True
 
 
 def test_cli_prepare_validate_and_no_spend_dry_run(sample, tmp_path, capsys, monkeypatch):

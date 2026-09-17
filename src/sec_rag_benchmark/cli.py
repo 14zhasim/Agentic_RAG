@@ -9,6 +9,9 @@ from .config import load_config
 from .data import DataError, prepare, validate
 from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
+from .judge import judge_run
+from .judge_validation import validate_judge
+from .manual_review import export_manual_review, import_manual_review
 from .reporting import write_report
 
 
@@ -25,13 +28,24 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", type=Path, required=True)
     run_parser.add_argument("--conditions", nargs="+")
     run_parser.add_argument("--run-dir", type=Path)
-    run_parser.add_argument("--limit", type=int)
+    selection = run_parser.add_mutually_exclusive_group()
+    selection.add_argument("--limit", type=int)
+    selection.add_argument("--subset", choices=("smoke", "pattern"))
     run_parser.add_argument("--dry-run", action="store_true")
 
     report_parser = commands.add_parser("report")
     report_parser.add_argument("--run-dir", type=Path, required=True)
     judge_parser = commands.add_parser("judge")
+    judge_parser.add_argument("--config", type=Path, required=True)
     judge_parser.add_argument("--run-dir", type=Path, required=True)
+    validation_parser = commands.add_parser("validate-judge")
+    validation_parser.add_argument("--config", type=Path, required=True)
+    validation_parser.add_argument("--run-dir", type=Path)
+    export_review_parser = commands.add_parser("export-manual-review")
+    export_review_parser.add_argument("--run-dir", type=Path, required=True)
+    export_review_parser.add_argument("--overwrite", action="store_true")
+    import_review_parser = commands.add_parser("import-manual-review")
+    import_review_parser.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -55,7 +69,10 @@ def main(argv: list[str] | None = None) -> int:
             case "run" if args.dry_run:
                 config = load_config(args.config)
                 result = dry_run(
-                    config, conditions=args.conditions, limit=args.limit
+                    config,
+                    conditions=args.conditions,
+                    limit=args.limit,
+                    subset=args.subset,
                 )
                 print(f"Planned jobs: {result['planned_jobs']}")
                 print(f"Conditions: {', '.join(result['conditions'])}")
@@ -73,19 +90,49 @@ def main(argv: list[str] | None = None) -> int:
                     args.config,
                     conditions=args.conditions,
                     limit=args.limit,
+                    subset=args.subset,
                     requested_run_dir=args.run_dir,
                 )
                 counts = {
-                    key: result[key] for key in ("generated", "skipped", "failed")
+                    key: result[key]
+                    for key in ("generated", "did_not_fit", "skipped", "failed")
                 }
                 print(f"Run {result['run_dir']}: {counts}")
 
             case "report":
                 summary = write_report(args.run_dir)
-                print(f"Reported {summary['successful']} successful jobs")
+                print(
+                    f"Reported {summary['run_status']['successful']} successful jobs"
+                )
 
             case "judge":
-                parser.error("Azure/RAGAS judge is not implemented yet")
+                config = load_config(args.config)
+                counts = judge_run(args.run_dir, config["judge"])
+                print(f"Judged {args.run_dir}: {counts}")
+
+            case "validate-judge":
+                config = load_config(args.config)
+                result = validate_judge(
+                    config,
+                    args.config,
+                    requested_run_dir=args.run_dir,
+                )
+                print(
+                    f"Validated judge in {result['run_dir']}: "
+                    f"{result['agreements']}/{result['completed']} agreements; "
+                    f"passed={result['passed']}"
+                )
+
+            case "export-manual-review":
+                result = export_manual_review(
+                    args.run_dir,
+                    overwrite=args.overwrite,
+                )
+                print(f"Exported manual review: {result}")
+
+            case "import-manual-review":
+                result = import_manual_review(args.run_dir)
+                print(f"Imported manual review: {result}")
 
         return 0
     except (OSError, ValueError, RuntimeError, DataError) as error:

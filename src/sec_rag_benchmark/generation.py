@@ -23,6 +23,10 @@ TOKENIZER_MODEL = "zai-org/GLM-5.3-Flash"
 TOKENIZER_REVISION = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
 
 
+class ContextLimitError(ValueError):
+    """Signal that a complete prompt cannot fit without truncation."""
+
+
 def build_messages(question: str, context: str) -> list[dict[str, str]]:
     """Build the one shared answer prompt used by every context condition."""
     return [
@@ -75,7 +79,9 @@ def _check_context_capacity(
     prompt_tokens = count_prompt_tokens(messages, config["reasoning_effort"])
     reserved_tokens = config["max_output_tokens"] + config["token_safety_margin"]
     if prompt_tokens + reserved_tokens > config["context_window_tokens"]:
-        raise ValueError("Complete prompt and output reserve exceed the context window")
+        raise ContextLimitError(
+            "Complete prompt and output reserve exceed the context window"
+        )
 
 
 def _create_openrouter_client(config: dict[str, Any]) -> OpenAI:
