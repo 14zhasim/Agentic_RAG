@@ -240,6 +240,8 @@ def write_report_workbook(path: str | Path, summary: dict[str, Any]) -> None:
         overview.write(1, 0, "FinanceBench run overview", formats["title"])
         overview.write_row(3, 0, ["Run status", "Value"], formats["header"])
         status_rows = [
+            ("Experiment", "experiment"),
+            ("Variant", "variant"),
             ("Planned jobs", "planned"),
             ("Successful", "successful"),
             ("Failed", "failed"),
@@ -249,22 +251,24 @@ def write_report_workbook(path: str | Path, summary: dict[str, Any]) -> None:
         ]
         for row_index, (label, key) in enumerate(status_rows, start=4):
             overview.write(row_index, 0, label, formats["text"])
-            overview.write(row_index, 1, summary["run_status"][key])
+            value = summary["run_status"][key]
+            value_format = formats["text"] if isinstance(value, str) else None
+            overview.write(row_index, 1, value, value_format)
 
         overall_accuracy = summary["answer_accuracy"]["overall"]
         if overall_accuracy:
             accuracy = overall_accuracy[0]
-            overview.write(11, 0, "Overall answer accuracy", formats["section"])
-            overview.write(12, 0, "Excluding did not fit", formats["text"])
+            overview.write(14, 0, "Overall answer accuracy", formats["section"])
+            overview.write(15, 0, "Excluding did not fit", formats["text"])
             overview.write(
-                12,
+                15,
                 1,
                 accuracy["accuracy_excluding_did_not_fit"],
                 formats["percent"],
             )
-            overview.write(13, 0, "Including did not fit", formats["text"])
+            overview.write(16, 0, "Including did not fit", formats["text"])
             overview.write(
-                13,
+                16,
                 1,
                 accuracy["accuracy_including_did_not_fit"],
                 formats["percent"],

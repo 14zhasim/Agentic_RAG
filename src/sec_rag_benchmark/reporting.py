@@ -275,9 +275,14 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     )
     attempted_job_ids = set(latest_predictions) | set(latest_errors)
     failed_job_ids = set(latest_errors) - set(latest_predictions)
+    run_config = snapshot.get("run", {})
 
     summary = {
         "run_status": {
+            # Legacy smoke-test directories predate explicit run labels. New
+            # configurations require both fields, while old reports stay readable.
+            "experiment": run_config.get("experiment", "legacy-unlabelled"),
+            "variant": run_config.get("variant", "legacy-unlabelled"),
             "planned": planned_jobs,
             "successful": len(successful_predictions),
             "did_not_fit": len(did_not_fit_predictions),

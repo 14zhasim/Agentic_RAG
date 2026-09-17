@@ -126,7 +126,8 @@ uv run sec-rag-benchmark run \
   --conditions closed_book oracle long_context
 ```
 
-The CLI creates a timestamped directory such as `results/20260913-143052/` and
+The CLI creates a labelled directory such as
+`results/20260913-143052--financebench--baseline-context-conditions-v1/` and
 prints its path. Keep the path if you need to resume or report the run.
 
 ## Resume and report a run
@@ -138,13 +139,14 @@ conditions. Successful job IDs are skipped:
 uv run sec-rag-benchmark run \
   --config configs/financebench.toml \
   --conditions closed_book oracle long_context \
-  --run-dir results/20260913-143052
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 Create or refresh the reports without calling a model:
 
 ```bash
-uv run sec-rag-benchmark report --run-dir results/20260913-143052
+uv run sec-rag-benchmark report \
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 Each run directory contains:

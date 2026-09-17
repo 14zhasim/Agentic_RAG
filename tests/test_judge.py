@@ -263,10 +263,10 @@ base_url = "https://openrouter.ai/api/v1"
 upstream_provider = "z-ai"
 allow_fallbacks = false
 context_window_tokens = 1048576
-max_output_tokens = 2048
+max_output_tokens = 8192
 token_safety_margin = 1024
 temperature = 0.0
-reasoning_effort = "low"
+reasoning_effort = "high"
 timeout_seconds = 30.0
 max_retries = 2
 [judge]
@@ -278,8 +278,10 @@ max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2
 [run]
+experiment = "financebench"
+variant = "baseline-context-conditions-v1"
 conditions = ["oracle"]
-retrieval_depth = 5
+retrieval_depth = 10
 results_dir = "results"
 """
     )

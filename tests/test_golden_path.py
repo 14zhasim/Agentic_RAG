@@ -38,10 +38,10 @@ base_url = "https://openrouter.ai/api/v1"
 upstream_provider = "z-ai"
 allow_fallbacks = false
 context_window_tokens = 1048576
-max_output_tokens = 2048
+max_output_tokens = {generation['max_output_tokens']}
 token_safety_margin = 1024
 temperature = 0.0
-reasoning_effort = "low"
+reasoning_effort = "{generation['reasoning_effort']}"
 timeout_seconds = 30.0
 max_retries = 2
 [judge]
@@ -53,8 +53,10 @@ max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2
 [run]
+experiment = "{run_config['experiment']}"
+variant = "{run_config['variant']}"
 conditions = ["closed_book", "oracle", "long_context"]
-retrieval_depth = 5
+retrieval_depth = {run_config['retrieval_depth']}
 results_dir = "{run_config['results_dir']}"
 ''')
 
@@ -133,7 +135,30 @@ def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
     assert page_metrics([("a.pdf", 2)], [], 5) == {
         "page_recall": 0.0, "page_precision": 0.0, "page_mrr": 0.0,
     }
-    assert cognitive_skills("Information extraction and numerical reasoning") == ["information_extraction", "numerical_reasoning"]
+    assert cognitive_skills("Information extraction OR Numerical reasoning") == [
+        "information_extraction",
+        "numerical_reasoning",
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw_label, expected",
+    [
+        (None, ["unlabelled"]),
+        ("Information extraction", ["information_extraction"]),
+        ("Numerical reasoning OR information extraction", ["numerical_reasoning", "information_extraction"]),
+        ("Logical reasoning (based on numerical reasoning)", ["logical_reasoning"]),
+        ("Logical reasoning (based on numerical reasoning) OR Logical reasoning", ["logical_reasoning"]),
+        ("Information extraction OR Logical reasoning OR", ["information_extraction", "logical_reasoning"]),
+    ],
+)
+def test_cognitive_skills_strictly_normalize_known_labels(raw_label, expected):
+    assert cognitive_skills(raw_label) == expected
+
+
+def test_cognitive_skills_reject_unknown_labels():
+    with pytest.raises(ValueError, match="Unknown cognitive skill"):
+        cognitive_skills("New reasoning taxonomy")
 
 
 def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
@@ -221,8 +246,8 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
     assert result["cost"] == 0.001
     assert result["latency_seconds"] >= 0
     assert captured["input"] == messages
-    assert captured["max_output_tokens"] == 2048
-    assert captured["reasoning"] == {"effort": "low"}
+    assert captured["max_output_tokens"] == 8192
+    assert captured["reasoning"] == {"effort": "high"}
     assert captured["store"] is False
     assert captured["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
     assert captured["extra_body"]["provider"] == {"order": ["z-ai"], "allow_fallbacks": False}
@@ -259,6 +284,9 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
     config = load_config(config_path)
     assert Path(config["dataset"]["source_dir"]).is_absolute()
     assert Path(config["run"]["results_dir"]).is_absolute()
+    assert config["generation"]["reasoning_effort"] == "high"
+    assert config["generation"]["max_output_tokens"] == 8192
+    assert config["run"]["retrieval_depth"] == 10
 
     config_path.write_text(
         config_path.read_text().replace(
@@ -266,6 +294,15 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
         )
     )
     with pytest.raises(ValueError, match="unknown conditions"):
+        load_config(config_path)
+
+    _write_config(config_path, sample)
+    config_path.write_text(
+        config_path.read_text().replace(
+            'variant = "baseline-context-conditions-v1"', 'variant = "unsafe label"'
+        )
+    )
+    with pytest.raises(ValueError, match="experiment and variant"):
         load_config(config_path)
 
 
@@ -295,11 +332,22 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
     _write_config(config_path, sample)
     config = load_config(config_path)
-    run_dir = Path(sample["run"]["results_dir"]) / "test-run"
     def fake(messages, config): return {"answer": "42", "requested_model": config["model"], "request_id": "r", "returned_model": "glm", "provider": "Z.AI", "usage": {}, "cost": None, "latency_seconds": 0.1}
-    kwargs = dict(conditions=["closed_book"], requested_run_dir=run_dir, generator=fake)
-    assert run_benchmark(config, config_path, **kwargs)["generated"] == 2
-    assert run_benchmark(config, config_path, **kwargs)["skipped"] == 2
+    first_run = run_benchmark(
+        config, config_path, conditions=["closed_book"], generator=fake
+    )
+    run_dir = first_run["run_dir"]
+    assert first_run["generated"] == 2
+    assert run_dir.name.endswith(
+        "--financebench--baseline-context-conditions-v1"
+    )
+    assert run_benchmark(
+        config,
+        config_path,
+        conditions=["closed_book"],
+        requested_run_dir=run_dir,
+        generator=fake,
+    )["skipped"] == 2
     questions = load_questions(sample["dataset"]["output_dir"])
     prediction = json.loads((run_dir / "predictions.jsonl").read_text().splitlines()[0])
     assert "numeric_accuracy" not in prediction
@@ -309,7 +357,13 @@ def test_runner_checkpoints_resumes_and_reports(sample):
     assert prediction["cost"] is None
     report = write_report(run_dir)
     assert report["run_status"]["complete"] is True
+    assert report["run_status"]["experiment"] == "financebench"
+    assert report["run_status"]["variant"] == "baseline-context-conditions-v1"
     assert report["retrieval_metrics"]["overall"] == []
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        strings = workbook.read("xl/sharedStrings.xml").decode()
+    assert "financebench" in strings
+    assert "baseline-context-conditions-v1" in strings
 
 
 def test_runner_resume_skips_did_not_fit(sample):

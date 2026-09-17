@@ -411,7 +411,8 @@ as follows:
 [dataset]    → data.py preparation, validation, paths, and expected counts
 [generation] → generation.py model request and context limits
 [judge]      → judge.py Azure request, prompt version, and judge limits
-[run]        → execution modules: conditions, retrieval depth, and results path
+[run]        → execution modules: experiment/variant labels, conditions,
+               retrieval depth, and results path
 ```
 
 `src/sec_rag_benchmark/config.py` has one responsibility: load and verify the
@@ -430,6 +431,35 @@ load_config(config_path):
 It is separate because the TOML contains dataset, generation and run settings.
 Experiment settings that can affect results remain visible in
 `configs/financebench.toml`.
+
+The public benchmark configuration sets
+`reasoning_effort = "high"`, `max_output_tokens = 8192`, and
+`retrieval_depth = 10`. GLM-5.3-Flash supports `low`, `high` and `max`; using a
+supported value avoids OpenRouter silently mapping an unsupported level. The
+8,192-token output limit gives high-effort reasoning and the visible answer
+room within the same response budget.
+
+```toml
+[generation]
+reasoning_effort = "high"
+max_output_tokens = 8192
+token_safety_margin = 1024
+```
+
+The run section also names the methodology represented by the directory:
+
+```toml
+[run]
+experiment = "financebench"
+variant = "baseline-context-conditions-v1"
+conditions = ["closed_book", "oracle", "long_context"]
+retrieval_depth = 10
+results_dir = "results"
+```
+
+`experiment` and `variant` use lowercase letters, numbers and hyphens. They are
+stored in the effective `config.toml`, included in the generated directory
+name, and displayed in `summary.json` and the workbook Overview sheet.
 
 The judge section keeps every result-affecting choice public while the
 endpoint and key remain private environment variables:
@@ -772,7 +802,8 @@ files on first use, then `lru_cache` and Hugging Face's disk cache reuse them;
 it does not download or run the model weights. Both the Transformers version
 and Hugging Face tokenizer revision are pinned for repeatable counts.
 
-`max_output_tokens` limits and reserves room for the answer. The smaller
+`max_output_tokens = 8192` limits and reserves room for both model reasoning
+and the visible answer. The separate
 `token_safety_margin = 1024` still allows for possible formatting differences
 between the locally applied template and OpenRouter's serving path. The check
 therefore compares input tokens + output-token reserve + safety tokens with the
@@ -818,7 +849,7 @@ chunks = [
     {"doc_name": "A.pdf", "pages": [2], "rank": 3},
 ]
 
-top_k = 5
+top_k = 10
 ```
 
 `("A.pdf", 2)` is one document-aware page. `("wrong.pdf", 2)` is a
@@ -937,8 +968,33 @@ gold pages, so the loop saves rank 2 and stops:
 page MRR = 1 / first relevant chunk rank = 1 / 2 = 0.5
 ```
 
-`cognitive_skills()` is separate from this calculation. It converts the raw
-FinanceBench reasoning text into the skill labels used later by `write_report()`.
+`cognitive_skills()` is separate from this calculation. It performs the strict
+conversion below before `write_report()` uses the labels.
+
+```text
+cognitive_skills(raw label):
+    IF the value is None:
+        return ["unlabelled"]
+
+    split case-insensitively on standalone OR
+    trim each part
+    discard only empty parts created by the known trailing OR
+
+    FOR each remaining complete label:
+        map Information extraction
+        map Numerical reasoning
+        map Logical reasoning
+        map Logical reasoning (based on numerical reasoning) to Logical reasoning
+        raise an error if no exact case-insensitive mapping exists
+
+    remove duplicate mapped skills while preserving their order
+    return the mapped skills
+```
+
+The implemented parser reproduces 57 numerical-reasoning, 36
+information-extraction, 21 logical-reasoning and 14 unlabelled assignments over
+the prepared 112-question dataset. The total is 128 because 16 questions have
+multiple skills.
 
 ## 10. Preflight, one-job execution and real-run orchestration
 
@@ -1026,7 +1082,9 @@ RETURN run directory and generated/did-not-fit/skipped/failed counts
 ```
 
 `_create_or_resume_run()` writes or verifies the effective `config.toml` and
-derives the run key. `_completed_jobs()` reads both successful and
+derives the run key. A new directory is named
+`<timestamp>--<experiment>--<variant>`; resumption still uses the exact path
+passed through `--run-dir`. `_completed_jobs()` reads both successful and
 `did_not_fit` IDs from `predictions.jsonl`. `_did_not_fit_prediction()` builds
 the non-answer row for an oversized prompt. `_append()` immediately adds one
 terminal result or failure to its JSONL, so a later crash does not discard
@@ -1285,10 +1343,11 @@ arrays remain populated.
 
 ### Human-readable `summary.xlsx`
 
-`report_workbook.py` renders three sheets:
+`report_workbook.py` renders three sheets and places the two run labels on the
+first sheet:
 
-1. `Overview`: planned, successful, failed, missing, `did_not_fit`, completion
-   and overall answer accuracy.
+1. `Overview`: experiment, variant, planned, successful, failed, missing,
+   `did_not_fit`, completion and overall answer accuracy.
 2. `Answer accuracy`: Overall, By condition, By generation method within
    condition, By cognitive skill within condition, and Cross-tab within
    condition.
@@ -1303,7 +1362,7 @@ additive. If a run has no retrieval conditions, the retrieval sheet says
 `No applicable retrieval results.` Charts are intentionally omitted.
 
 ```text
-results/<run-id>/
+results/<timestamp>--<experiment>--<variant>/
 ├── config.toml        effective public run configuration
 ├── predictions.jsonl append-only success and did_not_fit outcomes
 ├── judgments.jsonl   append-only completed two-pass judgments
@@ -1646,7 +1705,8 @@ uv run sec-rag-benchmark run \
 ```
 
 For example, the command may print a directory named
-`results/20260913-143052`. Keep the actual path printed by your run.
+`results/20260913-143052--financebench--baseline-context-conditions-v1`. Keep
+the actual path printed by your run.
 
 If the run stops, load the API key again in a new terminal and pass that existing
 directory through `--run-dir`. Keep the same conditions. The runner skips job
@@ -1656,7 +1716,7 @@ IDs already recorded as successful or `did_not_fit`:
 uv run sec-rag-benchmark run \
   --config configs/financebench.toml \
   --conditions closed_book oracle long_context \
-  --run-dir results/20260913-143052
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 After generation, create or refresh `summary.json` and `summary.xlsx`. Reporting
@@ -1664,7 +1724,8 @@ reads saved files and does not call an LLM. Replace the example timestamp below
 with the directory printed by your run:
 
 ```bash
-uv run sec-rag-benchmark report --run-dir results/20260913-143052
+uv run sec-rag-benchmark report \
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 After completing the Azure setup guide, load `.env`. This command will make two
@@ -1673,7 +1734,7 @@ paid Azure requests for each successful, previously unjudged answer:
 ```bash
 uv run sec-rag-benchmark judge \
   --config configs/financebench.toml \
-  --run-dir results/20260913-143052
+  --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
 ```
 
 Use a run containing one generated answer for the first paid smoke test. Review
@@ -1690,6 +1751,10 @@ instructions are in `Azure Judge Setup.md` beside this guide.
 | Each named condition builder returns the shared result shape | `test_all_conditions_and_retrieval_scopes` |
 | Single-store and shared-store pass distinct scopes to the shared retrieval builder | `test_all_conditions_and_retrieval_scopes` |
 | Document-aware recall/precision and chunk-rank MRR | `test_metrics_use_document_aware_unique_pages_and_chunk_rank` |
+| Strict skill parsing handles all known variants and rejects unknown labels | `test_cognitive_skills_strictly_normalize_known_labels` and `test_cognitive_skills_reject_unknown_labels` |
+| Prepared data reproduces 57/36/21/14 skill counts | Verified directly against the prepared 112-question JSONL |
+| Configuration requires safe experiment/variant labels and exposes high effort, 8,192 output tokens and retrieval depth 10 | `test_load_config_resolves_paths_and_rejects_unknown_condition` |
+| New run paths and report overview contain experiment and variant | `test_runner_checkpoints_resumes_and_reports` and `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Nested JSON contains five condition-aware views for each metric family | `test_report_places_multi_skill_prediction_in_each_skill_view` and `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
 | Retrieval reports exclude conditions that did not retrieve | `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Workbook contains Overview, Answer accuracy and Retrieval metrics sheets | `test_report_places_multi_skill_prediction_in_each_skill_view` |

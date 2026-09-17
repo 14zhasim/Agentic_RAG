@@ -122,10 +122,12 @@ Develop testing set pipeline:
   - a prompt that does not fit is recorded as a third outcome, `did_not_fit` — not correct, not incorrect, not an error. This keeps _n_ constant across conditions (so the paired McNemar comparison still works) and keeps the evidence for the claim that long-context is limited by context window size. Report accuracy both including and excluding these rows.
   - `did_not_fit` is terminal and must not be retried on resume; API errors are transient and must be retried
 - integrate FinanceBench 5 context conditions (read section below) into our pipeline, for the retrieval metrics below, using placeholders for our RAG pipeline
+- fix result-affecting settings before paid benchmark runs: use `high` GLM reasoning effort, reserve up to 8,192 output tokens for reasoning plus the visible answer, and retrieve the top 10 chunks for `single_store` and `shared_store`
+- label every run with an explicit experiment and variant; retain both labels in its directory name, configuration snapshot and reports
 - configure results reporting:
   - for FinanceBench: report results segmented across generation method + cognitive skill + condition, with sample count for each segment
     - `question_type` is clean and used as-is: metrics-generated (50), domain-relevant (48), novel-generated (14)
-    - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split on a standalone `OR`, casefold-compare, fold the parenthetical variant into Logical reasoning, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
+    - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split case-insensitively on a standalone `OR`, discard only the known trailing empty part, casefold-compare complete labels, fold `Logical reasoning (based on numerical reasoning)` into Logical reasoning only, deduplicate skills within a question, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
     - after normalising: Numerical reasoning 57, Information extraction 36, Logical reasoning 21, unlabelled 14 — summing to 128, since 16 questions carry >1 skill. Segment counts exceeding the sample size is expected and is why each segment reports its own _n_.
   - with this segmentation, report: page recall, page precision, page MRR (count number of unique pages retrieved, MRR is first chunk from golden page)
   - for each answer, record:

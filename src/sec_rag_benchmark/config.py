@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
 from typing import Any
 
@@ -30,6 +31,17 @@ def load_config(path: str | Path) -> dict[str, Any]:
     configured_conditions = config["run"]["conditions"]
     if not configured_conditions or set(configured_conditions) - CONDITIONS:
         raise ValueError("Configuration contains missing or unknown conditions")
+
+    run_label = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+    if any(
+        run_label.fullmatch(config["run"].get(key, "")) is None
+        for key in ("experiment", "variant")
+    ):
+        raise ValueError(
+            "run experiment and variant must use lowercase letters, numbers, and hyphens"
+        )
+    if config["run"]["retrieval_depth"] <= 0:
+        raise ValueError("retrieval_depth must be positive")
 
     generation = config["generation"]
     if generation["provider"] != "openrouter" or generation["allow_fallbacks"] is not False:

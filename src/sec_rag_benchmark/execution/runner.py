@@ -90,7 +90,10 @@ def _create_or_resume_run(
     """Create or verify the run directory, snapshot and stable run key."""
     run_dir = requested_run_dir or (
         Path(config["run"]["results_dir"])
-        / datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        / (
+            f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}--"
+            f"{config['run']['experiment']}--{config['run']['variant']}"
+        )
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
