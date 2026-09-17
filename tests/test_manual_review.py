@@ -4,7 +4,10 @@ import json
 import pytest
 
 from sec_rag_benchmark.cli import main
-from sec_rag_benchmark.manual_review import export_manual_review, import_manual_review
+from sec_rag_benchmark.evaluation.manual_review import (
+    export_manual_review,
+    import_manual_review,
+)
 
 
 def _prediction(job_id: str, *, status: str = "success") -> dict:

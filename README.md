@@ -24,14 +24,11 @@ validated against published labels. HiREC/LOFin support remains deferred.
 ```text
 configs/financebench.toml          editable dataset, generation and run settings
 src/sec_rag_benchmark/
-├── data.py                        prepare, validate and load FinanceBench
-├── conditions.py                  construct the five context conditions
-├── generation.py                  prompt and OpenRouter/GLM request
-├── metrics.py                     per-job retrieval metrics
-├── development_subsets.py         fixed smoke/pattern selection
-├── manual_review.py               export and import disputed judgments
-├── reporting.py                   segmented result aggregation
+├── dataset/                       preparation and development subsets
+├── pipeline/                      context construction and generation
 ├── execution/                     preflight, one-job execution and run loop
+├── evaluation/                    metrics, judging and manual review
+├── reporting/                     aggregation, diagnosis and workbook output
 └── cli.py                         terminal commands and orchestration
 tests/                             no-spend automated tests
 data/financebench/                 generated 10-K subset; ignored by Git

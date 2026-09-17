@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from sec_rag_benchmark.failure_analysis import (
+from sec_rag_benchmark.reporting.failure_analysis import (
     build_failure_analysis,
     summarize_failure_analysis,
 )
-from sec_rag_benchmark.reporting import _resolve_judgments
+from sec_rag_benchmark.reporting.report import _resolve_judgments
 
 
 def _prediction(

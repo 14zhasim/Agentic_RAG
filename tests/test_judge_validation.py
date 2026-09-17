@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from sec_rag_benchmark.cli import main
-from sec_rag_benchmark.judge_validation import (
+from sec_rag_benchmark.evaluation.judge_validation import (
     create_validation_sample,
     summarize_validation,
     validate_judge,

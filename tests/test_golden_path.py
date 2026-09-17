@@ -5,20 +5,29 @@ from zipfile import ZipFile
 
 import pytest
 
-from sec_rag_benchmark.conditions import RetrieverUnavailable, build_condition, gold_pages
+from sec_rag_benchmark.pipeline.conditions import (
+    RetrieverUnavailable,
+    build_condition,
+    gold_pages,
+)
 from sec_rag_benchmark.cli import main
 from sec_rag_benchmark.config import load_config
-from sec_rag_benchmark.data import DataError, load_questions, prepare, validate
+from sec_rag_benchmark.dataset.financebench import (
+    DataError,
+    load_questions,
+    prepare,
+    validate,
+)
 from sec_rag_benchmark.execution.preflight import dry_run
 from sec_rag_benchmark.execution.runner import run_benchmark
-from sec_rag_benchmark.generation import (
+from sec_rag_benchmark.pipeline.generation import (
     ContextLimitError,
     build_messages,
     count_prompt_tokens,
     generate,
 )
-from sec_rag_benchmark.metrics import cognitive_skills, page_metrics
-from sec_rag_benchmark.reporting import write_report
+from sec_rag_benchmark.evaluation.retrieval_metrics import cognitive_skills, page_metrics
+from sec_rag_benchmark.reporting.report import write_report
 
 
 def _write_config(path: Path, sample) -> None:
@@ -338,7 +347,9 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
             template_call.update(messages=messages, **kwargs)
             return {"input_ids": [1, 2, 3]}
     tokenizer = FakeTokenizer()
-    monkeypatch.setattr("sec_rag_benchmark.generation.get_tokenizer", lambda: tokenizer)
+    monkeypatch.setattr(
+        "sec_rag_benchmark.pipeline.generation.get_tokenizer", lambda: tokenizer
+    )
     messages = build_messages("Q", "C")
     assert count_prompt_tokens(messages, "low") == 3
     assert template_call == {
@@ -372,7 +383,7 @@ def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):
 
 def test_generation_rejects_empty_output_and_oversized_prompt(sample, monkeypatch):
     monkeypatch.setattr(
-        "sec_rag_benchmark.generation.get_tokenizer",
+        "sec_rag_benchmark.pipeline.generation.get_tokenizer",
         lambda: SimpleNamespace(apply_chat_template=lambda *args, **kwargs: {"input_ids": [1, 2, 3]}),
     )
     response = SimpleNamespace(id="r1", model="glm", output_text="", usage=None)

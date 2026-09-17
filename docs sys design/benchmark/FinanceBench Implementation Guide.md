@@ -153,55 +153,69 @@ sec-rag-benchmark = "sec_rag_benchmark.cli:main"
 Sections 5–12 follow the order in which to read the implementation; each section
 identifies its exact source file, function order, and corresponding test.
 
-The run-related modules live together under `execution/`:
+The approved structure groups existing modules by the benchmark stage they
+serve. This refactor moves files and updates imports only; it does not change
+functions, CLI commands, algorithms or persisted artifacts. Later topical
+sections retain the current paths until the file moves are implemented, then
+will be reconciled to these paths as part of the same slice.
 
 ```text
 configs/financebench.toml          public editable run settings
 src/sec_rag_benchmark/
 ├── config.py                      load and validate TOML configuration
-├── data.py                        prepare, validate, load questions
-├── conditions.py                  dispatch to five condition builders
-├── generation.py                  prompt and OpenRouter request
-├── metrics.py                     score one job and normalize skill labels
-├── development_subsets.py         fixed stratified smoke/pattern selection
-├── judge.py                       make and checkpoint two-pass Azure judgments
-├── judge_validation.py            compare the judge with published human labels
-├── failure_analysis.py            classify and summarize retrieval failures
-├── reporting.py                   calculate nested report data and write JSON
-├── report_workbook.py              render the report data as a workbook
+├── cli.py                         arguments, match/case, output and exit codes
+├── dataset/
+│   ├── financebench.py           prepare, validate and load questions
+│   └── subsets.py                fixed smoke/pattern selection
+├── pipeline/
+│   ├── conditions.py             construct the five context conditions
+│   └── generation.py             build prompts and call OpenRouter
 ├── execution/
 │   ├── preflight.py               no-spend condition and token checks
 │   ├── job.py                     execute one question-condition pair
 │   └── runner.py                  loop, checkpoint and resume real runs
-└── cli.py                         arguments, match/case, output and exit codes
+├── evaluation/
+│   ├── retrieval_metrics.py       score one job and normalize skill labels
+│   ├── judge.py                   checkpoint two-pass Azure judgments
+│   ├── judge_validation.py        compare the judge with published labels
+│   └── manual_review.py           export and import disputed judgments
+└── reporting/
+    ├── report.py                  aggregate saved results and write JSON
+    ├── failure_analysis.py        classify and summarize retrieval failures
+    └── workbook.py                render the report data as a workbook
 tests/
 ├── conftest.py                    tiny two-question/PDF fixtures
 ├── test_failure_analysis.py       focused failure-classification tests
 └── test_golden_path.py            compact integration behavior tests
 ```
 
+Every new folder contains an empty `__init__.py`. Imports use the explicit new
+module paths; the old root modules are removed rather than retained as
+compatibility wrappers. Tests remain together under `tests/`.
+
 ```mermaid
 flowchart LR
     CLI[cli.py] --> CONFIG[config.py]
-    CLI[cli.py] --> DATA[data.py]
+    CLI[cli.py] --> DATA[dataset/financebench.py]
     CLI --> PREFLIGHT[execution/preflight.py]
     CLI --> RUN[execution/runner.py]
-    CLI --> JUDGE[judge.py]
-    CLI --> JV[judge_validation.py]
-    CLI --> REPORT[reporting.py]
-    REPORT --> FAILURE[failure_analysis.py]
-    REPORT --> BOOK[report_workbook.py]
-    CONFIG --> COND[conditions.py constants]
-    PREFLIGHT --> SUBSET[development_subsets.py]
+    CLI --> JUDGE[evaluation/judge.py]
+    CLI --> JV[evaluation/judge_validation.py]
+    CLI --> REVIEW[evaluation/manual_review.py]
+    CLI --> REPORT[reporting/report.py]
+    REPORT --> FAILURE[reporting/failure_analysis.py]
+    REPORT --> BOOK[reporting/workbook.py]
+    CONFIG --> COND[pipeline/conditions.py constants]
+    PREFLIGHT --> SUBSET[dataset/subsets.py]
     RUN --> SUBSET
     PREFLIGHT --> DATA
     PREFLIGHT --> COND
-    PREFLIGHT --> GEN
+    PREFLIGHT --> GEN[pipeline/generation.py]
     RUN --> DATA
     RUN --> JOB[execution/job.py]
     JOB --> COND
     JOB --> GEN
-    JOB --> MET
+    JOB --> MET[evaluation/retrieval_metrics.py]
     COND --> PDF[PyMuPDF]
     DATA --> PDF
     GEN --> OR[OpenRouter via OpenAI SDK]
@@ -325,7 +339,7 @@ when returned and is otherwise explicitly `null`.
 
 ### Judgment row
 
-`src/sec_rag_benchmark/judge.py` appends one combined result after both
+`src/sec_rag_benchmark/evaluation/judge.py` appends one combined result after both
 judge calls complete:
 
 ```python
@@ -605,7 +619,7 @@ pattern_size = 50
 
 ## 6. Data preparation and validation flow
 
-In `src/sec_rag_benchmark/data.py`, read `prepare()` → `validate()` →
+In `src/sec_rag_benchmark/dataset/financebench.py`, read `prepare()` → `validate()` →
 `load_run_questions()` → `load_questions()` → `_check_rows()` → the
 small I/O, PDF, and hash helpers. Read
 the three data tests in `tests/test_golden_path.py` alongside it, using the
@@ -752,7 +766,7 @@ Important behavior:
 
 ## 7. Condition construction
 
-`src/sec_rag_benchmark/conditions.py` keeps one public dispatcher
+`src/sec_rag_benchmark/pipeline/conditions.py` keeps one public dispatcher
 but moves each condition's substantial work into a named builder. Read it as:
 
 ```text
@@ -861,7 +875,7 @@ dictionaries. A missing retriever raises `RetrieverUnavailable`.
 
 ## 8. Generation flow
 
-In `src/sec_rag_benchmark/generation.py`, read `build_messages()` → `generate()`
+In `src/sec_rag_benchmark/pipeline/generation.py`, read `build_messages()` → `generate()`
 → `count_prompt_tokens()` → `get_tokenizer()` → `_selected_provider()`. Read alongside
 `test_generation_pins_provider_without_real_api_call()` and
 `test_generation_rejects_empty_output_and_oversized_prompt()` in
@@ -954,7 +968,7 @@ returns `None` instead of guessing when that metadata is absent.
 
 ## 9. Retrieval metrics
 
-In `src/sec_rag_benchmark/metrics.py`, read `page_metrics()` and
+In `src/sec_rag_benchmark/evaluation/retrieval_metrics.py`, read `page_metrics()` and
 `cognitive_skills()`. These both transform one question/job rather than
 aggregating a complete run. Read alongside
 `test_metrics_use_document_aware_unique_pages_and_chunk_rank()` in
@@ -1269,9 +1283,9 @@ This section describes the implemented nested JSON, workbook and
 failure-analysis reports. The previous flat `summary.json` and wide
 `summary.csv` have been replaced.
 
-Read `src/sec_rag_benchmark/reporting.py` first. Its public
+Read `src/sec_rag_benchmark/reporting/report.py` first. Its public
 `write_report()` calculates report data and writes `summary.json`. Then read
-`src/sec_rag_benchmark/report_workbook.py`, whose public workbook writer will
+`src/sec_rag_benchmark/reporting/workbook.py`, whose public workbook writer will
 turn that summary and the detailed failure rows into `summary.xlsx`. This
 separation keeps calculations in one place and spreadsheet formatting in
 another.
@@ -1337,7 +1351,7 @@ accuracy by decision source. Provenance remains in the source JSONL files.
 
 ### Manual adjudication of judge disagreements
 
-`src/sec_rag_benchmark/manual_review.py` exposes two complete operations:
+`src/sec_rag_benchmark/evaluation/manual_review.py` exposes two complete operations:
 
 ```text
 export_manual_review(run_dir)
@@ -1423,7 +1437,7 @@ tests/test_manual_review.py
       all-or-nothing validation, unchanged reimport and corrected append.
 - [x] Run `uv run pytest tests/test_manual_review.py -q` and confirm the new
       module or behaviour is missing.
-- [x] Create `src/sec_rag_benchmark/manual_review.py` with the two public
+- [x] Create `src/sec_rag_benchmark/evaluation/manual_review.py` with the two public
       operations and meaningful helpers shown above.
 - [x] Add `export-manual-review --run-dir ... [--overwrite]` and
       `import-manual-review --run-dir ...` to `cli.main()`.
@@ -1897,7 +1911,7 @@ interpret the counts without relying on undocumented code.
 
 ### Human-readable `summary.xlsx`
 
-`report_workbook.py` renders four sheets and places the two run labels on the
+`reporting/workbook.py` renders four sheets and places the two run labels on the
 first sheet:
 
 1. `Overview`: experiment, variant, planned, successful, failed, missing,
@@ -1949,11 +1963,11 @@ reporting.write_report()
 
 Files and responsibilities:
 
-- `src/sec_rag_benchmark/failure_analysis.py` contains the two functions
+- `src/sec_rag_benchmark/reporting/failure_analysis.py` contains the two functions
   above and the single methodology legend;
-- `src/sec_rag_benchmark/reporting.py` calculates execution status by
+- `src/sec_rag_benchmark/reporting/report.py` calculates execution status by
   condition, coordinates failure analysis and replaces the derived JSONL;
-- `src/sec_rag_benchmark/report_workbook.py` renders the legend,
+- `src/sec_rag_benchmark/reporting/workbook.py` renders the legend,
   counts and filterable detail rows on the fourth sheet;
 - `tests/test_failure_analysis.py` covers every classification branch;
 - `tests/test_golden_path.py` covers report-file and workbook integration.
@@ -1988,7 +2002,7 @@ stored in each analysis row. The slice remains uncommitted until user review.
 
 ### Azure binary answer judge
 
-Read `src/sec_rag_benchmark/judge.py` from its public `judge_run()` first,
+Read `src/sec_rag_benchmark/evaluation/judge.py` from its public `judge_run()` first,
 followed by `_judge_answer()`, `_build_judge_messages()`,
 `_request_verdict()`, `_combine_verdicts()`, and finally the small file/client
 helpers above them. Judging is a separate pass over
@@ -2114,7 +2128,7 @@ The DeepSeek client receives the project endpoint from
 `AZURE_DEEPSEEK_ENDPOINT`, appends `/openai/v1`, and authenticates with
 `AZURE_DEEPSEEK_API_KEY`. It uses `client.chat.completions.create()` because
 Microsoft publishes DeepSeek-V4-Flash as a Chat Completions model. This does
-not alter `generation.py`: GLM generation continues using OpenRouter's
+not alter `pipeline/generation.py`: GLM generation continues using OpenRouter's
 Responses API.
 
 Judge calls are sequential. The pinned OpenAI client retries connection errors,
@@ -2132,7 +2146,7 @@ terminal jobs in the denominator while adding no correct answer for them.
 
 ### Human-label validation gate
 
-Read `judge_validation.py` after `judge.py`. Start with `validate_judge()`, then
+Read `evaluation/judge_validation.py` after `evaluation/judge.py`. Start with `validate_judge()`, then
 follow `create_validation_sample()` through `_source_candidates()`,
 `_select_candidates()` and `_prediction_from_sample()`. Finish with
 `summarize_validation()` and `_selected_source_hashes()`. The module converts
@@ -2562,18 +2576,18 @@ Safeguards retained because they directly support benchmark validity:
 Sections 2, 3 and 5–13 now describe the code as built:
 
 - `config.py` owns `load_config()`;
-- `development_subsets.py` owns reproducible smoke/pattern question selection;
-- `data.py` separates selection, row checks, prepared-file replacement and
+- `dataset/subsets.py` owns reproducible smoke/pattern question selection;
+- `dataset/financebench.py` separates selection, row checks, prepared-file replacement and
   manifest work into named helpers;
-- `conditions.py` dispatches to one named builder per condition;
-- `generation.py` separates capacity checking, client construction and response
+- `pipeline/conditions.py` dispatches to one named builder per condition;
+- `pipeline/generation.py` separates capacity checking, client construction and response
   parsing;
-- `metrics.py` contains per-job calculations only;
-- `failure_analysis.py` owns document-aware causal classification and its
+- `evaluation/retrieval_metrics.py` contains per-job calculations only;
+- `reporting/failure_analysis.py` owns document-aware causal classification and its
   machine-readable methodology legend;
-- `reporting.py` owns latest-attempt selection, skill expansion and the nested
+- `reporting/report.py` owns latest-attempt selection, skill expansion and the nested
   report calculations, including execution status by condition;
-- `report_workbook.py` owns the four-sheet workbook layout and formatting only;
+- `reporting/workbook.py` owns the four-sheet workbook layout and formatting only;
 - `execution/preflight.py` owns the no-spend `dry_run()` path;
 - `execution/job.py` owns `execute_job()` for one question-condition pair;
 - `execution/runner.py` owns the complete `run_benchmark()` workflow and
@@ -2607,25 +2621,25 @@ accuracy for reporting.
 The source comments intentionally mirror this guide at the boundaries where a
 reader needs design context:
 
-- `data.py` comments trace 10-K selection, idempotent rebuilding, manifest
+- `dataset/financebench.py` comments trace 10-K selection, idempotent rebuilding, manifest
   provenance, complete-PDF validation, and the in-memory metadata join;
 - `config.py` comments explain path resolution and cross-section checks;
-- `development_subsets.py` comments explain proportional allocation, fixed
+- `dataset/subsets.py` comments explain proportional allocation, fixed
   sampling and restored source order;
-- `conditions.py` comments connect each named builder to the information
+- `pipeline/conditions.py` comments connect each named builder to the information
   supplied under its condition;
-- `generation.py` comments connect shared prompting, conservative context
+- `pipeline/generation.py` comments connect shared prompting, conservative context
   accounting, lazy credentials, and provider pinning;
 - `execution/preflight.py` comments trace no-spend context and token checks;
 - `execution/job.py` comments trace one question-condition job and retrieval-metric
   applicability;
 - `execution/runner.py` comments trace run setup, looping, checkpointing and
   resumption;
-- `metrics.py` comments explain unique document-aware pages, chunk-ranked MRR,
+- `evaluation/retrieval_metrics.py` comments explain unique document-aware pages, chunk-ranked MRR,
   and per-job cognitive-skill normalization;
-- `reporting.py` comments explain multi-label segmentation and per-metric
+- `reporting/report.py` comments explain multi-label segmentation and per-metric
   denominators and follow the five nested views in this section;
-- `report_workbook.py` comments distinguish ordinary tables from condition
+- `reporting/workbook.py` comments distinguish ordinary tables from condition
   header bands and keep workbook formatting separate from metric calculation;
 - `cli.py` comments distinguish data preparation, no-spend preflight, generation,
   and report-only orchestration.

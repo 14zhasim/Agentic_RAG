@@ -6,13 +6,13 @@ import argparse
 from pathlib import Path
 
 from .config import load_config
-from .data import DataError, prepare, validate
+from .dataset.financebench import DataError, prepare, validate
 from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
-from .judge import judge_run
-from .judge_validation import validate_judge
-from .manual_review import export_manual_review, import_manual_review
-from .reporting import write_report
+from .evaluation.judge import judge_run
+from .evaluation.judge_validation import validate_judge
+from .evaluation.manual_review import export_manual_review, import_manual_review
+from .reporting.report import write_report
 
 
 def main(argv: list[str] | None = None) -> int:

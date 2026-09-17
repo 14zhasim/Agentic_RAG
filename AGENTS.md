@@ -75,6 +75,41 @@ Reference deck: "Zubair_Research_Planning_Condense_v2" (converted to Zubair_Rese
 
 ##### Experiment 3 — agentic tooling, verification, looping
 
+## Project constraints
+
+**Python:** 3.12 (`.python-version`, `requires-python = ">=3.12"`). Managed with `uv` — never `pip install` into the venv; use `uv add` so `pyproject.toml` and `uv.lock` stay authoritative. Every direct dependency is pinned to an exact version; keep it that way and commit the updated `uv.lock`.
+
+**Dependencies — currently installed:** `jinja2`, `openai`, `pandas`, `pymupdf`, `transformers`, `xlsxwriter`; `pytest` (dev). **Approved to add when its stage arrives:** `llama-index-core`, `llama-index-retrievers-bm25`, `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`, `numpy`, and — only if Voyage goes through LlamaIndex — `llama-index-postprocessor-voyageai-rerank` and `llama-index-embeddings-voyageai`. **Do not add anything else** without agreeing it first: no LangChain, no vector database beyond Chroma, no Elasticsearch (documented as future work), no RAGAS.
+
+**File structure:**
+- `src/sec_rag_benchmark/` — the package: one module per responsibility, flat, no nested subpackages except `execution/`
+- `src/sec_rag_benchmark/execution/` — run orchestration (`preflight.py`, `job.py`, `runner.py`)
+- `tests/` — pytest, one `test_<module>.py` per module, fixtures in `conftest.py`. Tests must make no paid API calls
+- `configs/financebench.toml` — public, editable run settings. Anything that can change results lives here, not in code
+- `scripts/` — standalone utilities that are not part of the package
+- `docs sys design/` — requirements and design (the living sources of truth)
+- `docs/libraries/` — offline library docs, gitignored except `SKILL.md`
+- Generated and never committed: `data/`, `benchmarks/`, `results/`, `.venv/`, `.env`
+- New code goes in the folder that matches its responsibility. A new module needs a reason it is not an existing one.
+
+**Credentials:** never hard-code or print a key. Read from the environment, named in `.env.example`: `OPENROUTER_API_KEY`, `AZURE_DEEPSEEK_API_KEY`, `AZURE_DEEPSEEK_ENDPOINT`, `VOYAGE_API_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`. Load lazily, so no-spend commands and tests run without them.
+
+**Spending:** any command that calls a paid API must be obviously paid, and must have a no-spend equivalent (`--dry-run`, or a fake client in tests). Checkpoint after every question so a crash never loses completed work.
+
+## Git hygiene
+
+A diff shows *what* changed; the commit message explains *why*. British English throughout.
+
+- **Subject line: imperative mood, capitalised, no trailing period, ≤ 50 chars.** Test: "If applied, this commit will [subject]". Write `Add heading-path attribution`, not `Added heading-path attribution`.
+- **Standard formatting:** blank line between subject and body, body wrapped at 72 characters.
+- **Use the body for what and why, not how.** The diff shows how. The body carries what the diff cannot: the problem being solved, why this approach over the alternatives, the trade-offs accepted, and any number or finding that justified the choice.
+- **Small, focused commits — one logical change each.** Never bundle "fix bug + add feature + rename file": bundled commits break `git bisect` when locating a regression.
+- **Separate code from documentation** where practical, and never mix an experiment's results into a code commit.
+- **Commit on a branch, not `main`,** for anything larger than a doc fix; merge when its tests pass.
+- **Never commit** credentials, generated data, parsed output, embeddings, or run results.
+- **Do not cite AI-generated artefacts** in commit messages or in the dissertation. Reference the design documents, the benchmark, or the papers.
+- **Record every result-affecting change as its own commit,** so a run's numbers can be traced to the exact tree that produced them.
+
 ## Understanding-first development workflow
 
 - Treat the user as the learner-owner of the system, not merely an approver.

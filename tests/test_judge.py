@@ -6,7 +6,7 @@ from zipfile import ZipFile
 import pytest
 
 from sec_rag_benchmark.cli import main
-from sec_rag_benchmark.judge import (
+from sec_rag_benchmark.evaluation.judge import (
     SYSTEM_PROMPT,
     _build_judge_messages,
     _combine_verdicts,
@@ -14,7 +14,7 @@ from sec_rag_benchmark.judge import (
     _request_verdict,
     judge_run,
 )
-from sec_rag_benchmark.reporting import _resolve_judgments, write_report
+from sec_rag_benchmark.reporting.report import _resolve_judgments, write_report
 
 
 def _prediction(job_id: str = "run:q1:oracle") -> dict:

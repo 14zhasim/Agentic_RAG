@@ -7,7 +7,7 @@ import re
 import tomllib
 from typing import Any
 
-from .conditions import CONDITIONS
+from .pipeline.conditions import CONDITIONS
 
 
 def load_config(path: str | Path) -> dict[str, Any]:

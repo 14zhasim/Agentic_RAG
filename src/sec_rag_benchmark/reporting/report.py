@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .failure_analysis import build_failure_analysis, summarize_failure_analysis
-from .report_workbook import write_report_workbook
+from .workbook import write_report_workbook
 
 
 REPORT_VIEWS = (

@@ -5,7 +5,7 @@ import tomllib
 import pytest
 
 from sec_rag_benchmark.cli import main
-from sec_rag_benchmark.development_subsets import select_development_subset
+from sec_rag_benchmark.dataset.subsets import select_development_subset
 from sec_rag_benchmark.execution.runner import _create_or_resume_run
 
 
