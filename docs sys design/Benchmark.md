@@ -137,12 +137,14 @@ Develop testing set pipeline:
     - token usage;
     - latency;
     - cost.
-- use Zheng et al. to create a proper LLM-as-a-judge for the final answer accuracy metric using RAGAS library (details below)
-  - use Azure Foundry, use GPT-5.6 Luna
+- use Zheng et al. to create a two-pass LLM-as-a-judge for the final answer accuracy metric
+  - use DeepSeek-V4-Flash through Azure Foundry
   - provide it: question, reference answer + evidence + human labeller's justification, candidate answer
   - report final answer accuracy (allow rounding, truncation, but binary correct/incorrect)
-  - Azure
 - Zheng et al. (2024) - gpt judge agrees almost as much as human, but use different model from judging to generating, give judge correct reference answer BEFORE it grades, grade twice with answer order swapped and only trust verdict both times agreed on. have it putput a 1 or 0 for correct or not
+  - before the full benchmark, validate the judge against 30 published FinanceBench human-labelled answers: 15 correct, 10 incorrect and 5 refusals, using 30 unique questions, all three `question_type` categories, multiple published model/condition files and a fixed seed
+  - require at least 27/30 (90%) agreement with the human labels; count a two-pass disagreement as a failed match, report the three label groups separately and manually inspect every mismatch
+  - reproduce the validation source by cloning the official FinanceBench repository at commit `cc39aeb4afdf33909ee1412188bf89035950c2eb`, while keeping the clone ignored by this repository
   - consider doing again using LLM as judge to calculate retrievla metrics: Context Recall, Context Precision, Faithfulness, Correctness. If not, add as a methodology limitation on accuracy of automated retrieval metrics calculations (higher reported false negatives than in reality)
 - start running benchmark for closed-book and oracle stages
 

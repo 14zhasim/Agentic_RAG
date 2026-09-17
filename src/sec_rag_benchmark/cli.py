@@ -10,6 +10,7 @@ from .data import DataError, prepare, validate
 from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
 from .judge import judge_run
+from .judge_validation import validate_judge
 from .reporting import write_report
 
 
@@ -34,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     judge_parser = commands.add_parser("judge")
     judge_parser.add_argument("--config", type=Path, required=True)
     judge_parser.add_argument("--run-dir", type=Path, required=True)
+    validation_parser = commands.add_parser("validate-judge")
+    validation_parser.add_argument("--config", type=Path, required=True)
+    validation_parser.add_argument("--run-dir", type=Path)
     args = parser.parse_args(argv)
 
     try:
@@ -93,6 +97,19 @@ def main(argv: list[str] | None = None) -> int:
                 config = load_config(args.config)
                 counts = judge_run(args.run_dir, config["judge"])
                 print(f"Judged {args.run_dir}: {counts}")
+
+            case "validate-judge":
+                config = load_config(args.config)
+                result = validate_judge(
+                    config,
+                    args.config,
+                    requested_run_dir=args.run_dir,
+                )
+                print(
+                    f"Validated judge in {result['run_dir']}: "
+                    f"{result['agreements']}/{result['completed']} agreements; "
+                    f"passed={result['passed']}"
+                )
 
         return 0
     except (OSError, ValueError, RuntimeError, DataError) as error:

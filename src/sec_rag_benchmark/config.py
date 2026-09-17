@@ -70,4 +70,17 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if judge["timeout_seconds"] <= 0 or judge["max_retries"] < 0:
         raise ValueError("Judge timeout must be positive and retries cannot be negative")
 
+    validation = config["judge_validation"]
+    if not re.fullmatch(r"[0-9a-f]{40}", validation["source_commit"]):
+        raise ValueError("Judge-validation source_commit must be a 40-character SHA")
+    quotas = (
+        validation["correct_examples"],
+        validation["incorrect_examples"],
+        validation["refusal_examples"],
+    )
+    if min(quotas) <= 0:
+        raise ValueError("Judge-validation sample quotas must be positive")
+    if not 0 < validation["minimum_agreement"] <= 1:
+        raise ValueError("Judge-validation minimum_agreement must be between 0 and 1")
+
     return config

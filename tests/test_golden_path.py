@@ -52,6 +52,13 @@ prompt_version = "financebench-binary-judge-v1"
 max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2
+[judge_validation]
+source_commit = "cc39aeb4afdf33909ee1412188bf89035950c2eb"
+seed = 42
+correct_examples = 15
+incorrect_examples = 10
+refusal_examples = 5
+minimum_agreement = 0.90
 [run]
 experiment = "{run_config['experiment']}"
 variant = "{run_config['variant']}"

@@ -56,8 +56,8 @@ Deferred:
 - HiREC/LOFin;
 - smoke and pattern validation subsets;
 
-The judge implementation is fake-client tested; its one-answer paid Azure
-smoke test remains pending.
+The judge implementation is fake-client tested and its one-answer paid Azure
+smoke test passed. Validation against published human labels is the next gate.
 
 The approved terminal `did_not_fit` outcome is implemented. The current
 1,048,576-token configuration has zero oversized long-context jobs; the
@@ -164,6 +164,8 @@ src/sec_rag_benchmark/
 ├── conditions.py                  dispatch to five condition builders
 ├── generation.py                  prompt and OpenRouter request
 ├── metrics.py                     score one job and normalize skill labels
+├── judge.py                       make and checkpoint two-pass Azure judgments
+├── judge_validation.py            compare the judge with published human labels
 ├── reporting.py                   calculate nested report data and write JSON
 ├── report_workbook.py              render the report data as a workbook
 ├── execution/
@@ -182,6 +184,8 @@ flowchart LR
     CLI[cli.py] --> DATA[data.py]
     CLI --> PREFLIGHT[execution/preflight.py]
     CLI --> RUN[execution/runner.py]
+    CLI --> JUDGE[judge.py]
+    CLI --> JV[judge_validation.py]
     CLI --> REPORT[reporting.py]
     REPORT --> BOOK[report_workbook.py]
     CONFIG --> COND[conditions.py constants]
@@ -196,6 +200,8 @@ flowchart LR
     COND --> PDF[PyMuPDF]
     DATA --> PDF
     GEN --> OR[OpenRouter via OpenAI SDK]
+    JV --> JUDGE
+    JUDGE --> AZ[Azure via OpenAI SDK]
     REPORT --> PD[pandas]
     BOOK --> XLSX[XlsxWriter]
 ```
@@ -385,6 +391,41 @@ the returned row; it is not stored as a nested dictionary.
 | Cognitive skill | `cognitive_skill="numerical_reasoning"` | `{"cognitive_skill": "numerical_reasoning"}` |
 | Cross-tab | both fields | `{"question_type": "calculated", "cognitive_skill": "numerical_reasoning"}` |
 
+### Judge-validation rows
+
+`validation_sample.jsonl` records the published human decision being tested:
+
+```python
+{
+    "job_id": "judge-validation:financebench_id_03029",
+    "financebench_id": "financebench_id_03029",
+    "source_result_file": "gpt-4_oracle.jsonl",
+    "source_model": "gpt-4",
+    "source_eval_mode": "oracle",
+    "human_label": "Correct Answer",
+    "expected_accuracy": 1,
+    "candidate_answer": "The FY2018 capital expenditure was $1,577 million.",
+}
+```
+
+`judge_validation.json` records whether the completed gate passed:
+
+```python
+{
+    "status": "complete",
+    "passed": True,
+    "source_commit": "cc39aeb4afdf33909ee1412188bf89035950c2eb",
+    "source_file_hashes": {...},
+    "completed": 30,
+    "agreements": 28,
+    "agreement_rate": 0.9333,
+    "minimum_agreement": 0.90,
+    "by_human_label": {...},
+    "confusion_matrix": {...},
+    "mismatches": [...],
+}
+```
+
 An input that fails the context preflight instead records this terminal row in
 `predictions.jsonl`:
 
@@ -411,6 +452,7 @@ as follows:
 [dataset]    → data.py preparation, validation, paths, and expected counts
 [generation] → generation.py model request and context limits
 [judge]      → judge.py Azure request, prompt version, and judge limits
+[judge_validation] → judge_validation.py sample quotas, seed, and pass threshold
 [run]        → execution modules: experiment/variant labels, conditions,
                retrieval depth, and results path
 ```
@@ -473,6 +515,18 @@ prompt_version = "financebench-binary-judge-v1"
 max_output_tokens = 512
 timeout_seconds = 180.0
 max_retries = 5
+```
+
+The validation section makes the human-label gate reproducible:
+
+```toml
+[judge_validation]
+source_commit = "cc39aeb4afdf33909ee1412188bf89035950c2eb"
+seed = 42
+correct_examples = 15
+incorrect_examples = 10
+refusal_examples = 5
+minimum_agreement = 0.90
 ```
 
 ## 6. Data preparation and validation flow
@@ -1510,6 +1564,74 @@ agreed judgments, disagreements requiring review, unjudged answers and
 answers as its denominator. Accuracy including `did_not_fit` retains those
 terminal jobs in the denominator while adding no correct answer for them.
 
+### Human-label validation gate
+
+Read `judge_validation.py` after `judge.py`. Start with `validate_judge()`, then
+follow `create_validation_sample()` through `_source_candidates()`,
+`_select_candidates()` and `_prediction_from_sample()`. Finish with
+`summarize_validation()` and `_selected_source_hashes()`. The module converts
+published FinanceBench answers into the existing prediction shape and then
+reuses `judge_run()` instead of creating another judge implementation.
+
+```text
+Pinned FinanceBench results
+→ fixed 15 correct / 10 incorrect / 5 refusal sample
+→ ordinary predictions.jsonl rows
+→ existing two-pass judge_run()
+→ compare each judgment with its human label
+→ judge_validation.json
+```
+
+```text
+create_validation_sample(config, run_dir):
+    verify the pinned FinanceBench results are available
+    retain only the prepared 112 question IDs
+    join evidence, justification, question type and reference answer
+    select 30 unique questions with a fixed seed
+    cover all three question types and multiple result files
+    write validation_sample.jsonl and compatible predictions.jsonl
+
+validate_judge(config, config_path, requested_run_dir=None):
+    create or resume the validation directory
+    create the complete sample before any Azure request
+    call the existing judge_run()
+    compare completed judgments with expected_accuracy
+    write judge_validation.json
+    return its path and validation counts
+```
+
+`Correct Answer` maps to expected accuracy `1`; `Incorrect Answer` and
+`Refusal` map to `0`. A two-pass disagreement has `accuracy = null`, so it is a
+mismatch requiring manual review. Passing requires at least 27 of 30 matches.
+The report also separates all three human labels so refusals cannot conceal
+weak grading of substantive answers.
+
+```mermaid
+flowchart LR
+    A[Published human-labelled results] --> B[Fixed 15 / 10 / 5 sample]
+    Q[Prepared questions and evidence] --> B
+    B --> P[predictions.jsonl]
+    P --> J[Existing judge_run]
+    J --> C[Compare human and judge decisions]
+    C --> V[judge_validation.json]
+```
+
+```text
+results/judge-validation-<timestamp>/
+├── config.toml
+├── validation_sample.jsonl
+├── predictions.jsonl
+├── judgments.jsonl
+├── errors.jsonl
+└── judge_validation.json
+```
+
+Missing source files or insufficient sample coverage fail before Azure is
+called. Azure failures remain resumable. Fewer than 30 completed judgments
+produces `status = "incomplete"`, never a passing result. The real source-only
+check produced all 30 required rows across all three question types and 16
+published result files without creating an Azure client.
+
 ## 12. CLI and complete call flow
 
 Finish with `src/sec_rag_benchmark/cli.py`. Its single public function,
@@ -1526,7 +1648,7 @@ when their cases are reached.
 
 ```text
 create the sec-rag-benchmark argument parser
-define prepare, validate, run, report and judge subcommands
+define prepare, validate, run, report, judge and validate-judge subcommands
 define each subcommand's arguments
 parse the terminal arguments
 
@@ -1551,6 +1673,7 @@ Each `case` remains short:
 | real `run` | load config → `runner.run_benchmark()` → print directory/counts |
 | `report` | `reporting.write_report()` → print successful count |
 | `judge` | load config → `judge.judge_run()` → print judged/skipped/failed counts |
+| `validate-judge` | load config → `judge_validation.validate_judge()` → print agreement and pass/fail |
 
 The short preparation case intentionally remains visible rather than being
 wrapped in a `prepare_command()` function:
@@ -1582,6 +1705,7 @@ sequenceDiagram
     participant G as generation.py
     participant M as metrics.py
     participant AJ as judge.py
+    participant JV as judge_validation.py
     participant REP as reporting.py
     User->>CLI: prepare
     CLI->>CFG: load TOML
@@ -1610,11 +1734,17 @@ sequenceDiagram
     CLI->>CFG: load TOML
     CLI->>AJ: judge_run(run directory and config)
     AJ->>AJ: request and combine two Azure verdicts
+    User->>CLI: validate-judge
+    CLI->>CFG: load TOML
+    CLI->>JV: validate_judge(config and optional directory)
+    JV->>AJ: judge_run(validation directory and config)
+    JV->>JV: compare judgments with human labels
     User->>CLI: report
     CLI->>REP: write_report(run directory)
 ```
 
-The available commands are `prepare`, `validate`, `run`, `judge`, and `report`.
+The available commands are `prepare`, `validate`, `run`, `judge`,
+`validate-judge`, and `report`.
 The judge case parses `--config` and `--run-dir`, then delegates the complete
 operation to `judge_run()`.
 
@@ -1632,6 +1762,7 @@ exist in this worktree.
 
 ```bash
 git clone https://github.com/patronus-ai/financebench.git benchmarks/financebench
+git -C benchmarks/financebench checkout cc39aeb4afdf33909ee1412188bf89035950c2eb
 uv sync
 uv lock --check
 uv run pytest -q
@@ -1646,6 +1777,7 @@ uv run sec-rag-benchmark validate --help
 uv run sec-rag-benchmark run --help
 uv run sec-rag-benchmark report --help
 uv run sec-rag-benchmark judge --help
+uv run sec-rag-benchmark validate-judge --help
 ```
 
 Prepare the reproducible local 10-K subset, then validate its 112 questions and
@@ -1741,6 +1873,24 @@ Use a run containing one generated answer for the first paid smoke test. Review
 its `judgments.jsonl` before judging a larger run. Azure account and deployment
 instructions are in `Azure Judge Setup.md` beside this guide.
 
+After the smoke test, validate the judge against the fixed human-labelled
+sample. This makes at most 60 paid Azure requests and prints the validation
+directory to inspect:
+
+```bash
+uv run sec-rag-benchmark validate-judge \
+  --config configs/financebench.toml
+```
+
+If interrupted, rerun with the printed directory so completed judgments are
+skipped:
+
+```bash
+uv run sec-rag-benchmark validate-judge \
+  --config configs/financebench.toml \
+  --run-dir results/judge-validation-20260917-120000
+```
+
 ## 13. Test design and requirement traceability
 
 | Requirement or behavior | Test or status |
@@ -1779,6 +1929,10 @@ instructions are in `Azure Judge Setup.md` beside this guide.
 | Malformed output and missing credentials fail clearly | `test_request_validation_and_missing_credentials` |
 | Completed judgments resume; Azure failures retry; `did_not_fit` is not judged | `test_judge_run_combines_two_orders_and_resumes` and `test_api_failure_is_retryable_and_did_not_fit_is_not_judged` |
 | Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
+| Validation sampling is deterministic, uses 15/10/5 labels, unique questions, all question types and multiple sources | `test_create_validation_sample_is_reproducible_and_balanced` |
+| Human/judge matches, null verdicts and the 90% gate are summarized correctly | `test_judge_validation_scores_matches_nulls_and_threshold` |
+| Missing or insufficient source results fail before Azure; completed validations resume | `test_missing_results_fail_before_creating_an_azure_client`, `test_insufficient_sample_fails_before_creating_an_azure_client` and `test_validate_judge_reuses_completed_results` |
+| CLI delegates `validate-judge` without constructing a client | `test_cli_delegates_validate_judge` |
 | Real retriever, HiREC and pattern suite | Explicitly deferred |
 
 Run the verification commands listed in section 2. The tests use a tiny generated

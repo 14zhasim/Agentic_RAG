@@ -56,7 +56,12 @@ From the repository root, clone FinanceBench if
 
 ```bash
 git clone https://github.com/patronus-ai/financebench.git benchmarks/financebench
+git -C benchmarks/financebench checkout cc39aeb4afdf33909ee1412188bf89035950c2eb
 ```
+
+The pinned clone supplies the source questions, PDFs and published
+human-labelled model results used to validate the answer judge. It remains
+ignored by this repository and can be recreated on another machine.
 
 Create the local Python environment and install the exact locked dependencies:
 
@@ -180,6 +185,17 @@ uv run sec-rag-benchmark judge \
 This sends two paid Azure requests for each previously unjudged answer. Azure
 setup and troubleshooting are documented in
 [`Azure Judge Setup.md`](docs%20sys%20design/benchmark/Azure%20Judge%20Setup.md).
+
+Before judging the full benchmark, validate the judge against the fixed
+published human-labelled sample. This makes at most 60 paid Azure requests:
+
+```bash
+uv run sec-rag-benchmark validate-judge \
+  --config configs/financebench.toml
+```
+
+The command prints its resumable directory. Inspect `judge_validation.json`
+for the overall result, per-label agreement and mismatches requiring review.
 
 ## Detailed documentation
 
