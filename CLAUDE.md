@@ -14,7 +14,7 @@ I'm a hands-on novice at LLM/agent/RAG/pipeline/Python tooling — I've complete
 
 **Timeline:**
 
-Code completion ~11 September; dissertation writing starts after; first draft submission 13 September 2026. Note I plan to continue coding etc. and iterating on report until final submission on 21st September. When helping me sequence work, prioritize accordingly — flag anything that may not fit before 30 Aug to be scoped down or cut, not just noted as a nice-to-have.
+Code completion ~18 September; dissertation writing starts after; first draft submission 19 September 2026. Note I plan to continue coding etc. and iterating on report until final submission on 21st September. When helping me sequence work, prioritize accordingly — flag anything that may not fit before 18 September to be scoped down or cut, not just noted as a nice-to-have.
 
 #### Problem + contribution (brief)
 
@@ -29,7 +29,15 @@ Code completion ~11 September; dissertation writing starts after; first draft su
 
 Need to setup benchmark for my testing, as per instructions in `docs sys design/Benchmark.md`.
 
-I have done lit review and have all the contents needed to make sys design - just need to assemble it into proper design. I also haven't finalized the specific tool stack yet (e.g. LangChain vs. alternatives, Qdrant vs ElasticSearch vs. alternatives for the vector store, etc.) — treat tool-stack questions as open, not settled.
+Lit review and system design are done. The tool stack is now SETTLED (see `docs sys design/Systems Design Draft.md` → Tech stack): LlamaIndex for orchestration and components, Chroma for vectors, `bm25s` for keyword, Azure Document Intelligence for parsing (PageIndex is the live fallback), Voyage for embeddings and reranking, OpenAI SDK via OpenRouter for generation. Elasticsearch is documented as future work, not a live option. Do not reopen these unless something fails on contact with the data.
+
+**Read these first, in this order:**
+
+- `docs sys design/Build Order.md` — what to build, in what order, with each stage's requirements. START HERE.
+- `docs sys design/Systems Design Draft.md` — the end-to-end pipeline: what and how, plus tech stack and all design decisions
+- `docs sys design/Benchmark.md` — benchmark requirements and metrics
+- `docs sys design/benchmark/FinanceBench Implementation Guide.md` — the harness as built
+- `docs sys design/Exp 1/Exp 1.md`, `Exp 2/Exp 2.md`, `Exp 3/Exp 3.md` — one per experiment: description, architecture, decisions, ablations, results
 
 Plan for sys design:
 **Start building system design – using RAG research doc, boot.dev notes, codebase_retrieval_parsing md (and maybeeee lit review stuff + claude chat to query all my notes on them). Then, identify failure points in architecture and if benchmark can help with this. References for these resources**:
@@ -43,8 +51,9 @@ Plan for sys design:
 
 #### Experiments — what I'm building, how I benchmark, and details
 
-**Domain:** Corporate finance / equity research — SEC filings (10-K, 10-Q), financial statements, spreadsheets/financial models.
-**Benchmarking** consistent across all 3 experiments, visit `docs sys design/Benchmark.md`
+**Domain:** Corporate finance / equity research — SEC filings (10-K, 10-Q), financial statements, spreadsheets/financial models. Please read these files to understand my progress:
+- `docs sys design/benchmark/Systems Design Draft.md`
+**Benchmarking** consistent across all 3 experiments, visit `docs sys design/Benchmark.md`, `docs sys design/benchmark/FinanceBench Implementation Guide.md`
 
 ##### Experiment 1 — Agentic RAG from long financial documents
 
@@ -61,7 +70,7 @@ Plan for sys design:
 
 See the CS_Research_Matrix.xlsx + RAG research doc, basically want to index the chunk's subheading heading within the document, embed, concatenate with chunk's embedding vector, then do cosine similarity against query embedding vector concatenated with itself
 
-- **Input/Output/Benchmark/Metric:** Same as Exp 1 (FAB v1.1), same baseline.
+- **Input/Output/Benchmark/Metric:** Same as Exp 1 (FinanceBench: 112 questions, 64 10-K PDFs), same baseline. Full design in `docs sys design/Exp 2/Exp 2.md`.
 
 Reference deck: "Zubair_Research_Planning_Condense_v2" (converted to Zubair_Research_Planning_Condense_v2.md) contains the full slide-by-slide detail — benchmark leaderboards, task taxonomies, and source quotations — behind everything above, including the appendix material on Experiments 4 and 5.
 
@@ -74,6 +83,9 @@ Reference deck: "Zubair_Research_Planning_Condense_v2" (converted to Zubair_Rese
 - Use a separate implementation guide for technical detail. Apply three explicit gates: architecture/libraries; files/data/interfaces; pseudocode/slices/tests.
 - Implement and test one vertical slice at a time. Show its uncommitted Git diff and as-built explanation, then wait for user approval before committing.
 - Keep README files navigational and status-oriented. Requirements and design belong in the living source; implementation detail belongs in the guide.
+- Write-up runs alongside development, not after it.
+  - Write each experiment's description before building it — they are a page each and they expose gaps while there is still time to act.
+  - After each stage, paste the numbers into that experiment's Results section the same day. Results written up the day they are produced take minutes; a week later they take hours of re-deriving what a run's settings were.
 - Avoid over-engineering. Only make changes that are directly requested or clearly
 necessary. 
 - Keep code simple and traceable: one clear responsibility per module, one complete operation per public function, and helpers only when they clarify a real step. Prefer explicit loops, branches and named values over clever expressions or unnecessary abstractions. Keep CLI code to parsing and delegation. Before presenting code, ensure the implementation guide, comments and tests follow the same main-function-first flow.
