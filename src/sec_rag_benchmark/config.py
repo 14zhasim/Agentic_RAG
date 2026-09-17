@@ -83,4 +83,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not 0 < validation["minimum_agreement"] <= 1:
         raise ValueError("Judge-validation minimum_agreement must be between 0 and 1")
 
+    subsets = config["development_subsets"]
+    if subsets["seed"] < 0:
+        raise ValueError("Development-subset seed cannot be negative")
+    for size_key in ("smoke_size", "pattern_size"):
+        subset_size = subsets[size_key]
+        if subset_size <= 0 or subset_size > config["dataset"]["expected_questions"]:
+            raise ValueError(
+                f"{size_key} must be between 1 and expected_questions"
+            )
+
     return config

@@ -53,6 +53,7 @@ def sample(tmp_path: Path):
             "seed": 42, "correct_examples": 15, "incorrect_examples": 10,
             "refusal_examples": 5, "minimum_agreement": 0.90,
         },
+        "development_subsets": {"seed": 42, "smoke_size": 2, "pattern_size": 2},
         "run": {"experiment": "financebench", "variant": "baseline-context-conditions-v1",
                 "conditions": ["closed_book", "oracle", "long_context"], "retrieval_depth": 10,
                 "results_dir": str(tmp_path / "results")},

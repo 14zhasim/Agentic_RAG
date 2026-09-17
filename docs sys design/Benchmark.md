@@ -150,8 +150,21 @@ Develop testing set pipeline:
 
 Develop a validation set pipeline (for purpose of debugging pipeline works):
 
-- smoke test (5-10 questions): check pipeline works
-- pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+- smoke test: 10 FinanceBench questions for checking that the pipeline works
+- pattern check: 50 FinanceBench questions for finding repeatable failure patterns during development
+- select both subsets reproducibly with seed 42 and stratify them proportionally by `question_type`
+  - smoke: 5 metrics-generated, 4 domain-relevant and 1 novel-generated
+  - pattern: 22 metrics-generated, 22 domain-relevant and 6 novel-generated
+- record the subset name and exact selected `financebench_id` values in each run configuration; HiREC validation subsets remain deferred until HiREC is implemented
+
+How to classify (automatic first pass from saved results, hand-label only a sample):
+- oracle correct, retrieval condition wrong → retrieval failure
+  - page recall = 0 in shared_store but > 0 in single_store → wrong document
+  - right document but page recall = 0 → wrong section/chunk
+  - page recall > 0 but < 1 → insufficient recall
+- oracle wrong → reasoning or generation failure (retrieval is not the cause)
+- did_not_fit → context-limit outcome, kept separate from all three
+- sub-types (e.g. arithmetic vs hallucination, missed table) → hand-label a small sample only, using the judge's reason plus the question's cognitive skill label
 
 ## NEED TO ADD: Statistical power — what our sample sizes can actually support
 

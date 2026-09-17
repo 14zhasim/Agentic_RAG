@@ -7,6 +7,7 @@ from typing import Any
 
 from ..conditions import CONDITIONS, build_condition
 from ..data import load_run_questions
+from ..development_subsets import select_development_subset
 from ..generation import build_messages, count_prompt_tokens
 
 
@@ -18,9 +19,16 @@ def dry_run(
     *,
     conditions: list[str] | None = None,
     limit: int | None = None,
+    subset: str | None = None,
 ) -> dict[str, Any]:
     """Build executable condition prompts and count tokens without an API call."""
+    if limit is not None and subset is not None:
+        raise ValueError("--limit and --subset cannot be used together")
     questions = load_run_questions(config["dataset"], limit)
+    if subset is not None:
+        questions = select_development_subset(
+            questions, subset, config["development_subsets"]
+        )
     selected_conditions = conditions or config["run"]["conditions"]
     if not selected_conditions or set(selected_conditions) - CONDITIONS:
         raise ValueError("Unknown condition")

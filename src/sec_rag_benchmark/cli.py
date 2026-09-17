@@ -27,7 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", type=Path, required=True)
     run_parser.add_argument("--conditions", nargs="+")
     run_parser.add_argument("--run-dir", type=Path)
-    run_parser.add_argument("--limit", type=int)
+    selection = run_parser.add_mutually_exclusive_group()
+    selection.add_argument("--limit", type=int)
+    selection.add_argument("--subset", choices=("smoke", "pattern"))
     run_parser.add_argument("--dry-run", action="store_true")
 
     report_parser = commands.add_parser("report")
@@ -61,7 +63,10 @@ def main(argv: list[str] | None = None) -> int:
             case "run" if args.dry_run:
                 config = load_config(args.config)
                 result = dry_run(
-                    config, conditions=args.conditions, limit=args.limit
+                    config,
+                    conditions=args.conditions,
+                    limit=args.limit,
+                    subset=args.subset,
                 )
                 print(f"Planned jobs: {result['planned_jobs']}")
                 print(f"Conditions: {', '.join(result['conditions'])}")
@@ -79,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.config,
                     conditions=args.conditions,
                     limit=args.limit,
+                    subset=args.subset,
                     requested_run_dir=args.run_dir,
                 )
                 counts = {
