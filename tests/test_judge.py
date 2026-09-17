@@ -7,6 +7,7 @@ import pytest
 
 from sec_rag_benchmark.cli import main
 from sec_rag_benchmark.judge import (
+    SYSTEM_PROMPT,
     _build_judge_messages,
     _combine_verdicts,
     _create_azure_client,
@@ -46,7 +47,7 @@ def _config() -> dict:
         "provider": "azure",
         "model": "DeepSeek-V4-Flash",
         "deployment": "DeepSeek-V4-Flash",
-        "prompt_version": "financebench-binary-judge-v1",
+        "prompt_version": "financebench-binary-judge-v2",
         "max_output_tokens": 512,
         "timeout_seconds": 30.0,
         "max_retries": 2,
@@ -121,6 +122,12 @@ def test_prompt_orders_include_every_required_financebench_field():
         assert value in candidate_first
     assert reference_first.index("REFERENCE ANSWER") < reference_first.index("CANDIDATE ANSWER")
     assert candidate_first.index("CANDIDATE ANSWER") < candidate_first.index("REFERENCE ANSWER")
+
+    # These rules prevent the judge from grading the reference/evidence instead
+    # of the candidate when the two answer blocks change order.
+    assert "grade only the CANDIDATE ANSWER" in SYSTEM_PROMPT
+    assert "refusal" in SYSTEM_PROMPT
+    assert "all material parts" in SYSTEM_PROMPT
 
 
 def test_request_validation_and_missing_credentials(monkeypatch):
@@ -273,7 +280,7 @@ max_retries = 2
 provider = "azure"
 model = "DeepSeek-V4-Flash"
 deployment = "DeepSeek-V4-Flash"
-prompt_version = "financebench-binary-judge-v1"
+prompt_version = "financebench-binary-judge-v2"
 max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2

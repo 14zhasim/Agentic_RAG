@@ -329,7 +329,7 @@ judge calls complete:
     "status": "complete",
     "accuracy": 1,
     "manual_review": False,
-    "prompt_version": "financebench-binary-judge-v1",
+    "prompt_version": "financebench-binary-judge-v2",
     "requested_model": "DeepSeek-V4-Flash",
     "passes": [
         {
@@ -511,7 +511,7 @@ endpoint and key remain private environment variables:
 provider = "azure"
 model = "DeepSeek-V4-Flash"
 deployment = "DeepSeek-V4-Flash"
-prompt_version = "financebench-binary-judge-v1"
+prompt_version = "financebench-binary-judge-v2"
 max_output_tokens = 512
 timeout_seconds = 180.0
 max_retries = 5
@@ -1517,6 +1517,11 @@ In compact form:
 0 + 0 → accuracy 0, manual_review false
 1 + 0 or 0 + 1 → accuracy null, manual_review true
 ```
+
+Prompt version `financebench-binary-judge-v2` explicitly tells both passes to
+grade only the candidate, requires all material parts, and assigns refusals,
+non-answers and materially incomplete answers a zero. These rules address the
+order-instability found in the first 30-answer human-label validation.
 
 `manual_review` is created by `_combine_verdicts()`; it is not returned by
 Azure. In the report,

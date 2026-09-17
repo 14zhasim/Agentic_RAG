@@ -84,7 +84,7 @@ def _validation_fixture(tmp_path: Path) -> dict:
             "provider": "azure",
             "model": "DeepSeek-V4-Flash",
             "deployment": "DeepSeek-V4-Flash",
-            "prompt_version": "financebench-binary-judge-v1",
+            "prompt_version": "financebench-binary-judge-v2",
             "max_output_tokens": 512,
             "timeout_seconds": 30.0,
             "max_retries": 2,
