@@ -125,11 +125,14 @@ Develop testing set pipeline:
 - fix result-affecting settings before paid benchmark runs: use `high` GLM reasoning effort, reserve up to 8,192 output tokens for reasoning plus the visible answer, and retrieve the top 10 chunks for `single_store` and `shared_store`
 - label every run with an explicit experiment and variant; retain both labels in its directory name, configuration snapshot and reports
 - configure results reporting:
+  - execution status: classify every planned question-condition job as `success`, terminal `did_not_fit`, retryable `failed`, or `missing`; report each count overall and by condition
+  - answer accuracy: classify generated answers as agreed `correct`, agreed `incorrect`, `judge_disagreement`, or `unjudged`; keep `did_not_fit` separate and report accuracy both including and excluding it
+  - retrieval quality: for `single_store` and `shared_store` only, report page recall, page precision and page MRR with the contributing sample size for each metric; retrieval metrics are not applicable to conditions that do not retrieve
+  - failure diagnosis: compare each retrieval-condition answer with the oracle answer for the same question, then apply the automatic classification rules below while preserving unclassifiable and manual-review cases
   - for FinanceBench: report results segmented across generation method + cognitive skill + condition, with sample count for each segment
     - `question_type` is clean and used as-is: metrics-generated (50), domain-relevant (48), novel-generated (14)
     - `question_reasoning` is **not** clean. Normalise to the paper's 3 skills: split case-insensitively on a standalone `OR`, discard only the known trailing empty part, casefold-compare complete labels, fold `Logical reasoning (based on numerical reasoning)` into Logical reasoning only, deduplicate skills within a question, keep `None` visible as an `unlabelled` segment, and raise on anything unmapped so the taxonomy can't silently grow.
     - after normalising: Numerical reasoning 57, Information extraction 36, Logical reasoning 21, unlabelled 14 — summing to 128, since 16 questions carry >1 skill. Segment counts exceeding the sample size is expected and is why each segment reports its own _n_.
-  - with this segmentation, report: page recall, page precision, page MRR (count number of unique pages retrieved, MRR is first chunk from golden page)
   - for each answer, record:
     - requested model;
     - returned model;
@@ -152,6 +155,29 @@ Develop a validation set pipeline (for purpose of debugging pipeline works):
 
 - smoke test (5-10 questions): check pipeline works
 - pattern check (50 questions): identify patterns across segmented question types e.g. does chunking table work? on maybe subset of 30 questions FinanceBench, 20 questions Hirec? the purpose is run as a test suite for development
+
+How to classify pipeline outcomes involving failure diagnosis
+
+- Keep `did_not_fit` as a separate context-limit outcome, i.e. prompt nnot fit in context window
+- unclassified missing/disputed judgments.
+- If the oracle answer is incorrect, classify the result as an oracle baseline
+  failure: reasoning or generation may have failed, since retrieval was perfect
+- If the oracle answer is correct and a retrieval-condition answer is
+  incorrect, classify it as a retrieval-context failure:
+  - no chunks are retrieved → no chunks retrieved;
+  - chunks are retrieved, but none comes from the target filing → wrong document;
+  - at least one chunk comes from the target filing, but page recall is zero →
+    wrong section or chunk;
+  - page recall is greater than zero but less than one → partial gold-page
+    recall; this records the observed benchmark coverage but does not prove that
+    the missing gold pages caused the incorrect answer;
+  - page recall is one but the answer remains incorrect → gold pages were
+    retrieved but the answer failed, requiring manual review.
+- Hand-label detailed sub-types such as arithmetic failure, hallucination,
+  missed table content, poor chunk boundaries or distracting context only for
+  a sample, using the judge's reason and the question's cognitive-skill labels.
+- Reports must include a visible legend and preserve the inputs and rule used
+  for every automatic classification.
 
 ## NEED TO ADD: Statistical power — what our sample sizes can actually support
 

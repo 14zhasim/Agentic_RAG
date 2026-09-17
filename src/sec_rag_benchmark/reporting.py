@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from .failure_analysis import build_failure_analysis, summarize_failure_analysis
 from .report_workbook import write_report_workbook
 
 
@@ -254,6 +255,72 @@ def _answer_accuracy_views(
     return views
 
 
+def _execution_status(
+    snapshot: dict[str, Any],
+    predictions: dict[str, dict[str, Any]],
+    errors: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Count current job states overall and for each selected condition."""
+    conditions = snapshot["selection"]["conditions"]
+    jobs_per_condition = snapshot["selection"]["limit"]
+    planned_jobs = jobs_per_condition * len(conditions)
+    terminal_rows = list(predictions.values())
+    failed_job_ids = set(errors) - set(predictions)
+    attempted_job_ids = set(predictions) | set(errors)
+
+    successful = sum(row.get("status") == "success" for row in terminal_rows)
+    did_not_fit = sum(
+        row.get("status") == "did_not_fit" for row in terminal_rows
+    )
+    run_config = snapshot.get("run", {})
+    status = {
+        # Legacy smoke-test directories predate explicit run labels. New
+        # configurations require both fields, while old reports stay readable.
+        "experiment": run_config.get("experiment", "legacy-unlabelled"),
+        "variant": run_config.get("variant", "legacy-unlabelled"),
+        "planned": planned_jobs,
+        "successful": successful,
+        "did_not_fit": did_not_fit,
+        "failed": len(failed_job_ids),
+        "missing": max(0, planned_jobs - len(attempted_job_ids)),
+        "complete": successful + did_not_fit == planned_jobs,
+        "by_condition": [],
+    }
+
+    for condition in sorted(conditions):
+        condition_predictions = [
+            row for row in terminal_rows if row.get("eval_mode") == condition
+        ]
+        condition_prediction_ids = {
+            row["job_id"] for row in condition_predictions
+        }
+        condition_failed_ids = {
+            job_id
+            for job_id in failed_job_ids
+            if job_id.rsplit(":", 1)[-1] == condition
+        }
+        condition_successful = sum(
+            row.get("status") == "success" for row in condition_predictions
+        )
+        condition_did_not_fit = sum(
+            row.get("status") == "did_not_fit" for row in condition_predictions
+        )
+        condition_attempted = condition_prediction_ids | condition_failed_ids
+        status["by_condition"].append(
+            {
+                "eval_mode": condition,
+                "planned": jobs_per_condition,
+                "successful": condition_successful,
+                "did_not_fit": condition_did_not_fit,
+                "failed": len(condition_failed_ids),
+                "missing": max(0, jobs_per_condition - len(condition_attempted)),
+                "complete": condition_successful + condition_did_not_fit
+                == jobs_per_condition,
+            }
+        )
+    return status
+
+
 def write_report(run_dir: str | Path) -> dict[str, Any]:
     """Calculate one run's report data, then write its JSON and workbook."""
     run_path = Path(run_dir)
@@ -265,44 +332,36 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     successful_predictions = [
         row for row in terminal_predictions if row.get("status") == "success"
     ]
-    did_not_fit_predictions = [
-        row for row in terminal_predictions if row.get("status") == "did_not_fit"
-    ]
 
     snapshot = tomllib.loads((run_path / "config.toml").read_text(encoding="utf-8"))
-    planned_jobs = snapshot["selection"]["limit"] * len(
-        snapshot["selection"]["conditions"]
+    failure_rows = build_failure_analysis(
+        terminal_predictions, latest_judgments
     )
-    attempted_job_ids = set(latest_predictions) | set(latest_errors)
-    failed_job_ids = set(latest_errors) - set(latest_predictions)
-    run_config = snapshot.get("run", {})
+    failure_summary = summarize_failure_analysis(failure_rows)
 
     summary = {
-        "run_status": {
-            # Legacy smoke-test directories predate explicit run labels. New
-            # configurations require both fields, while old reports stay readable.
-            "experiment": run_config.get("experiment", "legacy-unlabelled"),
-            "variant": run_config.get("variant", "legacy-unlabelled"),
-            "planned": planned_jobs,
-            "successful": len(successful_predictions),
-            "did_not_fit": len(did_not_fit_predictions),
-            "failed": len(failed_job_ids),
-            "missing": max(0, planned_jobs - len(attempted_job_ids)),
-            "complete": (
-                len(successful_predictions) + len(did_not_fit_predictions)
-                == planned_jobs
-            ),
-        },
+        "run_status": _execution_status(
+            snapshot, latest_predictions, latest_errors
+        ),
         "answer_accuracy": _answer_accuracy_views(
             terminal_predictions, latest_judgments
         ),
         "retrieval_metrics": _retrieval_metric_views(successful_predictions),
+        "failure_analysis": failure_summary,
     }
 
+    # Failure analysis is derived from the latest predictions and judgments.
+    # Replace it on every report run rather than preserving stale attempts.
+    (run_path / "failure_analysis.jsonl").write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False) + "\n" for row in failure_rows
+        ),
+        encoding="utf-8",
+    )
     (run_path / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
-    write_report_workbook(run_path / "summary.xlsx", summary)
+    write_report_workbook(run_path / "summary.xlsx", summary, failure_rows)
 
     # Remove the previous design's CSV so one run folder cannot contain two
     # conflicting human-readable report formats after regeneration.

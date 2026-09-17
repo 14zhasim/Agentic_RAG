@@ -176,10 +176,15 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
     )
     prediction = {
         "job_id": "q1:single_store",
+        "financebench_id": "q1",
         "status": "success",
         "eval_mode": "single_store",
         "question_type": "calculated",
         "cognitive_skills": ["information_extraction", "numerical_reasoning"],
+        "gold_pages": [["target.pdf", 2]],
+        "retrieved_chunks": [
+            {"doc_name": "target.pdf", "pages": [2], "rank": 1}
+        ],
         "page_recall": 1.0,
         "page_precision": 0.5,
         "page_mrr": 1.0,
@@ -210,14 +215,111 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
         row["eval_mode"]
         for row in report["answer_accuracy"]["by_generation_method"]
     } == {"oracle", "single_store"}
+    assert report["run_status"]["by_condition"] == [
+        {
+            "eval_mode": "oracle",
+            "planned": 1,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 0,
+            "complete": True,
+        },
+        {
+            "eval_mode": "single_store",
+            "planned": 1,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 0,
+            "complete": True,
+        },
+    ]
+    analysis_path = run_dir / "failure_analysis.jsonl"
+    first_analysis = analysis_path.read_text()
+    [analysis_row] = [json.loads(line) for line in first_analysis.splitlines()]
+    assert analysis_row["failure_subtype"] == "unjudged_condition"
+    assert report["failure_analysis"]["unclassified_count"] == 1
+
+    # This file is a derived report, not append-only attempt history. Running
+    # the report again must replace it rather than duplicate its rows.
+    write_report(run_dir)
+    assert analysis_path.read_text() == first_analysis
     assert not (run_dir / "summary.csv").exists()
 
     with ZipFile(run_dir / "summary.xlsx") as workbook:
         workbook_xml = workbook.read("xl/workbook.xml").decode()
+        shared_strings = workbook.read("xl/sharedStrings.xml").decode()
     assert all(
         name in workbook_xml
-        for name in ("Overview", "Answer accuracy", "Retrieval metrics")
+        for name in (
+            "Overview",
+            "Answer accuracy",
+            "Retrieval metrics",
+            "Failure analysis",
+        )
     )
+    assert "Classification legend" in shared_strings
+
+
+def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.toml").write_text(
+        "[selection]\nconditions=['shared_store', 'oracle']\nlimit=2\n"
+    )
+    oracle_prediction = {
+        "job_id": "run:q1:oracle",
+        "financebench_id": "q1",
+        "status": "success",
+        "eval_mode": "oracle",
+        "question_type": "calculated",
+        "cognitive_skills": ["numerical_reasoning"],
+        "gold_pages": [["target.pdf", 2]],
+        "retrieved_chunks": [],
+        "page_recall": None,
+        "page_precision": None,
+        "page_mrr": None,
+    }
+    (run_dir / "predictions.jsonl").write_text(
+        json.dumps(oracle_prediction) + "\n"
+    )
+    (run_dir / "errors.jsonl").write_text(
+        json.dumps(
+            {
+                "job_id": "run:q1:shared_store",
+                "status": "error",
+                "error": "temporary failure",
+            }
+        )
+        + "\n"
+    )
+
+    report = write_report(run_dir)
+
+    assert report["run_status"]["successful"] == 1
+    assert report["run_status"]["failed"] == 1
+    assert report["run_status"]["missing"] == 2
+    assert report["run_status"]["by_condition"] == [
+        {
+            "eval_mode": "oracle",
+            "planned": 2,
+            "successful": 1,
+            "did_not_fit": 0,
+            "failed": 0,
+            "missing": 1,
+            "complete": False,
+        },
+        {
+            "eval_mode": "shared_store",
+            "planned": 2,
+            "successful": 0,
+            "did_not_fit": 0,
+            "failed": 1,
+            "missing": 1,
+            "complete": False,
+        },
+    ]
 
 
 def test_generation_pins_provider_without_real_api_call(sample, monkeypatch):

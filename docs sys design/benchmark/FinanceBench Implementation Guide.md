@@ -166,6 +166,7 @@ src/sec_rag_benchmark/
 ├── metrics.py                     score one job and normalize skill labels
 ├── judge.py                       make and checkpoint two-pass Azure judgments
 ├── judge_validation.py            compare the judge with published human labels
+├── failure_analysis.py            classify and summarize retrieval failures
 ├── reporting.py                   calculate nested report data and write JSON
 ├── report_workbook.py              render the report data as a workbook
 ├── execution/
@@ -175,7 +176,8 @@ src/sec_rag_benchmark/
 └── cli.py                         arguments, match/case, output and exit codes
 tests/
 ├── conftest.py                    tiny two-question/PDF fixtures
-└── test_golden_path.py            compact behavior tests
+├── test_failure_analysis.py       focused failure-classification tests
+└── test_golden_path.py            compact integration behavior tests
 ```
 
 ```mermaid
@@ -187,6 +189,7 @@ flowchart LR
     CLI --> JUDGE[judge.py]
     CLI --> JV[judge_validation.py]
     CLI --> REPORT[reporting.py]
+    REPORT --> FAILURE[failure_analysis.py]
     REPORT --> BOOK[report_workbook.py]
     CONFIG --> COND[conditions.py constants]
     PREFLIGHT --> DATA
@@ -358,6 +361,43 @@ judge calls complete:
 `accuracy` is `1` or `0` only when both passes agree. It is `None` and
 `manual_review` is `True` when they disagree. A `did_not_fit` prediction has no
 candidate answer, so it is not sent to the judge.
+
+### Failure-analysis row
+
+Reporting joins each retrieval-condition result to the oracle result for the
+same `financebench_id`. It writes the diagnosis separately from generation and
+judging so neither source record is rewritten:
+
+```python
+{
+    "job_id": "<config-hash>:q1:shared_store",
+    "oracle_job_id": "<config-hash>:q1:oracle",
+    "financebench_id": "q1",
+    "eval_mode": "shared_store",
+    "question_type": "metrics-generated",
+    "cognitive_skills": ["numerical_reasoning"],
+    "analysis_status": "classified",
+    "oracle_accuracy": 1,
+    "condition_accuracy": 0,
+    "target_documents": ["example_2023_10K.pdf"],
+    "retrieved_documents": ["different_2023_10K.pdf"],
+    "retrieved_target_document": False,
+    "page_recall": 0.0,
+    "page_precision": 0.0,
+    "page_mrr": 0.0,
+    "failure_category": "retrieval_context_failure",
+    "failure_subtype": "wrong_document",
+    "manual_review": False,
+    "classification_rule": "No retrieved chunk came from the target filing",
+    "condition_judge_reasons": ["The candidate used a value from another filing."],
+    "oracle_judge_reasons": ["The oracle answer matches the reference."]
+}
+```
+
+`analysis_status` distinguishes a completed classification from an unjudged
+answer, a judge disagreement or missing comparison data. The category and
+subtype are conclusions supported by the recorded fields; they do not replace
+those fields.
 
 ### Accuracy summary row
 
@@ -1170,14 +1210,16 @@ of mixing incompatible results.
 
 ## 11. Reporting and result artifacts
 
-This section describes the implemented nested JSON and workbook reports. The
-previous flat `summary.json` and wide `summary.csv` have been replaced.
+This section describes the implemented nested JSON, workbook and
+failure-analysis reports. The previous flat `summary.json` and wide
+`summary.csv` have been replaced.
 
 Read `src/sec_rag_benchmark/reporting.py` first. Its public
 `write_report()` calculates report data and writes `summary.json`. Then read
 `src/sec_rag_benchmark/report_workbook.py`, whose public workbook writer will
-turn that same data into `summary.xlsx`. This separation keeps calculations in
-one place and spreadsheet formatting in another.
+turn that summary and the detailed failure rows into `summary.xlsx`. This
+separation keeps calculations in one place and spreadsheet formatting in
+another.
 
 ### Purpose and input
 
@@ -1190,6 +1232,65 @@ contrast, `write_report()` reads all saved jobs and answers questions such as
 {"job_id":"q1:single_store","status":"success","eval_mode":"single_store","question_type":"calculated","cognitive_skills":["information_extraction","numerical_reasoning"],"page_recall":1.0,"page_precision":0.5,"page_mrr":1.0}
 ```
 
+### The four reporting questions
+
+The report keeps four related questions separate:
+
+```text
+Did the planned job run?
+→ execution status
+
+Was its answer correct?
+→ answer accuracy
+
+Did retrieval find the gold pages?
+→ retrieval metrics
+
+What likely caused an incorrect result?
+→ failure diagnosis
+```
+
+#### 1. Execution status
+
+Every planned question-condition job has one current state:
+
+- `success`: generation produced an answer;
+- `did_not_fit`: the complete prompt exceeded the context limit and is terminal;
+- `failed`: the latest attempt produced a retryable error;
+- `missing`: no result or error was recorded.
+
+The Overview sheet and `summary.json → run_status` report these counts overall
+and by condition. This layer says whether work completed; it does not say
+whether an answer was correct.
+
+#### 2. Answer accuracy
+
+For each generated answer, the two judge passes produce one reporting state:
+
+- `correct`: both passes return `1`;
+- `incorrect`: both passes return `0`;
+- `judge_disagreement`: the passes differ, so accuracy is `null`;
+- `unjudged`: no completed judgment exists;
+- `did_not_fit`: there is no candidate answer to judge.
+
+The Answer accuracy sheet reports accuracy including and excluding
+`did_not_fit`, plus separate disagreement and unjudged counts.
+
+#### 3. Retrieval metrics
+
+Only `single_store` and `shared_store` execute retrieval, so only those rows
+receive page recall, page precision and page MRR. Each average records its own
+sample size. The other three conditions report retrieval as not applicable.
+
+#### 4. Failure diagnosis
+
+This layer combines execution status, judgments, oracle results, retrieved
+chunk provenance and page recall. It explains what the saved evidence supports
+about an incorrect retrieval-condition answer. It preserves context-limit,
+unclassified and manual-review outcomes instead of forcing every row into a
+causal category. The detailed decision order appears under “The important data
+states” below.
+
 The calculation path will remain visible in the public function:
 
 ```text
@@ -1197,11 +1298,16 @@ write_report()
 ├── _latest_rows_by_job_id() for predictions
 ├── _latest_rows_by_job_id() for errors
 ├── _latest_rows_by_job_id() for judgments
+├── calculate execution-status counts
+├── _answer_accuracy_views()
+│   └── _answer_accuracy_for_subset()
 ├── _retrieval_metric_views()
 │   ├── _expand_by_cognitive_skill()
 │   └── _average_retrieval_metrics()
-├── _answer_accuracy_views()
-│   └── _answer_accuracy_for_subset()
+├── failure_analysis.build_failure_analysis()
+│   └── match retrieval results to oracles and classify each row
+├── failure_analysis.summarize_failure_analysis()
+├── write failure_analysis.jsonl
 ├── write nested summary.json
 └── report_workbook.write_report_workbook()
     ├── _write_metric_sheet()
@@ -1220,6 +1326,11 @@ INPUT:
 
 latest predictions = _latest_rows_by_job_id(predictions.jsonl)
 latest errors = _latest_rows_by_job_id(errors.jsonl)
+
+for execution status:
+    compare planned jobs with latest predictions and errors
+    count success, did_not_fit, failed and missing overall and by condition
+
 keep successful predictions
 
 predictions table = one row per successful prediction
@@ -1236,7 +1347,17 @@ for retrieval metrics:
     keep only single_store and shared_store predictions
     create the same five summaries
 
-count planned, successful, failed and missing jobs
+for failure diagnosis:
+    match each retrieval-condition result to the oracle for the same question
+    preserve did_not_fit as a separate context-limit outcome
+    preserve missing judgments and judge disagreements as unclassified
+    if the retrieval answer is correct, record success
+    otherwise, if the oracle is incorrect, record an oracle baseline failure
+    otherwise, inspect retrieved document names and page recall
+    assign the supported retrieval-failure subtype
+    retain the inputs and rule used for the classification
+
+write detailed failure_analysis.jsonl rows
 write nested summary.json
 render summary.xlsx from the same summary data
 remove an obsolete summary.csv left by an earlier report run
@@ -1267,14 +1388,19 @@ flowchart TD
     C --> Q[answer-accuracy summaries]
     P --> Q
     P --> R[retrieval summaries: retrieval conditions only]
+    B --> F[match retrieval and oracle by question]
+    C --> F
+    F --> FA[failure-analysis rows and counts]
+    FA --> FJSON[failure_analysis.jsonl]
     B --> S[run-status counts]
     D --> S
     Q --> N[nested summary dictionary]
     R --> N
+    FA --> N
     S --> N
     N --> JSON[summary.json]
     N --> BOOK[report_workbook.py]
-    BOOK --> XLSX[summary.xlsx: three sheets]
+    BOOK --> XLSX[summary.xlsx: four sheets]
 ```
 
 ### The important data states
@@ -1306,6 +1432,134 @@ q1:single_store  numerical_reasoning
 
 The original prediction still exists once in `predictions_table`; it is copied
 only in the skill-reporting table. Skill totals therefore overlap.
+
+Failure diagnosis creates a separate data state. It matches rows by
+`financebench_id`, then compares each `single_store` or `shared_store` answer
+with that question's oracle answer. It does not insert diagnoses into
+`predictions.jsonl` or `judgments.jsonl`.
+
+The classifier does not compare chunk text with the reference answer. The
+retriever already records every chunk's document and zero-indexed pages, while
+the prediction records the gold document-page pairs. The classifier converts
+both into sets of `(doc_name, page_index)` pairs:
+
+```text
+gold_pages = {
+    ("example_2023_10K.pdf", 12),
+    ("example_2023_10K.pdf", 13),
+}
+
+retrieved chunk 1 pages = {
+    ("example_2023_10K.pdf", 12),
+}
+
+retrieved chunk 2 pages = {
+    ("different_2023_10K.pdf", 13),
+}
+
+retrieved gold pages = gold_pages ∩ all retrieved chunk pages
+                     = {("example_2023_10K.pdf", 12)}
+
+page recall = 1 retrieved gold page / 2 gold pages = 0.5
+```
+
+A chunk from page 13 of the wrong filing does not match gold page 13 because
+the document name is part of the identity. Page-level matching cannot prove
+that the chunk contains the exact answer passage. That is why full page recall
+with an incorrect answer remains a manual-review case.
+
+`failure_analysis.build_failure_analysis()` follows this order:
+
+```text
+did_not_fit
+→ context-limit outcome
+
+missing judgment, judge disagreement or missing oracle comparison
+→ not automatically classifiable
+
+retrieval answer correct
+→ success
+
+oracle incorrect + retrieval answer incorrect
+→ oracle_baseline_failed
+
+oracle correct + retrieval answer incorrect
+→ retrieval_context_failure
+```
+
+Only the final case receives a retrieval-failure subtype:
+
+```text
+zero retrieved chunks
+→ no_chunks_retrieved
+
+one or more chunks, but none belongs to the target filing
+→ wrong_document
+
+at least one chunk belongs to the target filing, but page recall = 0
+→ wrong_section_or_chunk
+
+0 < page recall < 1
+→ partial_gold_page_recall
+
+page recall = 1, but the answer remains incorrect
+→ retrieved_gold_pages_but_answer_failed; manual review required
+```
+
+Answer correctness is checked before these subtypes. A correct answer remains
+`success` even when page recall is below one, for example when an unannotated
+page contains equivalent evidence. `partial_gold_page_recall` therefore means
+only that an incorrect-answer run missed some annotated pages; it does not
+claim that those missing pages caused the error.
+
+The direct `doc_name` values in the retrieved chunks determine whether the
+target filing was retrieved. Comparing shared-store recall with single-store
+recall would not prove a wrong-document failure because shared-store retrieval
+could have returned the correct filing but the wrong pages.
+
+```text
+build_failure_analysis(predictions, judgments):
+    index predictions by financebench_id and eval_mode
+
+    FOR each single_store or shared_store prediction:
+        find its judgment
+        find the oracle prediction and judgment for the same question
+        construct gold (document, page) pairs from gold_pages
+        construct retrieved (document, page) pairs from retrieved_chunks
+        retain both judge passes' reasons
+
+        IF the retrieval prediction is did_not_fit:
+            record context_limit
+        ELSE IF its judgment is missing or disputed:
+            record the matching unclassified status
+        ELSE IF its answer is correct:
+            record success
+        ELSE IF the oracle result cannot support comparison:
+            record the matching unclassified status
+        ELSE IF the oracle answer is incorrect:
+            record oracle_baseline_failed
+        ELSE IF no chunks were retrieved:
+            record no_chunks_retrieved
+        ELSE IF no chunk document matches a target document:
+            record wrong_document
+        ELSE IF page recall is 0:
+            record wrong_section_or_chunk
+        ELSE IF page recall is between 0 and 1:
+            record partial_gold_page_recall
+        ELSE IF page recall is 1:
+            record retrieved_gold_pages_but_answer_failed
+            require manual review
+        ELSE:
+            record insufficient_analysis_data
+
+    sort rows by financebench_id and eval_mode
+    RETURN rows
+```
+
+`failure_analysis.summarize_failure_analysis()` then counts rows by condition,
+analysis status, category and subtype. It also returns the methodology legend,
+the total requiring manual review and the total left unclassified. Raw counts
+are used rather than percentages while judgment coverage may be incomplete.
 
 ### The five report views
 
@@ -1369,8 +1623,8 @@ when a question has multiple labels.
 
 ### Machine-readable `summary.json`
 
-The JSON separates run status and the two metric families instead of mixing
-unrelated columns in one list:
+The JSON separates the four reporting questions instead of mixing unrelated
+states and metrics in one list:
 
 ```json
 {
@@ -1388,16 +1642,24 @@ unrelated columns in one list:
     "by_generation_method": [],
     "by_cognitive_skill": [],
     "cross_tab": []
+  },
+  "failure_analysis": {
+    "methodology": {},
+    "counts_by_condition": [],
+    "manual_review_count": 0,
+    "unclassified_count": 0
   }
 }
 ```
 
 For an oracle-only run, every retrieval array is empty. The answer-accuracy
-arrays remain populated.
+arrays remain populated. `failure_analysis.methodology` records the same
+category definitions displayed in the workbook, so downstream readers can
+interpret the counts without relying on undocumented code.
 
 ### Human-readable `summary.xlsx`
 
-`report_workbook.py` renders three sheets and places the two run labels on the
+`report_workbook.py` renders four sheets and places the two run labels on the
 first sheet:
 
 1. `Overview`: experiment, variant, planned, successful, failed, missing,
@@ -1407,6 +1669,9 @@ first sheet:
    condition.
 3. `Retrieval metrics`: the same five tables for `single_store` and
    `shared_store` only.
+4. `Failure analysis`: a visible category legend, failure counts by condition,
+   manual-review and unclassified counts, and a filterable question-level
+   diagnosis table.
 
 Detailed tables use a condition header band followed by indented detail rows.
 The condition is not repeated on every row, and cells are not merged. Counts
@@ -1421,9 +1686,65 @@ results/<timestamp>--<experiment>--<variant>/
 ├── predictions.jsonl append-only success and did_not_fit outcomes
 ├── judgments.jsonl   append-only completed two-pass judgments
 ├── errors.jsonl      append-only retryable generation or judge failures
+├── failure_analysis.jsonl one auditable diagnosis per analysed question-condition
 ├── summary.json      machine-readable report and completion status
-└── summary.xlsx      three-sheet human-readable report
+└── summary.xlsx      four-sheet human-readable report
 ```
+
+### Failure-analysis implementation slice
+
+This implemented vertical slice keeps the classifier, derived JSONL, summary
+and workbook sheet in one runnable reporting operation. It adds no dependency
+and does not change the CLI or configuration.
+
+Read the changed code in this order:
+
+```text
+reporting.write_report()
+    → failure_analysis.build_failure_analysis()
+    → failure_analysis.summarize_failure_analysis()
+    → write failure_analysis.jsonl and summary.json
+    → report_workbook.write_report_workbook()
+```
+
+Files and responsibilities:
+
+- `src/sec_rag_benchmark/failure_analysis.py` contains the two functions
+  above and the single methodology legend;
+- `src/sec_rag_benchmark/reporting.py` calculates execution status by
+  condition, coordinates failure analysis and replaces the derived JSONL;
+- `src/sec_rag_benchmark/report_workbook.py` renders the legend,
+  counts and filterable detail rows on the fourth sheet;
+- `tests/test_failure_analysis.py` covers every classification branch;
+- `tests/test_golden_path.py` covers report-file and workbook integration.
+
+The classifier tests cover context limits, missing and disputed judgments,
+success, unavailable oracle comparisons, oracle baseline failure, zero chunks,
+wrong documents, wrong pages, partial recall, full recall with answer failure,
+and missing analysis data. Integration tests cover per-condition execution
+counts, deterministic JSONL replacement, nested summary data and all four
+workbook sheets. Tests use saved dictionaries and make no API requests.
+
+The implementation must comment why oracle is the comparison baseline, why
+document identity is checked before page recall, why zero chunks is distinct
+from wrong-document retrieval, and why full page recall still may require
+manual review. It should not comment ordinary Python syntax.
+
+Verify the slice with:
+
+```bash
+uv run pytest tests/test_failure_analysis.py -q
+uv run pytest tests/test_golden_path.py -q
+uv run pytest -q
+uv lock --check
+git diff --check
+```
+
+The as-built classifier recalculates page recall from `gold_pages` and each
+chunk's `(doc_name, pages)` provenance rather than trusting the already saved
+score. This makes the diagnosis auditable and guarantees that an equal page
+number from another filing cannot count as a match. The calculated value is
+stored in each analysis row. The slice remains uncommitted until user review.
 
 ### Azure binary answer judge
 
@@ -1912,7 +2233,7 @@ uv run sec-rag-benchmark validate-judge \
 | New run paths and report overview contain experiment and variant | `test_runner_checkpoints_resumes_and_reports` and `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Nested JSON contains five condition-aware views for each metric family | `test_report_places_multi_skill_prediction_in_each_skill_view` and `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
 | Retrieval reports exclude conditions that did not retrieve | `test_report_places_multi_skill_prediction_in_each_skill_view` |
-| Workbook contains Overview, Answer accuracy and Retrieval metrics sheets | `test_report_places_multi_skill_prediction_in_each_skill_view` |
+| Workbook contains Overview, Answer accuracy, Retrieval metrics and Failure analysis sheets | `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Oracle-only workbook explains that retrieval results do not apply | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
 | Multi-label skill reporting remains non-additive | `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Rerunning a report removes obsolete `summary.csv` | `test_report_places_multi_skill_prediction_in_each_skill_view` |
@@ -1934,6 +2255,14 @@ uv run sec-rag-benchmark validate-judge \
 | Malformed output and missing credentials fail clearly | `test_request_validation_and_missing_credentials` |
 | Completed judgments resume; Azure failures retry; `did_not_fit` is not judged | `test_judge_run_combines_two_orders_and_resumes` and `test_api_failure_is_retryable_and_did_not_fit_is_not_judged` |
 | Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
+| Zero chunks and wrong-document retrieval remain distinct | `test_classifies_retrieval_failures_from_documents_and_page_recall` |
+| Target-document chunk with zero page recall is classified as `wrong_section_or_chunk` | `test_classifies_retrieval_failures_from_documents_and_page_recall` |
+| Partial gold-page recall is recorded without claiming that it caused the incorrect answer | `test_classifies_retrieval_failures_from_documents_and_page_recall` |
+| Full page recall with an incorrect answer requires manual review | `test_classifies_retrieval_failures_from_documents_and_page_recall` |
+| Oracle failure does not attribute the cause to retrieval | `test_preserves_nonclassifiable_and_context_limit_outcomes` |
+| `did_not_fit`, unjudged and judge-disagreement outcomes remain separate | `test_preserves_nonclassifiable_and_context_limit_outcomes`, `test_unavailable_oracle_states_remain_explicit` and `test_disputed_condition_and_missing_provenance_remain_unclassified` |
+| Execution status is reported overall and by condition | `test_report_counts_failed_and_missing_jobs_by_condition` |
+| Failure-analysis JSONL and workbook preserve the classification inputs, rule and legend | `test_report_places_multi_skill_prediction_in_each_skill_view` |
 | Validation sampling is deterministic, uses 15/10/5 labels, unique questions, all question types and multiple sources | `test_create_validation_sample_is_reproducible_and_balanced` |
 | Human/judge matches, null verdicts and the 90% gate are summarized correctly | `test_judge_validation_scores_matches_nulls_and_threshold` |
 | Missing or insufficient source results fail before Azure; completed validations resume | `test_missing_results_fail_before_creating_an_azure_client`, `test_insufficient_sample_fails_before_creating_an_azure_client` and `test_validate_judge_reuses_completed_results` |
@@ -1952,7 +2281,7 @@ they make no paid request.
 | Nested immutable dataclasses and `MappingProxyType` | Ordinary documented dictionaries |
 | Atomic staging, backup activation, source fingerprints | Direct deterministic preparation plus manifest hashes |
 | `run_plan.json` and result-store abstraction | Effective `config.toml`, append helpers, stable job IDs |
-| Many narrow test files | One compact golden-path behavior suite |
+| Many narrow test files | Compact golden-path and focused behavior suites |
 | Approximately 4,000 more implementation/test lines | Smaller path intended for learner review |
 
 Safeguards retained because they directly support benchmark validity:
@@ -1978,9 +2307,11 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `generation.py` separates capacity checking, client construction and response
   parsing;
 - `metrics.py` contains per-job calculations only;
+- `failure_analysis.py` owns document-aware causal classification and its
+  machine-readable methodology legend;
 - `reporting.py` owns latest-attempt selection, skill expansion and the nested
-  report calculations;
-- `report_workbook.py` owns workbook layout and formatting only;
+  report calculations, including execution status by condition;
+- `report_workbook.py` owns the four-sheet workbook layout and formatting only;
 - `execution/preflight.py` owns the no-spend `dry_run()` path;
 - `execution/job.py` owns `execute_job()` for one question-condition pair;
 - `execution/runner.py` owns the complete `run_benchmark()` workflow and
@@ -1988,9 +2319,9 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `cli.py` defines arguments inside `main()` and uses `match/case` to make each
   terminal route visible.
 
-The public commands and metric definitions remain unchanged. Reporting now
-writes nested `summary.json` data and a three-sheet `summary.xlsx` instead of
-the former wide CSV.
+The public commands and metric definitions remain unchanged. Reporting writes
+nested `summary.json`, derived `failure_analysis.jsonl`, and a four-sheet
+`summary.xlsx` instead of the former wide CSV.
 
 ### Execution subpackage implemented
 

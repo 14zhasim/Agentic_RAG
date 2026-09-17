@@ -28,6 +28,33 @@ RETRIEVAL_COLUMNS = [
     "page_mrr_sample_size",
 ]
 
+STATUS_COLUMNS = [
+    "eval_mode",
+    "planned",
+    "successful",
+    "did_not_fit",
+    "failed",
+    "missing",
+    "complete",
+]
+
+FAILURE_DETAIL_COLUMNS = [
+    "financebench_id",
+    "eval_mode",
+    "analysis_status",
+    "oracle_accuracy",
+    "condition_accuracy",
+    "target_documents",
+    "retrieved_documents",
+    "page_recall",
+    "failure_category",
+    "failure_subtype",
+    "manual_review",
+    "classification_rule",
+    "condition_judge_reasons",
+    "oracle_judge_reasons",
+]
+
 LABELS = {
     "eval_mode": "Condition",
     "question_type": "Generation method",
@@ -45,6 +72,23 @@ LABELS = {
     "page_precision_sample_size": "Precision sample size",
     "page_mrr": "Page MRR",
     "page_mrr_sample_size": "MRR sample size",
+    "planned": "Planned",
+    "successful": "Successful",
+    "failed": "Failed",
+    "missing": "Missing",
+    "complete": "Complete",
+    "financebench_id": "FinanceBench ID",
+    "analysis_status": "Analysis status",
+    "oracle_accuracy": "Oracle accuracy",
+    "condition_accuracy": "Condition accuracy",
+    "target_documents": "Target documents",
+    "retrieved_documents": "Retrieved documents",
+    "failure_category": "Failure category",
+    "failure_subtype": "Failure subtype",
+    "manual_review": "Manual review",
+    "classification_rule": "Classification rule",
+    "condition_judge_reasons": "Retrieval-answer judge reasons",
+    "oracle_judge_reasons": "Oracle judge reasons",
 }
 
 PERCENT_COLUMNS = {
@@ -87,6 +131,9 @@ def _formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
         "integer": workbook.add_format({"num_format": "#,##0", "font_color": "#1F2937"}),
         "percent": workbook.add_format({"num_format": "0.0%", "font_color": "#1F2937"}),
         "note": workbook.add_format({"italic": True, "font_color": "#475569"}),
+        "wrapped": workbook.add_format(
+            {"font_color": "#1F2937", "text_wrap": True, "valign": "top"}
+        ),
     }
 
 
@@ -228,8 +275,104 @@ def _write_metric_sheet(
     )
 
 
-def write_report_workbook(path: str | Path, summary: dict[str, Any]) -> None:
-    """Write the three approved reader-facing sheets from calculated data."""
+def _write_failure_analysis_sheet(
+    workbook: xlsxwriter.Workbook,
+    summary: dict[str, Any],
+    analysis_rows: list[dict[str, Any]],
+    formats: dict[str, Any],
+) -> None:
+    """Render the classification legend, counts and auditable detail rows."""
+    worksheet = workbook.add_worksheet("Failure analysis")
+    worksheet.hide_gridlines(2)
+    worksheet.write(1, 0, "Failure analysis", formats["title"])
+
+    worksheet.write(3, 0, "Classification legend", formats["section"])
+    worksheet.write_row(4, 0, ["Outcome", "Meaning"], formats["header"])
+    current_row = 5
+    for outcome, meaning in summary["methodology"].items():
+        worksheet.write(current_row, 0, outcome, formats["text"])
+        worksheet.write(current_row, 1, meaning, formats["wrapped"])
+        current_row += 1
+
+    current_row += 1
+    worksheet.write(current_row, 0, "Counts by condition", formats["section"])
+    current_row += 1
+    count_columns = [
+        "eval_mode",
+        "analysis_status",
+        "failure_category",
+        "failure_subtype",
+        "count",
+    ]
+    count_labels = [
+        "Condition",
+        "Analysis status",
+        "Failure category",
+        "Failure subtype",
+        "Count",
+    ]
+    worksheet.write_row(current_row, 0, count_labels, formats["header"])
+    current_row += 1
+    for count_row in summary["counts_by_condition"]:
+        for column_index, column in enumerate(count_columns):
+            cell_format = formats["integer"] if column == "count" else formats["text"]
+            worksheet.write(
+                current_row, column_index, count_row.get(column), cell_format
+            )
+        current_row += 1
+
+    current_row += 1
+    worksheet.write(current_row, 0, "Manual review", formats["text"])
+    worksheet.write(current_row, 1, summary["manual_review_count"], formats["integer"])
+    current_row += 1
+    worksheet.write(current_row, 0, "Unclassified", formats["text"])
+    worksheet.write(current_row, 1, summary["unclassified_count"], formats["integer"])
+
+    current_row += 2
+    worksheet.write(current_row, 0, "Question-level diagnoses", formats["section"])
+    header_row = current_row + 1
+    for column_index, column in enumerate(FAILURE_DETAIL_COLUMNS):
+        worksheet.write(header_row, column_index, LABELS[column], formats["header"])
+
+    for row_index, analysis_row in enumerate(analysis_rows, start=header_row + 1):
+        for column_index, column in enumerate(FAILURE_DETAIL_COLUMNS):
+            value = analysis_row.get(column)
+            if isinstance(value, list):
+                value = " | ".join(str(item) for item in value)
+            if column == "page_recall":
+                cell_format = formats["percent"]
+            elif column in {"oracle_accuracy", "condition_accuracy"}:
+                cell_format = formats["integer"]
+            elif column in {
+                "classification_rule",
+                "condition_judge_reasons",
+                "oracle_judge_reasons",
+            }:
+                cell_format = formats["wrapped"]
+            else:
+                cell_format = formats["text"]
+            worksheet.write(row_index, column_index, value, cell_format)
+
+    if analysis_rows:
+        worksheet.autofilter(
+            header_row,
+            0,
+            header_row + len(analysis_rows),
+            len(FAILURE_DETAIL_COLUMNS) - 1,
+        )
+    worksheet.freeze_panes(header_row + 1, 0)
+    worksheet.set_column(0, 4, 20)
+    worksheet.set_column(5, 6, 28)
+    worksheet.set_column(7, 10, 22)
+    worksheet.set_column(11, 13, 48)
+
+
+def write_report_workbook(
+    path: str | Path,
+    summary: dict[str, Any],
+    failure_rows: list[dict[str, Any]],
+) -> None:
+    """Write the four approved reader-facing sheets from calculated data."""
     with xlsxwriter.Workbook(str(path)) as workbook:
         formats = _formats(workbook)
 
@@ -274,6 +417,15 @@ def write_report_workbook(path: str | Path, summary: dict[str, Any]) -> None:
                 formats["percent"],
             )
 
+        _write_table(
+            overview,
+            19,
+            "Execution status by condition",
+            summary["run_status"]["by_condition"],
+            STATUS_COLUMNS,
+            formats,
+        )
+
         _write_metric_sheet(
             workbook,
             "Answer accuracy",
@@ -288,5 +440,11 @@ def write_report_workbook(path: str | Path, summary: dict[str, Any]) -> None:
             summary["retrieval_metrics"],
             RETRIEVAL_COLUMNS,
             "No applicable retrieval results.",
+            formats,
+        )
+        _write_failure_analysis_sheet(
+            workbook,
+            summary["failure_analysis"],
+            failure_rows,
             formats,
         )
