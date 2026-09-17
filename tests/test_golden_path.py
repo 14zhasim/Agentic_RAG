@@ -264,6 +264,10 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
         )
     )
     assert "Classification legend" in shared_strings
+    assert "Scored answers" in shared_strings
+    assert "Correct answers" in shared_strings
+    assert "Unresolved" in shared_strings
+    assert "Review complete" in shared_strings
 
 
 def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):

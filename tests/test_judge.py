@@ -14,7 +14,7 @@ from sec_rag_benchmark.judge import (
     _request_verdict,
     judge_run,
 )
-from sec_rag_benchmark.reporting import write_report
+from sec_rag_benchmark.reporting import _resolve_judgments, write_report
 
 
 def _prediction(job_id: str = "run:q1:oracle") -> dict:
@@ -200,6 +200,7 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
             "cognitive_skills": ["information_extraction", "numerical_reasoning"],
         },
         {**_prediction("run:q4:oracle"), "financebench_id": "q4"},
+        {**_prediction("run:q5:oracle"), "financebench_id": "q5"},
     ]
     (run_dir / "predictions.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in predictions)
@@ -207,25 +208,46 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
     judgments = [
         {"job_id": "run:q1:oracle", "accuracy": 1},
         {"job_id": "run:q2:oracle", "accuracy": None, "manual_review": True},
+        {"job_id": "run:q5:oracle", "accuracy": None, "manual_review": True},
     ]
     (run_dir / "judgments.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in judgments)
     )
+    (run_dir / "manual_reviews.jsonl").write_text(
+        json.dumps(
+            {
+                "job_id": "run:q1:oracle",
+                "human_accuracy": 0,
+                "review_reason": "Must not override an agreement.",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "job_id": "run:q2:oracle",
+                "human_accuracy": 0,
+                "review_reason": "Manually resolved.",
+            }
+        )
+        + "\n"
+    )
     (run_dir / "config.toml").write_text(
-        '[selection]\nconditions = ["oracle"]\nlimit = 4\n'
+        '[selection]\nconditions = ["oracle"]\nlimit = 5\n'
     )
 
     summary = write_report(run_dir)
     overall = summary["answer_accuracy"]["overall"][0]
     assert overall == {
         "report_view": "overall",
-        "total_predictions": 4,
-        "agreed_judgments": 1,
-        "disagreements": 1,
+        "total_predictions": 5,
+        "scored_answers": 2,
+        "correct_answers": 1,
+        "unresolved": 1,
         "unjudged": 1,
         "did_not_fit": 1,
-        "accuracy_excluding_did_not_fit": 1.0,
-        "accuracy_including_did_not_fit": 0.5,
+        "review_complete": False,
+        "accuracy_excluding_did_not_fit": 0.5,
+        "accuracy_including_did_not_fit": 1 / 3,
     }
     numerical = next(
         row for row in summary["answer_accuracy"]["by_cognitive_skill"]
@@ -249,6 +271,25 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
     with ZipFile(run_dir / "summary.xlsx") as workbook:
         shared_strings = workbook.read("xl/sharedStrings.xml").decode()
     assert "No applicable retrieval results." in shared_strings
+
+
+def test_resolve_judgments_preserves_agreements_and_fills_only_disputes():
+    judgments = {
+        "agreed": {"job_id": "agreed", "accuracy": 1},
+        "disputed": {"job_id": "disputed", "accuracy": None},
+        "unreviewed": {"job_id": "unreviewed", "accuracy": None},
+    }
+    manual_reviews = {
+        "agreed": {"job_id": "agreed", "human_accuracy": 0},
+        "disputed": {"job_id": "disputed", "human_accuracy": 0},
+    }
+
+    resolved = _resolve_judgments(judgments, manual_reviews)
+
+    assert resolved["agreed"]["accuracy"] == 1
+    assert resolved["disputed"]["accuracy"] == 0
+    assert resolved["unreviewed"]["accuracy"] is None
+    assert judgments["disputed"]["accuracy"] is None
 
 
 def test_cli_judge_delegates_without_creating_a_real_client(

@@ -8,6 +8,7 @@ from sec_rag_benchmark.failure_analysis import (
     build_failure_analysis,
     summarize_failure_analysis,
 )
+from sec_rag_benchmark.reporting import _resolve_judgments
 
 
 def _prediction(
@@ -213,6 +214,29 @@ def test_disputed_condition_and_missing_provenance_remain_unclassified():
     )
     assert missing_provenance["analysis_status"] == "unclassified"
     assert missing_provenance["failure_subtype"] == "insufficient_analysis_data"
+
+
+def test_manual_verdict_allows_disputed_answer_to_be_classified():
+    oracle = _prediction("oracle", page_recall=None)
+    retrieval = _prediction(
+        "shared_store",
+        chunks=[{"doc_name": "other.pdf", "pages": [2], "rank": 1}],
+    )
+    disputed_judgments = {
+        oracle["job_id"]: _judgment(oracle["job_id"], None),
+        retrieval["job_id"]: _judgment(retrieval["job_id"], None),
+    }
+    manual_reviews = {
+        oracle["job_id"]: {"human_accuracy": 1},
+        retrieval["job_id"]: {"human_accuracy": 0},
+    }
+
+    resolved = _resolve_judgments(disputed_judgments, manual_reviews)
+    [result] = build_failure_analysis([oracle, retrieval], resolved)
+
+    assert result["analysis_status"] == "classified"
+    assert result["failure_category"] == "retrieval_context_failure"
+    assert result["failure_subtype"] == "wrong_document"
 
 
 def test_summarizes_failure_rows_by_condition_and_outcome():

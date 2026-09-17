@@ -1465,25 +1465,25 @@ tests/test_judge.py and tests/test_failure_analysis.py
 → tests/test_golden_path.py
 ```
 
-- [ ] Write failing tests showing that agreed judgments remain authoritative,
+- [x] Write failing tests showing that agreed judgments remain authoritative,
       reviewed disagreements become scored, unreviewed disagreements remain
       unresolved, and manual decisions enable failure classification.
-- [ ] Run the focused tests and confirm they fail against automated-only
+- [x] Run the focused tests and confirm they fail against automated-only
       reporting.
-- [ ] Add `_resolve_judgments()` to create an in-memory resolved copy without
+- [x] Add `_resolve_judgments()` to create an in-memory resolved copy without
       modifying `judgments.jsonl`.
-- [ ] Change the accuracy rows and workbook columns to `scored_answers`,
+- [x] Change the accuracy rows and workbook columns to `scored_answers`,
       `correct_answers`, `unresolved`, `unjudged`, `did_not_fit`,
       `review_complete`, and the two existing accuracy values.
-- [ ] Pass the same resolved judgments into failure analysis.
-- [ ] Run:
+- [x] Pass the same resolved judgments into failure analysis.
+- [x] Run:
       ```bash
       uv run pytest tests/test_judge.py tests/test_failure_analysis.py tests/test_golden_path.py -q
       uv run pytest -q
       uv lock --check
       git diff --check
       ```
-- [ ] Reconcile this section and its diagrams with the as-built code, then
+- [x] Reconcile this section and its diagrams with the as-built code, then
       present the uncommitted diff for review.
 - [ ] After approval, commit the slice as
       `feat: report manually resolved answer accuracy`.
@@ -1493,6 +1493,15 @@ The complete feature is accepted when the current 61 disagreements export as
 report contains one final accuracy view, resolved disputes feed failure
 analysis, and a fully reviewed baseline has zero unresolved answers across all
 336 predictions.
+
+As built, `reporting._resolve_judgments()` shallow-copies every automated
+judgment, preserves agreed verdicts and fills only disputed `accuracy` values
+from the latest validated manual reviews. `write_report()` passes that same
+resolved mapping to both answer-accuracy reporting and failure analysis. The
+focused Slice 2 suite passes 47 tests and the complete suite passes 67. Before
+manual import, regenerating the baseline report records 275 scored answers,
+205 correct answers, 61 unresolved answers, zero unjudged answers and
+`review_complete = false`.
 
 #### 3. Retrieval metrics
 

@@ -41,6 +41,29 @@ def _latest_rows_by_job_id(path: Path) -> dict[str, dict[str, Any]]:
     return latest_rows
 
 
+def _resolve_judgments(
+    judgments: dict[str, dict[str, Any]],
+    manual_reviews: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Fill disputed accuracies from human reviews without changing source rows."""
+    resolved_judgments: dict[str, dict[str, Any]] = {}
+    for job_id, judgment in judgments.items():
+        resolved_judgment = dict(judgment)
+
+        # An agreed automated verdict remains authoritative. Human review is
+        # used only where the approved two-pass method produced no verdict.
+        if judgment.get("accuracy") is None and job_id in manual_reviews:
+            human_accuracy = manual_reviews[job_id].get("human_accuracy")
+            if type(human_accuracy) is not int or human_accuracy not in {0, 1}:
+                raise ValueError(
+                    f"Manual review for {job_id} has invalid human_accuracy"
+                )
+            resolved_judgment["accuracy"] = human_accuracy
+
+        resolved_judgments[job_id] = resolved_judgment
+    return resolved_judgments
+
+
 def _expand_by_cognitive_skill(
     predictions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -142,9 +165,9 @@ def _answer_accuracy_for_subset(
     **subset_identity: str,
 ) -> dict[str, Any]:
     """Count answer outcomes and calculate accuracy for one report subset."""
-    correct = 0
-    agreed_judgments = 0
-    disagreements = 0
+    correct_answers = 0
+    scored_answers = 0
+    unresolved = 0
     unjudged = 0
     did_not_fit = 0
 
@@ -157,25 +180,27 @@ def _answer_accuracy_for_subset(
         if judgment is None:
             unjudged += 1
         elif judgment.get("accuracy") is None:
-            disagreements += 1
+            unresolved += 1
         else:
-            agreed_judgments += 1
-            correct += judgment["accuracy"]
+            scored_answers += 1
+            correct_answers += judgment["accuracy"]
 
-    including_did_not_fit_denominator = agreed_judgments + did_not_fit
+    including_did_not_fit_denominator = scored_answers + did_not_fit
     return {
         "report_view": report_view,
         **subset_identity,
         "total_predictions": len(predictions),
-        "agreed_judgments": agreed_judgments,
-        "disagreements": disagreements,
+        "scored_answers": scored_answers,
+        "correct_answers": correct_answers,
+        "unresolved": unresolved,
         "unjudged": unjudged,
         "did_not_fit": did_not_fit,
+        "review_complete": unresolved == 0 and unjudged == 0,
         "accuracy_excluding_did_not_fit": (
-            correct / agreed_judgments if agreed_judgments else None
+            correct_answers / scored_answers if scored_answers else None
         ),
         "accuracy_including_did_not_fit": (
-            correct / including_did_not_fit_denominator
+            correct_answers / including_did_not_fit_denominator
             if including_did_not_fit_denominator
             else None
         ),
@@ -327,6 +352,12 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     latest_predictions = _latest_rows_by_job_id(run_path / "predictions.jsonl")
     latest_errors = _latest_rows_by_job_id(run_path / "errors.jsonl")
     latest_judgments = _latest_rows_by_job_id(run_path / "judgments.jsonl")
+    latest_manual_reviews = _latest_rows_by_job_id(
+        run_path / "manual_reviews.jsonl"
+    )
+    resolved_judgments = _resolve_judgments(
+        latest_judgments, latest_manual_reviews
+    )
 
     terminal_predictions = list(latest_predictions.values())
     successful_predictions = [
@@ -335,7 +366,7 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
 
     snapshot = tomllib.loads((run_path / "config.toml").read_text(encoding="utf-8"))
     failure_rows = build_failure_analysis(
-        terminal_predictions, latest_judgments
+        terminal_predictions, resolved_judgments
     )
     failure_summary = summarize_failure_analysis(failure_rows)
 
@@ -344,7 +375,7 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
             snapshot, latest_predictions, latest_errors
         ),
         "answer_accuracy": _answer_accuracy_views(
-            terminal_predictions, latest_judgments
+            terminal_predictions, resolved_judgments
         ),
         "retrieval_metrics": _retrieval_metric_views(successful_predictions),
         "failure_analysis": failure_summary,
