@@ -59,6 +59,10 @@ correct_examples = 15
 incorrect_examples = 10
 refusal_examples = 5
 minimum_agreement = 0.90
+[development_subsets]
+seed = 42
+smoke_size = 2
+pattern_size = 2
 [run]
 experiment = "{run_config['experiment']}"
 variant = "{run_config['variant']}"

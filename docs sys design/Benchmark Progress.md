@@ -2,13 +2,16 @@
 
 Findings from actually reading `benchmarks/financebench` and `benchmarks/lofin-hirec`, mapped against the `Overall benchmark actions` checklist in `Benchmark.md`.
 
-## Next benchmark stages
+## Current benchmark status
 
-1. Run one paid OpenRouter Oracle smoke test and inspect its saved model,
-   provider, usage, cost, latency and answer.
-2. Implement the Azure/RAGAS judge and binary final-answer accuracy.
-3. Run the full paid closed-book, oracle and long-context benchmark.
-4. Add the development validation subsets.
+- Paid OpenRouter generation completed for all 336 closed-book, oracle and
+  long-context jobs.
+- The two-pass Azure DeepSeek-V4-Flash judge passed its fixed human-label gate
+  at 28/30 (93.3%).
+- All 336 predictions were judged and the final segmented reports were written.
+- Reproducible FinanceBench development subsets are implemented: smoke uses 10
+  questions and pattern uses 50, both stratified by `question_type` with seed 42.
+- The real single-store/shared-store retriever and HiREC remain future work.
 
 Important weaknesses
 This is a rough safety mechanism rather than robust context management.

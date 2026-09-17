@@ -10,13 +10,14 @@ The harness currently supports:
 - `oracle`: FinanceBench gold evidence pages;
 - `long_context`: the complete relevant filing;
 - no-spend dry runs;
+- fixed 10-question smoke and 50-question pattern development subsets;
 - append-only answer checkpointing and resumption;
 - page recall, page precision and page MRR;
 - reports segmented by condition, question type and cognitive skill.
 
 `single_store` and `shared_store` are defined but require the future retriever.
-The Azure DeepSeek binary answer judge is implemented and fake-client tested;
-its paid smoke test is still pending. HiREC/LOFin support remains deferred.
+The Azure DeepSeek binary answer judge is implemented, paid-smoke tested and
+validated against published labels. HiREC/LOFin support remains deferred.
 
 ## Project structure
 
@@ -26,8 +27,10 @@ src/sec_rag_benchmark/
 ├── data.py                        prepare, validate and load FinanceBench
 ├── conditions.py                  construct the five context conditions
 ├── generation.py                  prompt and OpenRouter/GLM request
-├── metrics.py                     retrieval metrics and report aggregation
-├── runner.py                      job loop, checkpoints and resumption
+├── metrics.py                     per-job retrieval metrics
+├── development_subsets.py         fixed smoke/pattern selection
+├── reporting.py                   segmented result aggregation
+├── execution/                     preflight, one-job execution and run loop
 └── cli.py                         terminal commands and orchestration
 tests/                             no-spend automated tests
 data/financebench/                 generated 10-K subset; ignored by Git
@@ -106,6 +109,24 @@ uv run sec-rag-benchmark run \
   --limit 5 \
   --dry-run
 ```
+
+For repeatable development checks, use the named subsets. These preserve the
+FinanceBench `question_type` proportions and use the same question IDs on every
+machine:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset smoke \
+  --dry-run
+
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset pattern \
+  --dry-run
+```
+
+Remove `--dry-run` only when you intend to make paid generation requests.
 
 ## Run paid generation
 

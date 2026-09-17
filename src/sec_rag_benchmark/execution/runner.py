@@ -18,6 +18,7 @@ from openai import (
 
 from ..conditions import CONDITIONS, Retriever, RetrieverUnavailable, gold_pages
 from ..data import load_run_questions
+from ..development_subsets import select_development_subset
 from ..generation import ContextLimitError, generate
 from ..metrics import cognitive_skills
 from .job import Generator, execute_job
@@ -84,7 +85,8 @@ def _create_or_resume_run(
     config: dict[str, Any],
     config_path: Path,
     selected_conditions: list[str],
-    question_count: int,
+    selected_questions: list[dict[str, Any]],
+    subset: str | None,
     requested_run_dir: Path | None,
 ) -> dict[str, Any]:
     """Create or verify the run directory, snapshot and stable run key."""
@@ -100,7 +102,14 @@ def _create_or_resume_run(
     selection = (
         "\n[selection]\n"
         f"conditions = [{', '.join(repr(name) for name in selected_conditions)}]\n"
-        f"limit = {question_count}\n"
+        f"limit = {len(selected_questions)}\n"
+        f"development_subset = {json.dumps(subset or '')}\n"
+        "question_ids = ["
+        + ", ".join(
+            json.dumps(question["financebench_id"])
+            for question in selected_questions
+        )
+        + "]\n"
     )
     config_bytes = config_path.read_bytes() + selection.encode()
     snapshot = run_dir / "config.toml"
@@ -134,12 +143,19 @@ def run_benchmark(
     *,
     conditions: list[str] | None = None,
     limit: int | None = None,
+    subset: str | None = None,
     requested_run_dir: str | Path | None = None,
     retriever: Retriever | None = None,
     generator: Generator = generate,
 ) -> dict[str, Any]:
     """Run every selected question-condition job and checkpoint each attempt."""
+    if limit is not None and subset is not None:
+        raise ValueError("--limit and --subset cannot be used together")
     questions = load_run_questions(config["dataset"], limit)
+    if subset is not None:
+        questions = select_development_subset(
+            questions, subset, config["development_subsets"]
+        )
     selected_conditions = conditions or config["run"]["conditions"]
     if not selected_conditions or set(selected_conditions) - CONDITIONS:
         raise ValueError("Unknown condition")
@@ -148,7 +164,8 @@ def run_benchmark(
         config,
         Path(config_path),
         selected_conditions,
-        len(questions),
+        questions,
+        subset,
         Path(requested_run_dir) if requested_run_dir is not None else None,
     )
     run_dir = run_identity["run_dir"]

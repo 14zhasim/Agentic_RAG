@@ -291,6 +291,10 @@ correct_examples = 15
 incorrect_examples = 10
 refusal_examples = 5
 minimum_agreement = 0.90
+[development_subsets]
+seed = 42
+smoke_size = 10
+pattern_size = 50
 [run]
 experiment = "financebench"
 variant = "baseline-context-conditions-v1"

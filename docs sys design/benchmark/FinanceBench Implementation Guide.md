@@ -48,16 +48,17 @@ Currently implemented:
 - page recall, page precision, and page MRR;
 - resumable two-pass Azure DeepSeek answer judging and binary accuracy;
 - checkpoint/resume and segmented reporting;
+- fixed, question-type-stratified smoke and pattern development subsets;
 - no-spend tests and dry runs.
 
 Deferred:
 
 - real single-store/shared-store retriever and vector store;
 - HiREC/LOFin;
-- smoke and pattern validation subsets;
 
-The judge implementation is fake-client tested and its one-answer paid Azure
-smoke test passed. Validation against published human labels is the next gate.
+The paid generation run completed all 336 closed-book, oracle and long-context
+jobs. Judge prompt v2 passed the published-label gate at 28/30 (93.3%), and all
+336 saved predictions have been judged and reported.
 
 The approved terminal `did_not_fit` outcome is implemented. The current
 1,048,576-token configuration has zero oversized long-context jobs; the
@@ -164,6 +165,7 @@ src/sec_rag_benchmark/
 ├── conditions.py                  dispatch to five condition builders
 ├── generation.py                  prompt and OpenRouter request
 ├── metrics.py                     score one job and normalize skill labels
+├── development_subsets.py         fixed stratified smoke/pattern selection
 ├── judge.py                       make and checkpoint two-pass Azure judgments
 ├── judge_validation.py            compare the judge with published human labels
 ├── failure_analysis.py            classify and summarize retrieval failures
@@ -192,6 +194,8 @@ flowchart LR
     REPORT --> FAILURE[failure_analysis.py]
     REPORT --> BOOK[report_workbook.py]
     CONFIG --> COND[conditions.py constants]
+    PREFLIGHT --> SUBSET[development_subsets.py]
+    RUN --> SUBSET
     PREFLIGHT --> DATA
     PREFLIGHT --> COND
     PREFLIGHT --> GEN
@@ -493,6 +497,7 @@ as follows:
 [generation] → generation.py model request and context limits
 [judge]      → judge.py Azure request, prompt version, and judge limits
 [judge_validation] → judge_validation.py sample quotas, seed, and pass threshold
+[development_subsets] → development_subsets.py seed and subset sizes
 [run]        → execution modules: experiment/variant labels, conditions,
                retrieval depth, and results path
 ```
@@ -507,6 +512,7 @@ load_config(config_path):
     verify configured condition names
     verify the OpenRouter/provider requirements
     verify GLM generation and Azure judge settings
+    verify development-subset sizes and seed
     return the validated top-level configuration dictionary
 ```
 
@@ -567,6 +573,16 @@ correct_examples = 15
 incorrect_examples = 10
 refusal_examples = 5
 minimum_agreement = 0.90
+```
+
+Development subsets are public configuration because changing the seed or size
+changes which questions a development result represents:
+
+```toml
+[development_subsets]
+seed = 42
+smoke_size = 10
+pattern_size = 50
 ```
 
 ## 6. Data preparation and validation flow
@@ -1102,7 +1118,26 @@ execution/runner.py      run_benchmark() control the real loop and files
 ```
 
 The three modules use `data.load_run_questions(dataset_config, limit)`, which validates
-the prepared dataset, loads its questions and applies the optional limit.
+the prepared dataset, loads its questions and applies an optional ad-hoc limit.
+When `--subset smoke` or `--subset pattern` is supplied, they then call
+`development_subsets.select_development_subset()` instead. `--limit` and
+`--subset` are mutually exclusive.
+
+Read `select_development_subset()` after `load_run_questions()`. It keeps the
+full dataset's three `question_type` proportions using largest-remainder
+allocation, selects within each type using seed 42, then restores source order:
+
+```text
+group all 112 questions by question_type
+calculate each type's proportional share of the requested size
+round down, then give leftover places to the largest fractional shares
+use the fixed seed to sample that many questions from each type
+return selected questions in their original dataset order
+```
+
+This produces 5/4/1 questions for the 10-question smoke subset and 22/22/6 for
+the 50-question pattern subset. The exact selected IDs, not only the seed, are
+written into the run's `config.toml` snapshot.
 
 ### `execution/preflight.py`: no-spend inspection
 
@@ -1110,6 +1145,7 @@ the prepared dataset, loads its questions and applies the optional limit.
 
 ```text
 load_run_questions()
+apply the named development subset when requested
 select and validate condition names
 
 FOR each condition:
@@ -1158,6 +1194,7 @@ run_benchmark()
 
 ```text
 load_run_questions()
+apply the named development subset when requested
 select and validate condition names
 create or resume the run directory
 read already terminal job IDs
@@ -1175,8 +1212,8 @@ FOR each question and condition:
 RETURN run directory and generated/did-not-fit/skipped/failed counts
 ```
 
-`_create_or_resume_run()` writes or verifies the effective `config.toml` and
-derives the run key. A new directory is named
+`_create_or_resume_run()` writes or verifies the effective `config.toml`,
+including the subset name and selected question IDs, and derives the run key. A new directory is named
 `<timestamp>--<experiment>--<variant>`; resumption still uses the exact path
 passed through `--run-dir`. `_completed_jobs()` reads both successful and
 `did_not_fit` IDs from `predictions.jsonl`. `_did_not_fit_prediction()` builds
@@ -1975,7 +2012,7 @@ when their cases are reached.
 ```text
 create the sec-rag-benchmark argument parser
 define prepare, validate, run, report, judge and validate-judge subcommands
-define each subcommand's arguments
+define each subcommand's arguments; make --limit and --subset mutually exclusive
 parse the terminal arguments
 
 TRY:
@@ -2132,6 +2169,23 @@ uv run sec-rag-benchmark run \
   --dry-run
 ```
 
+Use the reproducible development subsets instead of `--limit` when a result
+needs to be comparable across code revisions:
+
+```bash
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset smoke \
+  --dry-run
+
+uv run sec-rag-benchmark run \
+  --config configs/financebench.toml \
+  --subset pattern \
+  --dry-run
+```
+
+Removing `--dry-run` makes paid generation requests for that fixed subset.
+
 The retrieval conditions can also be enumerated in a dry run, but the output
 will state that they require the future retriever:
 
@@ -2267,7 +2321,11 @@ uv run sec-rag-benchmark validate-judge \
 | Human/judge matches, null verdicts and the 90% gate are summarized correctly | `test_judge_validation_scores_matches_nulls_and_threshold` |
 | Missing or insufficient source results fail before Azure; completed validations resume | `test_missing_results_fail_before_creating_an_azure_client`, `test_insufficient_sample_fails_before_creating_an_azure_client` and `test_validate_judge_reuses_completed_results` |
 | CLI delegates `validate-judge` without constructing a client | `test_cli_delegates_validate_judge` |
-| Real retriever, HiREC and pattern suite | Explicitly deferred |
+| Fixed smoke/pattern subsets preserve proportions and IDs across runs | `test_development_subsets_are_fixed_and_stratified` |
+| Invalid subset names/sizes and `--limit` plus `--subset` fail clearly | `test_development_subset_rejects_unknown_or_oversized_selection` and `test_cli_rejects_limit_with_subset` |
+| CLI sends a named subset through the no-spend path | `test_cli_passes_subset_to_dry_run` |
+| Run snapshot records the subset name and exact selected IDs | `test_run_snapshot_records_subset_name_and_exact_question_ids` |
+| Real retriever and HiREC | Explicitly deferred |
 
 Run the verification commands listed in section 2. The tests use a tiny generated
 fixture, fake generator, fake OpenRouter client and fake Azure judge client;
@@ -2301,6 +2359,7 @@ Safeguards retained because they directly support benchmark validity:
 Sections 2, 3 and 5–13 now describe the code as built:
 
 - `config.py` owns `load_config()`;
+- `development_subsets.py` owns reproducible smoke/pattern question selection;
 - `data.py` separates selection, row checks, prepared-file replacement and
   manifest work into named helpers;
 - `conditions.py` dispatches to one named builder per condition;
@@ -2319,7 +2378,8 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `cli.py` defines arguments inside `main()` and uses `match/case` to make each
   terminal route visible.
 
-The public commands and metric definitions remain unchanged. Reporting writes
+The existing commands and metric definitions remain unchanged; `run` now also
+accepts the mutually exclusive `--subset smoke|pattern` selection. Reporting writes
 nested `summary.json`, derived `failure_analysis.jsonl`, and a four-sheet
 `summary.xlsx` instead of the former wide CSV.
 
@@ -2347,6 +2407,8 @@ reader needs design context:
 - `data.py` comments trace 10-K selection, idempotent rebuilding, manifest
   provenance, complete-PDF validation, and the in-memory metadata join;
 - `config.py` comments explain path resolution and cross-section checks;
+- `development_subsets.py` comments explain proportional allocation, fixed
+  sampling and restored source order;
 - `conditions.py` comments connect each named builder to the information
   supplied under its condition;
 - `generation.py` comments connect shared prompting, conservative context
