@@ -119,7 +119,10 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 4. **RRF fusion:** the two ranked lists are combined with reciprocal rank fusion.
    - RRF, k=60, via LlamaIndex's `QueryFusionRetriever` in `reciprocal_rerank` mode.
    - `num_queries=1` so it doesn't invent extra queries.
-5. **Reranking:** the fused top-k (retrieval depth 10) is reranked by the Voyage reranker API to produce the final top-n context.
+5. **Reranking:** the fused top-k (retrieval depth 10) is reranked by the Voyage reranker API (`rerank-3-lite`) to produce the final top-n context.
+   - `rerank-3-lite` over the 2.5 line because the 3 models carry a 200M free-token allowance while 2.5 has none, and Voyage state the newer line is strictly better on quality, context length, latency and throughput.
+   - a full 112-question run costs roughly 6M reranking tokens, about 3% of that allowance, so `rerank-3` is equally affordable and one string away if needed.
+   - which model to keep is decided on our own pre/post-rerank page metrics, since no trustworthy public reranker leaderboard exists and published comparisons sit within 1-3 NDCG points of each other.
 
 **Generation** — the reranked context is formatted consistently and handed to the answer model.
 

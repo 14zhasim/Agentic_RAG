@@ -368,6 +368,11 @@ Retrieve - Elastic search? can think about tech stack later
   -  top-k: FinCARDS uses top-10.  Align `retrieval_depth` in config (currently 5)
 - use reranker on topk-k to retrieve top-n (query-document)
   - BAAI/bge-reranker-v2-gemma via the FlagEmbedding library's FlagLLMReranker: FinSage (2025). Use Voyage reranker API instead
+  - reranker model: `rerank-3-lite` ($0.02/1M tokens, 200M free). NOT the 2.5 line — `rerank-2.5` and `rerank-2.5-lite` have ZERO free allowance; the 3 line is newer and Voyage state it is strictly better on quality, context length, latency and throughput
+    - usage is tiny: reranking bills (query tokens × number of docs) + all doc tokens ≈ 6M tokens for a full 112-question run at ~50 candidates × ~1k tokens, i.e. ~3% of the free allowance
+    - `rerank-3` (the full model) is also free at our volume — move up only if the dev-subset pre/post-rerank metrics say reranking is the bottleneck. One string change
+    - no reliable public reranker leaderboard exists (unlike RTEB for embedders); published comparisons put the leading rerankers within 1-3 NDCG points, and the loudest claims are vendor self-citations. So decide it on OUR pre/post-rerank page metrics, not a leaderboard
+    - write-up: FinSage used bge-reranker-v2-gemma; it needs GPU inference, so a hosted reranker of comparable class was substituted
   - HARNESS (build with Exp1): compute page metrics both before and after reranking (call `page_metrics()` twice, two sets of fields on the prediction row), so the reranker's effect is visible
 - feed LLM top-n results: but include metadata and heading as well
 - retrieval decisions (from review; confirm or strike)

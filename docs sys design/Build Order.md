@@ -337,6 +337,14 @@ reports.
 - use a reranker on the top-k to retrieve top-n (query-document)
   - FinSage (2025) used BAAI/bge-reranker-v2-gemma via FlagEmbedding — that needs a GPU, so use the
     Voyage reranker API instead (same key/account as embeddings)
+  - model: `rerank-3-lite` — $0.02/1M tokens with a 200M free allowance
+    - NOT `rerank-2.5` / `rerank-2.5-lite`: those have ZERO free allowance, and the 3 line is newer
+      (Voyage state it is strictly better on quality, context length, latency and throughput)
+    - our volume is ~6M tokens per full run (query tokens × candidates + all candidate tokens), so
+      ~3% of the free allowance — `rerank-3` is affordable too, it is one string away
+    - there is no trustworthy public reranker leaderboard, and published comparisons sit within 1-3
+      NDCG points of each other, so settle it with OUR pre/post-rerank page metrics on the
+      50-question pattern check rather than a citation
 
 ## 2.4 Feed the LLM
 

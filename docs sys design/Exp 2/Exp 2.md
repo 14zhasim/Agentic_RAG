@@ -31,7 +31,7 @@
 
 Same models as Experiment 1:
 - **Embedding**: Voyage `voyage-4-lite`, `input_type="document"` for chunks and headings, `input_type="query"` for questions.
-- **Reranker**: Voyage reranker API.
+- **Reranker**: Voyage reranker API (`rerank-3-lite`).
 - **Answer generation**: `z-ai/glm-5.3-flash` via OpenRouter, same settings as every other condition and experiment.
 - **Judge**: DeepSeek-V4-Flash via Azure Foundry.
 - **Parser**: Azure Document Intelligence `prebuilt-layout` (PageIndex as a live fallback — see Design decisions).
@@ -95,7 +95,7 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
 - **RRF fusion (UNCHANGED).**
   - Combines the BM25 ranked list with the (now structure-aware) dense score ranked list, k=60.
 - **Reranking (UNCHANGED).**
-  - Voyage reranker over the fused top-k (retrieval depth 10) to produce the final top-n context.
+  - Voyage reranker (`rerank-3-lite`) over the fused top-k (retrieval depth 10) to produce the final top-n context.
   - The reranker only ever sees chunk text — not the structure score (see Metrics, pre/post-rerank reporting).
 
 **Generation**

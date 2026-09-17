@@ -70,7 +70,7 @@ Experiment 3 reuses Experiment 1's whole pipeline up to generation — parsing, 
   - metadata filter first (fall back to unfiltered search if the filter matches no filing).
   - BM25 keyword search and semantic (embedding cosine-similarity) search run in parallel over the (possibly filtered) chunk set.
   - RRF fusion (k=60) combines the two ranked lists via LlamaIndex's `QueryFusionRetriever`.
-  - Voyage reranker takes the fused top-k (retrieval depth 10) to the final top-n.
+  - Voyage reranker (`rerank-3-lite`) takes the fused top-k (retrieval depth 10) to the final top-n.
 - NEW: the agent decides the arguments for each call, can call the function more than once per question, and sees each call's results before deciding whether to search again, change method/query/filters, calculate, or stop.
   - this is exactly Tools 1-4 in the tool set below.
 
