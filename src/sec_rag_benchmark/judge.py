@@ -13,11 +13,15 @@ from openai import OpenAI
 
 
 SYSTEM_PROMPT = (
-    "You grade whether a 'candidate' answer is correct for a financial question regarding a financial statement. "
-    "Allow equivalent units, harmless rounding, and harmless truncation. "
-    "Use the supplied reference 'evidence' and 'human justification'. "
+    "You grade only the CANDIDATE ANSWER against the REFERENCE ANSWER, "
+    "REFERENCE EVIDENCE, and HUMAN JUSTIFICATION, regardless of which answer "
+    "block appears first. Do not grade or restate the reference answer itself. "
+    "Return verdict 1 only when the candidate directly answers the question and "
+    "is correct on all material parts. A refusal, non-answer, unsupported hedge, "
+    "or materially incomplete answer must receive verdict 0. Allow equivalent "
+    "units, harmless rounding, and harmless truncation. "
     "Return JSON with exactly two fields: verdict (integer 0 or 1) and reason "
-    "(a concise string). Return 1 for the verdice only when the candidate is correct."
+    "(a concise string explaining the candidate's verdict)."
 )
 
 
