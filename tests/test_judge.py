@@ -46,6 +46,7 @@ def _config() -> dict:
         "model": "DeepSeek-V4-Flash",
         "deployment": "DeepSeek-V4-Flash",
         "prompt_version": "financebench-binary-judge-v2",
+        "temperature": 0.0,
         "max_output_tokens": 512,
         "timeout_seconds": 30.0,
         "max_retries": 2,
@@ -96,6 +97,7 @@ def test_judge_run_combines_two_orders_and_resumes(
     judgment = json.loads((run_dir / "judgments.jsonl").read_text())
     assert judgment["accuracy"] == expected_accuracy
     assert judgment["manual_review"] is expected_review
+    assert judgment["temperature"] == 0.0
     assert [item["prompt_order"] for item in judgment["passes"]] == [
         "reference_first",
         "candidate_first",
@@ -139,6 +141,7 @@ def test_request_validation_and_missing_credentials(monkeypatch):
     assert result["verdict"] == 1
     assert request["model"] == "DeepSeek-V4-Flash"
     assert request["max_completion_tokens"] == 512
+    assert request["temperature"] == 0.0
     assert request["response_format"] == {"type": "json_object"}
 
     malformed = SimpleNamespace(
@@ -244,7 +247,7 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
         + "\n"
     )
     (run_dir / "config.toml").write_text(
-        '[selection]\nconditions = ["oracle"]\nlimit = 5\n'
+        '[run]\nretrieval_depth = 10\n[selection]\nconditions = ["oracle"]\nlimit = 5\n'
     )
 
     summary = write_report(run_dir)
@@ -334,6 +337,7 @@ provider = "azure"
 model = "DeepSeek-V4-Flash"
 deployment = "DeepSeek-V4-Flash"
 prompt_version = "financebench-binary-judge-v2"
+temperature = 0.0
 max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2

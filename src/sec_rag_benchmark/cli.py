@@ -120,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"{result['agreements']}/{result['completed']} agreements; "
                     f"passed={result['passed']}"
                 )
+                if not result["passed"]:
+                    return 1
 
             case "export-manual-review":
                 result = export_manual_review(

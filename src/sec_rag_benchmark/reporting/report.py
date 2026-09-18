@@ -354,7 +354,20 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
     ]
 
     snapshot = tomllib.loads((run_path / "config.toml").read_text(encoding="utf-8"))
-    failure_rows = build_failure_analysis(terminal_predictions, resolved_judgments)
+    if "selection" not in snapshot:
+        raise ValueError(
+            "Report directory is not a benchmark run: config.toml has no "
+            "[selection] section"
+        )
+    retrieval_depth = snapshot.get("run", {}).get("retrieval_depth")
+    if type(retrieval_depth) is not int or retrieval_depth <= 0:
+        raise ValueError("Benchmark run config has no valid retrieval_depth")
+
+    failure_rows = build_failure_analysis(
+        terminal_predictions,
+        resolved_judgments,
+        top_k=retrieval_depth,
+    )
     failure_summary = summarize_failure_analysis(failure_rows)
 
     summary = {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from sec_rag_benchmark.reporting.failure_analysis import (
+    METHODOLOGY,
     build_failure_analysis,
     summarize_failure_analysis,
 )
@@ -113,6 +114,27 @@ def test_document_name_is_part_of_page_identity():
     [result] = build_failure_analysis([oracle, retrieval], judgments)
 
     assert result["failure_subtype"] == "wrong_document"
+
+
+def test_failure_analysis_ignores_gold_pages_outside_retrieval_depth():
+    oracle = _prediction("oracle", page_recall=None)
+    retrieval = _prediction(
+        "shared_store",
+        chunks=[
+            {"doc_name": "target.pdf", "pages": [20 + rank], "rank": rank}
+            for rank in range(1, 11)
+        ]
+        + [{"doc_name": "target.pdf", "pages": [2], "rank": 11}],
+    )
+    judgments = {
+        oracle["job_id"]: _judgment(oracle["job_id"], 1),
+        retrieval["job_id"]: _judgment(retrieval["job_id"], 0),
+    }
+
+    [result] = build_failure_analysis([oracle, retrieval], judgments, top_k=10)
+
+    assert result["page_recall"] == 0.0
+    assert result["failure_subtype"] == "wrong_section_or_chunk"
 
 
 @pytest.mark.parametrize(
@@ -275,3 +297,18 @@ def test_summarizes_failure_rows_by_condition_and_outcome():
         ("shared_store", "wrong_document", 2),
         ("single_store", "unjudged_condition", 1),
     }
+
+
+def test_methodology_explains_every_emitted_failure_value():
+    expected_values = {
+        "retrieval_context_failure",
+        "unjudged_condition",
+        "condition_judge_disagreement",
+        "missing_oracle",
+        "oracle_did_not_fit",
+        "unjudged_oracle",
+        "oracle_judge_disagreement",
+        "insufficient_analysis_data",
+    }
+
+    assert expected_values <= METHODOLOGY.keys()

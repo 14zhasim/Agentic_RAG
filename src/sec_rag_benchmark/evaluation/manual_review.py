@@ -124,7 +124,7 @@ def export_manual_review(
             }
         )
 
-    with output_path.open("w", newline="", encoding="utf-8") as file:
+    with output_path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=REVIEW_COLUMNS)
         writer.writeheader()
         writer.writerows(review_rows)
@@ -138,7 +138,7 @@ def export_manual_review(
 
 def _read_review_csv(path: Path) -> list[dict[str, str]]:
     """Read the review sheet and reject any changed or missing columns."""
-    with path.open(newline="", encoding="utf-8") as file:
+    with path.open(newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
         if reader.fieldnames != REVIEW_COLUMNS:
             raise ValueError(

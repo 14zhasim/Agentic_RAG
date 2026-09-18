@@ -82,7 +82,7 @@ def _make_run(tmp_path):
 
 
 def _read_csv(path):
-    with path.open(newline="", encoding="utf-8") as file:
+    with path.open(newline="", encoding="utf-8-sig") as file:
         return list(csv.DictReader(file))
 
 
@@ -115,6 +115,7 @@ def test_export_selects_disagreements_and_formats_review_context(tmp_path):
     assert "Page: 8\nThe note confirms the value." in rows[0]["gold_evidence"]
     assert rows[0]["human_accuracy"] == ""
     assert rows[0]["review_reason"] == ""
+    assert (run_dir / "manual_review.csv").read_bytes().startswith(b"\xef\xbb\xbf")
 
     with pytest.raises(ValueError, match="already exists"):
         export_manual_review(run_dir)
@@ -182,6 +183,21 @@ def test_import_supports_partial_unchanged_and_corrected_reviews(tmp_path):
     assert all(row["job_id"] == disputed for row in saved)
     assert all(row["reviewer"] == "author" for row in saved)
     assert all(row["reviewed_at"] for row in saved)
+
+
+def test_import_accepts_an_excel_utf8_bom(tmp_path):
+    run_dir, _ = _make_run(tmp_path)
+    export_manual_review(run_dir)
+    rows = _read_csv(run_dir / "manual_review.csv")
+    rows[0]["human_accuracy"] = "1"
+    with (run_dir / "manual_review.csv").open(
+        "w", newline="", encoding="utf-8-sig"
+    ) as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assert import_manual_review(run_dir)["imported"] == 1
 
 
 @pytest.mark.parametrize(

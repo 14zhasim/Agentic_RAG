@@ -241,6 +241,10 @@ uv run sec-rag-benchmark validate-judge \
 
 The command prints its resumable directory. Inspect `judge_validation.json`
 for the overall result, per-label agreement and mismatches requiring review.
+It exits with status 1 when the completed sample misses the required agreement
+threshold, so scripted workflows stop at the validation gate.
+When resuming, pass only that validation directory to `--run-dir`; the command
+refuses to initialise validation inside a non-empty benchmark run directory.
 
 ## Detailed documentation
 
