@@ -277,6 +277,78 @@ def _answer_accuracy_views(
     return views
 
 
+def _generation_performance_for_subset(
+    predictions: list[dict[str, Any]],
+    **subset_identity: str,
+) -> dict[str, Any]:
+    """Summarise saved GLM cost and latency for successful answers."""
+    successful_predictions = [
+        row for row in predictions if row.get("status") == "success"
+    ]
+    costs = [
+        float(row["cost"])
+        for row in successful_predictions
+        if isinstance(row.get("cost"), int | float)
+    ]
+    latencies = [
+        float(row["latency_seconds"])
+        for row in successful_predictions
+        if isinstance(row.get("latency_seconds"), int | float)
+    ]
+    question_ids_with_cost = {
+        row["financebench_id"]
+        for row in successful_predictions
+        if isinstance(row.get("cost"), int | float)
+    }
+    total_cost = sum(costs) if costs else None
+
+    return {
+        **subset_identity,
+        "successful_answers": len(successful_predictions),
+        "distinct_questions": len(
+            {row["financebench_id"] for row in successful_predictions}
+        ),
+        "cost_sample_size": len(costs),
+        "total_cost_usd": total_cost,
+        "average_cost_per_answer_usd": (
+            total_cost / len(costs) if total_cost is not None else None
+        ),
+        "average_cost_per_question_usd": (
+            total_cost / len(question_ids_with_cost)
+            if total_cost is not None and question_ids_with_cost
+            else None
+        ),
+        "latency_sample_size": len(latencies),
+        "average_latency_per_answer_seconds": (
+            sum(latencies) / len(latencies) if latencies else None
+        ),
+    }
+
+
+def _generation_performance_views(
+    predictions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build overall and condition-level GLM operating metrics."""
+    successful_predictions = [
+        row for row in predictions if row.get("status") == "success"
+    ]
+    by_condition = []
+    for condition in sorted({row["eval_mode"] for row in successful_predictions}):
+        condition_predictions = [
+            row for row in successful_predictions if row["eval_mode"] == condition
+        ]
+        by_condition.append(
+            _generation_performance_for_subset(
+                condition_predictions,
+                eval_mode=condition,
+            )
+        )
+    return {
+        "overall": _generation_performance_for_subset(successful_predictions),
+        "by_condition": by_condition,
+    }
+
+
 def _execution_status(
     snapshot: dict[str, Any],
     predictions: dict[str, dict[str, Any]],
@@ -363,6 +435,7 @@ def write_report(run_dir: str | Path) -> dict[str, Any]:
             terminal_predictions, resolved_judgments
         ),
         "retrieval_metrics": _retrieval_metric_views(successful_predictions),
+        "generation_performance": _generation_performance_views(terminal_predictions),
         "failure_analysis": failure_summary,
     }
 

@@ -39,6 +39,13 @@ STATUS_COLUMNS = [
     "complete",
 ]
 
+PERFORMANCE_CONDITION_COLUMNS = [
+    "successful_answers",
+    "total_cost_usd",
+    "average_cost_per_answer_usd",
+    "average_latency_per_answer_seconds",
+]
+
 FAILURE_DETAIL_COLUMNS = [
     "financebench_id",
     "eval_mode",
@@ -80,6 +87,14 @@ LABELS = {
     "failed": "Failed",
     "missing": "Missing",
     "complete": "Complete",
+    "successful_answers": "Successful answers",
+    "distinct_questions": "Distinct questions",
+    "cost_sample_size": "Answers with cost data",
+    "total_cost_usd": "Total cost (USD)",
+    "average_cost_per_answer_usd": "Average cost per answer (USD)",
+    "average_cost_per_question_usd": "Average cost per question (USD)",
+    "latency_sample_size": "Answers with latency data",
+    "average_latency_per_answer_seconds": "Average latency per answer (s)",
     "financebench_id": "FinanceBench ID",
     "analysis_status": "Analysis status",
     "oracle_accuracy": "Oracle accuracy",
@@ -101,6 +116,16 @@ PERCENT_COLUMNS = {
     "page_precision",
     "page_mrr",
 }
+
+CURRENCY_COLUMNS = {
+    "total_cost_usd",
+    "average_cost_per_answer_usd",
+    "average_cost_per_question_usd",
+}
+
+SECONDS_COLUMNS = {"average_latency_per_answer_seconds"}
+
+TEXT_COLUMNS = {"eval_mode", "question_type", "cognitive_skill"}
 
 
 def _formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
@@ -134,12 +159,33 @@ def _formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
         "integer": workbook.add_format(
             {"num_format": "#,##0", "font_color": "#1F2937"}
         ),
-        "percent": workbook.add_format({"num_format": "0.0%", "font_color": "#1F2937"}),
+        "percent": workbook.add_format(
+            {"num_format": "0.00%", "font_color": "#1F2937"}
+        ),
+        "currency": workbook.add_format(
+            {"num_format": "$0.000000", "font_color": "#1F2937"}
+        ),
+        "seconds": workbook.add_format(
+            {"num_format": '0.00 "s"', "font_color": "#1F2937"}
+        ),
         "note": workbook.add_format({"italic": True, "font_color": "#475569"}),
         "wrapped": workbook.add_format(
             {"font_color": "#1F2937", "text_wrap": True, "valign": "top"}
         ),
     }
+
+
+def _format_for_column(column: str, formats: dict[str, Any]) -> Any:
+    """Choose a display format that makes each metric's unit explicit."""
+    if column in PERCENT_COLUMNS:
+        return formats["percent"]
+    if column in CURRENCY_COLUMNS:
+        return formats["currency"]
+    if column in SECONDS_COLUMNS:
+        return formats["seconds"]
+    if column in TEXT_COLUMNS:
+        return formats["text"]
+    return formats["integer"]
 
 
 def _write_table(
@@ -159,10 +205,9 @@ def _write_table(
     for row_index, row in enumerate(rows, start=header_row + 1):
         for column_index, column in enumerate(columns):
             value = row.get(column)
-            cell_format = (
-                formats["percent"] if column in PERCENT_COLUMNS else formats["integer"]
-            )
-            if column in {"eval_mode", "question_type", "cognitive_skill"}:
+            cell_format = _format_for_column(column, formats)
+            if isinstance(value, bool):
+                value = "Yes" if value else "No"
                 cell_format = formats["text"]
             worksheet.write(row_index, column_index, value, cell_format)
     return header_row + len(rows) + 3
@@ -199,14 +244,15 @@ def _write_condition_sections(
         for row in condition_rows:
             for column_index, column in enumerate(columns):
                 value = row.get(column)
-                if column in PERCENT_COLUMNS:
-                    cell_format = formats["percent"]
+                if isinstance(value, bool):
+                    value = "Yes" if value else "No"
+                    cell_format = formats["text"]
                 elif column in {"question_type", "cognitive_skill"}:
                     cell_format = (
                         formats["indented"] if column_index == 0 else formats["text"]
                     )
                 else:
-                    cell_format = formats["integer"]
+                    cell_format = _format_for_column(column, formats)
                 worksheet.write(current_row, column_index, value, cell_format)
             current_row += 1
         current_row += 1
@@ -382,7 +428,9 @@ def write_report_workbook(
         overview = workbook.add_worksheet("Overview")
         overview.hide_gridlines(2)
         overview.set_column(0, 0, 34)
-        overview.set_column(1, 1, 18)
+        overview.set_column(1, 1, 20)
+        overview.set_column(2, 2, 18)
+        overview.set_column(3, 4, 26)
         overview.write(1, 0, "FinanceBench run overview", formats["title"])
         overview.write_row(3, 0, ["Run status", "Value"], formats["header"])
         status_rows = [
@@ -398,7 +446,13 @@ def write_report_workbook(
         for row_index, (label, key) in enumerate(status_rows, start=4):
             overview.write(row_index, 0, label, formats["text"])
             value = summary["run_status"][key]
-            value_format = formats["text"] if isinstance(value, str) else None
+            if isinstance(value, str):
+                value_format = formats["text"]
+            elif isinstance(value, bool):
+                value = "Yes" if value else "No"
+                value_format = formats["text"]
+            else:
+                value_format = formats["integer"]
             overview.write(row_index, 1, value, value_format)
 
         overall_accuracy = summary["answer_accuracy"]["overall"]
@@ -420,9 +474,41 @@ def write_report_workbook(
                 formats["percent"],
             )
 
+        generation_performance = summary["generation_performance"]
+        overview.write(19, 0, "Generation cost and latency", formats["section"])
+        overview.write_row(20, 0, ["Metric", "Value"], formats["header"])
+        overall_performance = generation_performance["overall"]
+        performance_rows = [
+            ("Successful answers", "successful_answers"),
+            ("Distinct questions", "distinct_questions"),
+            ("Answers with cost data", "cost_sample_size"),
+            ("Total cost (USD)", "total_cost_usd"),
+            ("Average cost per answer (USD)", "average_cost_per_answer_usd"),
+            ("Average cost per question (USD)", "average_cost_per_question_usd"),
+            ("Answers with latency data", "latency_sample_size"),
+            ("Average latency per answer (s)", "average_latency_per_answer_seconds"),
+        ]
+        for row_index, (label, key) in enumerate(performance_rows, start=21):
+            overview.write(row_index, 0, label, formats["text"])
+            overview.write(
+                row_index,
+                1,
+                overall_performance[key],
+                _format_for_column(key, formats),
+            )
+
+        next_row = _write_table(
+            overview,
+            31,
+            "Generation cost and latency by condition",
+            generation_performance["by_condition"],
+            ["eval_mode", *PERFORMANCE_CONDITION_COLUMNS],
+            formats,
+        )
+
         _write_table(
             overview,
-            19,
+            next_row,
             "Execution status by condition",
             summary["run_status"]["by_condition"],
             STATUS_COLUMNS,

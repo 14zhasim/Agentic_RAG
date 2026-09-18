@@ -223,6 +223,14 @@ Progress
 
 - [ ] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
 - [ ] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
+- Edit the existing file:
+results/20260917-012959--financebench--baseline-context-conditions-v1/manual_review.csv
+  -  Then import it:
+    uv run sec-rag-benchmark import-manual-review \
+      --run-dir results/20260917-012959--financebench--baseline-context-conditions-v1
+  -  Regenerate both reports:
+    uv run sec-rag-benchmark report \
+      --run-dir results/20260917-012959--financebench--baseline-context-conditions-v1
 
 
 Deferred

@@ -132,7 +132,7 @@ def build_condition(
     all_doc_names: tuple[str, ...],
     *,
     retriever: Retriever | None = None,
-    top_k: int = 5,
+    top_k: int = 10,
 ) -> dict[str, Any]:
     """Build context/provenance without calling the generation model.
 

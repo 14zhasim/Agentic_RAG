@@ -188,14 +188,26 @@ uv run sec-rag-benchmark report \
 ```
 
 If the two judge passes disagree, follow the manual-adjudication workflow in
-`Benchmark.md`. Its two additional commands are:
+`Benchmark.md`. The run ID is the name of its subfolder under `results/`.
+Export the review CSV once:
 
 ```bash
 uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
+```
+
+Open `results/<run-id>/manual_review.csv`, enter `1` for a correct answer or
+`0` for an incorrect answer in `human_accuracy`, and leave `review_reason`
+blank unless a note is useful. Then import the completed decisions:
+
+```bash
 uv run sec-rag-benchmark import-manual-review --run-dir results/<run-id>
 ```
 
-After importing completed reviews, rerun `report` to refresh final accuracy.
+After importing completed reviews, regenerate `summary.json` and `summary.xlsx`:
+
+```bash
+uv run sec-rag-benchmark report --run-dir results/<run-id>
+```
 
 Each run directory contains:
 

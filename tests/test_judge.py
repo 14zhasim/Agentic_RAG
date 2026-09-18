@@ -37,6 +37,8 @@ def _prediction(job_id: str = "run:q1:oracle") -> dict:
         "page_recall": None,
         "page_precision": None,
         "page_mrr": None,
+        "cost": 0.25,
+        "latency_seconds": 1.5,
     }
 
 
@@ -279,10 +281,40 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
         "by_cognitive_skill": [],
         "cross_tab": [],
     }
+    assert summary["generation_performance"] == {
+        "overall": {
+            "successful_answers": 4,
+            "distinct_questions": 4,
+            "cost_sample_size": 4,
+            "total_cost_usd": 1.0,
+            "average_cost_per_answer_usd": 0.25,
+            "average_cost_per_question_usd": 0.25,
+            "latency_sample_size": 4,
+            "average_latency_per_answer_seconds": 1.5,
+        },
+        "by_condition": [
+            {
+                "eval_mode": "oracle",
+                "successful_answers": 4,
+                "distinct_questions": 4,
+                "cost_sample_size": 4,
+                "total_cost_usd": 1.0,
+                "average_cost_per_answer_usd": 0.25,
+                "average_cost_per_question_usd": 0.25,
+                "latency_sample_size": 4,
+                "average_latency_per_answer_seconds": 1.5,
+            }
+        ],
+    }
 
     with ZipFile(run_dir / "summary.xlsx") as workbook:
         shared_strings = workbook.read("xl/sharedStrings.xml").decode()
+        styles = workbook.read("xl/styles.xml").decode()
     assert "No applicable retrieval results." in shared_strings
+    assert "Generation cost and latency" in shared_strings
+    assert 'formatCode="0.00%"' in styles
+    assert 'formatCode="$0.000000"' in styles
+    assert 'formatCode="0.00 &quot;s&quot;"' in styles
 
 
 def test_resolve_judgments_preserves_agreements_and_fills_only_disputes():
