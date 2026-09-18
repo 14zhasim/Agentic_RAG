@@ -5,12 +5,16 @@ __pycache__/
 .venv/
 .env
 EOF
-/docs/superpowers/
 /.worktrees/
 AGENTS.md
 CLAUDE.md
 /results/
 /.superpowers/
 # Local offline library documentation (regenerate: bash scripts/fetch_library_docs.sh)
-docs/libraries/*
-!docs/libraries/SKILL.md
+/docs/
+/.agents/
+/.claude/
+skills-lock.json
+/.mypy_cache/
+/.pytest_cache/
+/.ruff_cache/

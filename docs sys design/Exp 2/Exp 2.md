@@ -238,5 +238,3 @@ Optional extra: a divisor comparison, comparing the softmax divisor of 1 (≈ eq
 ### Failure-mode notes
 
 -
-</content>
-</invoke>
