@@ -57,6 +57,16 @@ corrupt or invalidate a paid run.
     before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data
   - if not: fall back to building the retriever from an already-filtered node list (2 lines)
   - keep it as a test so a version bump can't silently break it
+  - **ANSWERED (`llama-index-retrievers-bm25==0.8.0`): yes, with one caveat.** Kept as
+    `tests/test_bm25_metadata_filters.py`; the fallback is not needed
+    - the filter is applied BEFORE scoring, as the design assumes: internally it becomes a
+      `corpus_weight_mask` handed to `bm25s`, so out-of-scope chunks never compete for rank
+    - BUT filtered chunks are not removed from the result list — they are returned with
+      `score == 0.0` as padding whenever `similarity_top_k` exceeds the number of surviving
+      chunks. **Retrieval must discard zero-score hits**, otherwise chunks from filings the
+      question never asked about reach the context block
+    - a filter matching nothing raises `ValueError` rather than silently returning the whole
+      corpus, which is the behaviour we want
 - is Azure Document Intelligence's section nesting good enough for Exp2's heading path?
   - run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest,
     and do Item headings sit at the top level?) and at `paragraphs` with role `title` /
@@ -79,10 +89,11 @@ corrupt or invalidate a paid run.
 
 These invalidate answers generated at the old settings, so they come before spending anything.
 
-- `reasoning_effort` low → medium
+- `reasoning_effort` low → high
+  - GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`
   - same model, settings and answer prompt across every condition and experiment, so only
     retrieval differs
-  - if Exp3 uses `high`, that is a deviation to justify in the write-up, or run it as an ablation
+  - if Exp3 uses `max`, that is a deviation to justify in the write-up, or run it as an ablation
 - `retrieval_depth` 5 → 10 (FinCARDS uses top-10)
 - `max_output_tokens` 2048 → 8192
   - reasoning tokens count as output, and an agent spends them every turn
@@ -104,11 +115,12 @@ These invalidate answers generated at the old settings, so they come before spen
 
 ## 0.4 Tech stack set-up
 
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`,
-  `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`,
-  `numpy`
-  - plus `llama-index-postprocessor-voyageai-rerank` and `llama-index-embeddings-voyageai` if Voyage
-    goes through LlamaIndex
+- new dependencies, added and exact-pinned to match the existing house style (DONE):
+  `llama-index-core==0.14.24`, `llama-index-retrievers-bm25==0.8.0`,
+  `llama-index-vector-stores-chroma==0.6.0`, `chromadb==1.5.9`,
+  `azure-ai-documentintelligence==1.0.2`, `voyageai==0.5.0`, `numpy==2.5.3`
+  - `bm25s==0.3.11` arrives transitively via the BM25 retriever
+  - the two LlamaIndex Voyage wrappers are NOT installed — see the Voyage decision below
 - credentials to add to `.env` and `.env.example`: `VOYAGE_API_KEY`,
   `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (alongside the existing
   `OPENROUTER_API_KEY`, `AZURE_DEEPSEEK_API_KEY`, `AZURE_DEEPSEEK_ENDPOINT`)
@@ -125,10 +137,11 @@ These invalidate answers generated at the old settings, so they come before spen
   - Azure Document Intelligence — parsing (PageIndex is the live fallback)
   - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker; one account, one
     `VOYAGE_API_KEY`, two endpoints
-    - DECIDE HERE: call Voyage directly (`voyageai` client) or via LlamaIndex
-      (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`). Preference
-      is LlamaIndex for consistency; direct is simpler and one less package when we assemble the
-      candidate list ourselves. Same choice for both embeddings and reranking
+    - DECIDED: call Voyage **directly** through the `voyageai` client, for both embeddings and
+      reranking. Two fewer packages, and we assemble the candidate list ourselves anyway, so the
+      LlamaIndex wrappers buy nothing. It also keeps `input_type` (`document` for chunks, `query`
+      for questions) explicit at the call site rather than hidden in a wrapper's default — getting
+      it wrong degrades retrieval quietly instead of erroring
   - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing).
     LlamaIndex components don't call the model, so nothing clashes
   - pandas + pytest — reporting and tests (already in place)
@@ -146,7 +159,7 @@ These invalidate answers generated at the old settings, so they come before spen
   - at ~10k chunks exact search is faster to build and more accurate, so it buys skills, not results
 
 **Done when:** both spikes answered, `uv run pytest` green, and a 5-question **oracle** smoke run at
-medium effort shows sane cost and latency (no retrieval pipeline exists yet, so closed-book or
+high effort shows sane cost and latency (no retrieval pipeline exists yet, so closed-book or
 oracle are the only conditions available).
 
 **Minimum result:** the config and correctness fixes. Spikes can be answered during Stage 1 if

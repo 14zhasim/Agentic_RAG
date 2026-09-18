@@ -221,7 +221,9 @@ Then start building system design:
 
 Progress
 
-- [ ] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
+- [x] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
+  - ANSWERED at `llama-index-retrievers-bm25==0.8.0`: yes — the filter becomes a `corpus_weight_mask` applied before scoring, so filter-then-rank holds and the fallback is not needed. Kept as `tests/test_bm25_metadata_filters.py`
+  - CAVEAT that changes retrieval code: filtered chunks are not dropped, they are returned with `score == 0.0` as padding when `similarity_top_k` exceeds the surviving count. Retrieval MUST discard zero-score hits, or out-of-scope chunks reach the context block. A filter matching nothing raises `ValueError` rather than returning the whole corpus
 - [ ] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
 - Edit the existing file:
 results/20260917-012959--financebench--baseline-context-conditions-v1/manual_review.csv
@@ -255,15 +257,15 @@ Tech stack
   - filtering applies to the chunks searched; BM25 word statistics still come from the whole corpus (same as Elasticsearch, so results stay comparable if we switch)
 - Azure Document Intelligence — parsing. OPEN: PageIndex is a live fallback if Azure's section nesting is poor
 - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker. Same account and same `VOYAGE_API_KEY` for both; two endpoints
-  - DECIDE DURING IMPLEMENTATION: call Voyage directly (`voyageai` client: `vo.rerank(query, documents, model, top_k)` / `vo.embed(...)`) or through LlamaIndex (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`)
-    - preference is LlamaIndex, for consistency with the rest of the pipeline — the post-processor drops onto `QueryFusionRetriever` output
-    - but direct is simpler and one less package if we are assembling the candidate list ourselves (which Exp2's custom retriever does anyway). Pick whichever is less friction on contact, and use the same choice for embeddings and reranking
+  - DECIDED (Stage 0.4): call Voyage **directly** via the `voyageai` client (`vo.embed(...)`, `vo.rerank(query, documents, model, top_k)`), for both embeddings and reranking — not through `llama-index-postprocessor-voyageai-rerank` / `llama-index-embeddings-voyageai`
+    - two fewer packages, and we assemble the candidate list ourselves anyway (Exp2's custom retriever must), so the LlamaIndex wrappers buy no consistency we actually use
+    - it keeps `input_type` explicit at the call site — `document` for chunks, `query` for questions. Mixing them degrades retrieval silently rather than erroring, so a wrapper default is the wrong place for it
   - reranker call limits: ≤1,000 documents per call; query + any single document ≤32,000 tokens; (query tokens × documents) + all document tokens ≤600,000 per call. At ~50 chunks × ~1k tokens we use ~60k, so no batching needed
 - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing). LlamaIndex components don't call the model, so nothing clashes
 - pandas + pytest — reporting and tests (already in place)
 - LATER (document as future work): Elasticsearch as a second retriever behind the same interface — keyword, vectors (HNSW) and filters in one query. At ~10k chunks exact search is faster to build and more accurate, so it buys skills, not results
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`, `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`, `numpy`
-  - plus, if Voyage goes through LlamaIndex (see decision above): `llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`
+- new dependencies, installed and exact-pinned at Stage 0.4: `llama-index-core==0.14.24`, `llama-index-retrievers-bm25==0.8.0`, `llama-index-vector-stores-chroma==0.6.0`, `chromadb==1.5.9`, `azure-ai-documentintelligence==1.0.2`, `voyageai==0.5.0`, `numpy==2.5.3` (`bm25s==0.3.11` comes in transitively)
+  - the LlamaIndex Voyage wrappers are deliberately NOT installed (see the Voyage decision above)
 - credentials needed in `.env` / `.env.example`: `OPENROUTER_API_KEY` (generation), `AZURE_DEEPSEEK_API_KEY` + `AZURE_DEEPSEEK_ENDPOINT` (judge), `VOYAGE_API_KEY` (embeddings + reranker), `AZURE_DOCUMENT_INTELLIGENCE_KEY` + `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (parsing)
 
 Ingest files
@@ -401,7 +403,7 @@ Generate answer
 - decide model: GLM-5.3-flash with openrouter, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
   - same model, settings and answer prompt across every condition and experiment, so only retrieval differs
 - HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings):
-  - `reasoning_effort` low → medium
+  - `reasoning_effort` low → high (GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`)
   - `retrieval_depth` 5 → 10
   - `max_output_tokens` 2048 → 8192: reasoning tokens count as output, and an agent spends them every turn. Headroom is fine (largest prompt 535,722 of 1,048,576)
   - merge the judge branch (`feature/azure-ragas-judge`: judge, `did_not_fit`, accuracy reporting) — not on `main` yet
@@ -427,7 +429,7 @@ this makes case for letting agents intelligently navigate files, THEN load its c
     - save a trace per question (its own file next to `predictions.jsonl`): each iteration's filters, query, tool, results. This is what makes the failure-mode tree usable for Exp3
   - loop caps: max iterations (start at 5) + max tool calls; hitting the cap is a FOURTH outcome alongside success / error / `did_not_fit` — skipped on resume, excluded from the accuracy denominator, counted in reports, so n stays constant across experiments. Checkpoint after each question
     - tell the model its budget in the prompt, and how many iterations remain each turn, so it can answer with what it has instead of being cut off mid-search
-  - reasoning effort: raise from `low` to `medium` for ALL conditions and experiments (currently low in config). If Exp3 uses `high`, that is a deviation to justify in the write-up, or run it as an ablation
+  - reasoning effort: raise from `low` to `high` for ALL conditions and experiments. GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`. If Exp3 uses `max`, that is a deviation to justify in the write-up, or run it as an ablation
   - ablation ladder: (A) Exp1 single pass → (B) + retry when retrieval is empty/wrong filing → (C) + calculator/verification. A vs B alone is a result
 
 
