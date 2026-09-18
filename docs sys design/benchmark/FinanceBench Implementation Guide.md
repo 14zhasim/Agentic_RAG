@@ -350,6 +350,7 @@ judge calls complete:
     "manual_review": False,
     "prompt_version": "financebench-binary-judge-v2",
     "requested_model": "DeepSeek-V4-Flash",
+    "temperature": 0.0,
     "passes": [
         {
             "prompt_order": "reference_first",
@@ -590,6 +591,7 @@ provider = "azure"
 model = "DeepSeek-V4-Flash"
 deployment = "DeepSeek-V4-Flash"
 prompt_version = "financebench-binary-judge-v2"
+temperature = 0.0
 max_output_tokens = 512
 timeout_seconds = 180.0
 max_retries = 5
@@ -871,7 +873,9 @@ Retriever = Callable[[str, tuple[str, ...], int], list[dict[str, Any]]]
 ```
 
 That means `retriever(question_text, document_scope, top_k)` returns ranked chunk
-dictionaries. A missing retriever raises `RetrieverUnavailable`.
+dictionaries. `_build_retrieval_context()` sorts that output by rank and keeps
+only the first `top_k` chunks before constructing the model context, page list
+and saved provenance. A missing retriever raises `RetrieverUnavailable`.
 
 ## 8. Generation flow
 
@@ -1357,10 +1361,11 @@ accuracy by decision source. Provenance remains in the source JSONL files.
 export_manual_review(run_dir)
     read the latest predictions, judgments and existing manual reviews
     select only genuine two-pass disagreements
-    write one editable row per disagreement to manual_review.csv
+    write one Excel-compatible UTF-8 row per disagreement to manual_review.csv
 
 import_manual_review(run_dir)
-    read and validate the complete manual_review.csv
+    read the complete manual_review.csv with or without Excel's UTF-8 BOM
+    validate its columns and decisions
     append completed decisions to manual_reviews.jsonl
     skip unchanged decisions and leave blank rows unresolved
 ```
@@ -1765,14 +1770,15 @@ recall would not prove a wrong-document failure because shared-store retrieval
 could have returned the correct filing but the wrong pages.
 
 ```text
-build_failure_analysis(predictions, judgments):
+build_failure_analysis(predictions, judgments, top_k):
     index predictions by financebench_id and eval_mode
 
     FOR each single_store or shared_store prediction:
         find its judgment
         find the oracle prediction and judgment for the same question
         construct gold (document, page) pairs from gold_pages
-        construct retrieved (document, page) pairs from retrieved_chunks
+        sort retrieved_chunks by rank and keep only the first top_k
+        construct retrieved (document, page) pairs from those ranked chunks
         retain both judge passes' reasons
 
         IF the retrieval prediction is did_not_fit:
@@ -1907,7 +1913,9 @@ arrays remain populated with final resolved accuracy. Each row includes
 disagreement nor an unjudged answer.
 `failure_analysis.methodology` records the same
 category definitions displayed in the workbook, so downstream readers can
-interpret the counts without relying on undocumented code.
+interpret the counts without relying on undocumented code. It defines every
+category and subtype that can appear in the counts table, including the
+specific reasons an outcome remains unclassified.
 
 ### Human-readable `summary.xlsx`
 
@@ -2131,7 +2139,12 @@ Microsoft publishes DeepSeek-V4-Flash as a Chat Completions model. This does
 not alter `pipeline/generation.py`: GLM generation continues using OpenRouter's
 Responses API.
 
-Judge calls are sequential. The pinned OpenAI client retries connection errors,
+Judge calls are sequential and explicitly request the configured temperature;
+the combined judgment row records that value with the model and prompt version.
+Temperature zero reduces sampling variation but does not guarantee identical
+outputs. Because Azure reasoning-model parameter support is deployment-specific,
+the configured value must pass one paid smoke request before a full judge run.
+The pinned OpenAI client retries connection errors,
 timeouts, HTTP 429 rate limits and server errors with backoff, up to the
 configured `max_retries`. Every completed two-pass judgment is checkpointed
 before the next answer. If retries are exhausted, the error remains retryable
@@ -2172,7 +2185,9 @@ create_validation_sample(config, run_dir):
     write validation_sample.jsonl and compatible predictions.jsonl
 
 validate_judge(config, config_path, requested_run_dir=None):
-    create or resume the validation directory
+    if the directory is absent or empty, create a validation run
+    otherwise, require matching validation sample and prediction job IDs
+    reject any other non-empty directory before writing files
     create the complete sample before any Azure request
     call the existing judge_run()
     compare completed judgments with expected_accuracy
@@ -2207,7 +2222,9 @@ results/judge-validation-<timestamp>/
 ```
 
 Missing source files or insufficient sample coverage fail before Azure is
-called. Azure failures remain resumable. Fewer than 30 completed judgments
+called. A normal benchmark directory is rejected before any file is replaced;
+only a recognised validation directory can be resumed. Azure failures remain
+resumable. Fewer than 30 completed judgments
 produces `status = "incomplete"`, never a passing result. The real source-only
 check produced all 30 required rows across all three question types and 16
 published result files without creating an Azure client.
@@ -2236,7 +2253,8 @@ TRY:
     match the requested command
     perform the short action listed below
     print its result
-    return exit code 0
+    return exit code 0, except a completed judge validation below its threshold
+    returns exit code 1
 
 IF a known application error is raised:
     print one error message
@@ -2251,9 +2269,9 @@ Each `case` remains short:
 | `validate` | load config → `data.validate()` → print counts |
 | `run --dry-run` | load config → `preflight.dry_run()` → print preflight |
 | real `run` | load config → `runner.run_benchmark()` → print directory/counts |
-| `report` | `reporting.write_report()` → print successful count |
+| `report` | require a benchmark `[selection]` snapshot → `reporting.write_report()` → print successful count |
 | `judge` | load config → `judge.judge_run()` → print judged/skipped/failed counts |
-| `validate-judge` | load config → `judge_validation.validate_judge()` → print agreement and pass/fail |
+| `validate-judge` | load config → `judge_validation.validate_judge()` → print result → return 0 when passed or 1 when failed |
 
 The short preparation case intentionally remains visible rather than being
 wrapped in a `prepare_command()` function:
@@ -2497,6 +2515,7 @@ uv run sec-rag-benchmark validate-judge \
 | Reject duplicate IDs and invalid pages | `test_validation_rejects_bad_question_data` |
 | Each named condition builder returns the shared result shape | `test_all_conditions_and_retrieval_scopes` |
 | Single-store and shared-store pass distinct scopes to the shared retrieval builder | `test_all_conditions_and_retrieval_scopes` |
+| Retrieval context sorts results and retains only the first configured `top_k` chunks | `test_retrieval_condition_sorts_and_limits_chunks_before_building_context` |
 | Document-aware recall/precision and chunk-rank MRR | `test_metrics_use_document_aware_unique_pages_and_chunk_rank` |
 | Strict skill parsing handles all known variants and rejects unknown labels | `test_cognitive_skills_strictly_normalize_known_labels` and `test_cognitive_skills_reject_unknown_labels` |
 | Prepared data reproduces 57/36/21/14 skill counts | Verified directly against the prepared 112-question JSONL |
@@ -2523,6 +2542,7 @@ uv run sec-rag-benchmark validate-judge \
 | No answer-accuracy calculation during generation | `test_runner_checkpoints_resumes_and_reports` |
 | Both judge prompt orders contain every required reference field | `test_prompt_orders_include_every_required_financebench_field` |
 | Judge agreements produce binary accuracy and disagreement produces `None` | `test_judge_run_combines_two_orders_and_resumes` |
+| Every judge request and saved judgment use the configured temperature | `test_request_validation_and_missing_credentials` and `test_judge_run_combines_two_orders_and_resumes` |
 | Malformed output and missing credentials fail clearly | `test_request_validation_and_missing_credentials` |
 | Completed judgments resume; Azure failures retry; `did_not_fit` is not judged | `test_judge_run_combines_two_orders_and_resumes` and `test_api_failure_is_retryable_and_did_not_fit_is_not_judged` |
 | Segmented accuracy reports judged, disputed, unjudged and `did_not_fit` counts | `test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit` |
@@ -2534,9 +2554,15 @@ uv run sec-rag-benchmark validate-judge \
 | `did_not_fit`, unjudged and judge-disagreement outcomes remain separate | `test_preserves_nonclassifiable_and_context_limit_outcomes`, `test_unavailable_oracle_states_remain_explicit` and `test_disputed_condition_and_missing_provenance_remain_unclassified` |
 | Execution status is reported overall and by condition | `test_report_counts_failed_and_missing_jobs_by_condition` |
 | Failure-analysis JSONL and workbook preserve the classification inputs, rule and legend | `test_report_places_multi_skill_prediction_in_each_skill_view` |
+| Failure diagnosis uses only rank-sorted chunks inside the configured retrieval depth | `test_failure_analysis_ignores_gold_pages_outside_retrieval_depth` |
+| The failure legend explains every category and unclassified subtype | `test_methodology_explains_every_emitted_failure_value` |
 | Validation sampling is deterministic, uses 15/10/5 labels, unique questions, all question types and multiple sources | `test_create_validation_sample_is_reproducible_and_balanced` |
 | Human/judge matches, null verdicts and the 90% gate are summarized correctly | `test_judge_validation_scores_matches_nulls_and_threshold` |
 | Missing or insufficient source results fail before Azure; completed validations resume | `test_missing_results_fail_before_creating_an_azure_client`, `test_insufficient_sample_fails_before_creating_an_azure_client` and `test_validate_judge_reuses_completed_results` |
+| Judge validation refuses to overwrite a normal benchmark directory | `test_validate_judge_refuses_to_overwrite_an_ordinary_run` |
+| Failed judge validation returns exit status 1 | `test_cli_returns_one_when_judge_validation_fails` |
+| Reporting a validation directory returns a clear application error | `test_report_rejects_a_judge_validation_directory_cleanly` |
+| Manual-review CSV export and import support Excel's UTF-8 BOM | `test_export_selects_disagreements_and_formats_review_context` and `test_import_accepts_an_excel_utf8_bom` |
 | CLI delegates `validate-judge` without constructing a client | `test_cli_delegates_validate_judge` |
 | Fixed smoke/pattern subsets preserve proportions and IDs across runs | `test_development_subsets_are_fixed_and_stratified` |
 | Invalid subset names/sizes and `--limit` plus `--subset` fail clearly | `test_development_subset_rejects_unknown_or_oversized_selection` and `test_cli_rejects_limit_with_subset` |

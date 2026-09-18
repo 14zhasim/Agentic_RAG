@@ -74,6 +74,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Answer judging requires the Azure provider")
     if not judge["deployment"] or not judge["prompt_version"]:
         raise ValueError("Judge deployment and prompt version cannot be empty")
+    if not 0 <= judge["temperature"] <= 2:
+        raise ValueError("Judge temperature must be between 0 and 2")
     if judge["max_output_tokens"] <= 0:
         raise ValueError("Judge max_output_tokens must be positive")
     if judge["timeout_seconds"] <= 0 or judge["max_retries"] < 0:

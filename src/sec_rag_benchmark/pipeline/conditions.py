@@ -88,10 +88,13 @@ def _build_retrieval_context(
     if retriever is None:
         raise RetrieverUnavailable("Retrieval condition needs a retriever")
 
-    retrieved_chunks = retriever(question["question"], scope, top_k)
+    retrieved_chunks = sorted(
+        retriever(question["question"], scope, top_k),
+        key=lambda item: item["rank"],
+    )[:top_k]
     context_blocks: list[str] = []
     context_pages: list[tuple[str, int]] = []
-    for chunk in sorted(retrieved_chunks, key=lambda item: item["rank"]):
+    for chunk in retrieved_chunks:
         context_blocks.append(
             f"[Chunk: {chunk['chunk_id']} | Document: {chunk['doc_name']} | "
             f"Pages: {','.join(map(str, chunk['pages']))} | Rank: {chunk['rank']}]\n"

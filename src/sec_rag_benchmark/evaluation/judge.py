@@ -106,6 +106,7 @@ def _request_verdict(
         model=config["deployment"],
         messages=messages,
         max_completion_tokens=config["max_output_tokens"],
+        temperature=config["temperature"],
         response_format={"type": "json_object"},
     )
     latency_seconds = time.perf_counter() - started
@@ -151,6 +152,7 @@ def _combine_verdicts(
         "manual_review": not agreed,
         "prompt_version": config["prompt_version"],
         "requested_model": config["deployment"],
+        "temperature": config["temperature"],
         "passes": [
             {"prompt_order": "reference_first", **first_pass},
             {"prompt_order": "candidate_first", **second_pass},

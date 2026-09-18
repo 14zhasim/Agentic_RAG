@@ -83,6 +83,7 @@ def _validation_fixture(tmp_path: Path) -> dict:
             "model": "DeepSeek-V4-Flash",
             "deployment": "DeepSeek-V4-Flash",
             "prompt_version": "financebench-binary-judge-v2",
+            "temperature": 0.0,
             "max_output_tokens": 512,
             "timeout_seconds": 30.0,
             "max_retries": 2,
@@ -231,6 +232,27 @@ def test_validate_judge_reuses_completed_results(tmp_path):
     assert (run_dir / "judge_validation.json").is_file()
 
 
+def test_validate_judge_refuses_to_overwrite_an_ordinary_run(tmp_path):
+    config = _validation_fixture(tmp_path)
+    config_path = tmp_path / "financebench.toml"
+    config_path.write_text("# judge configuration\n")
+    run_dir = tmp_path / "ordinary-benchmark-run"
+    run_dir.mkdir()
+    predictions_path = run_dir / "predictions.jsonl"
+    saved_config_path = run_dir / "config.toml"
+    original_predictions = '{"job_id":"real:q1:oracle","status":"success"}\n'
+    original_config = "# original run configuration\n"
+    predictions_path.write_text(original_predictions)
+    saved_config_path.write_text(original_config)
+
+    with pytest.raises(ValueError, match="Refusing to initialise judge validation"):
+        validate_judge(config, config_path, requested_run_dir=run_dir)
+
+    assert predictions_path.read_text() == original_predictions
+    assert saved_config_path.read_text() == original_config
+    assert not (run_dir / "validation_sample.jsonl").exists()
+
+
 def test_missing_results_fail_before_creating_an_azure_client(tmp_path):
     config = _validation_fixture(tmp_path)
     for path in (Path(config["dataset"]["source_dir"]) / "results").glob("*.jsonl"):
@@ -276,3 +298,32 @@ def test_cli_delegates_validate_judge(tmp_path, monkeypatch, capsys):
     assert captured["config_path"] == config_path
     assert captured["requested_run_dir"] is None
     assert "28/30" in capsys.readouterr().out
+
+
+def test_cli_returns_one_when_judge_validation_fails(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        "sec_rag_benchmark.cli.load_config", lambda path: {"loaded_from": path}
+    )
+    monkeypatch.setattr(
+        "sec_rag_benchmark.cli.validate_judge",
+        lambda *args, **kwargs: {
+            "run_dir": tmp_path / "validation",
+            "agreements": 26,
+            "completed": 30,
+            "passed": False,
+        },
+    )
+
+    assert main(["validate-judge", "--config", str(tmp_path / "config.toml")]) == 1
+    assert "passed=False" in capsys.readouterr().out
+
+
+def test_report_rejects_a_judge_validation_directory_cleanly(tmp_path, capsys):
+    run_dir = tmp_path / "judge-validation"
+    run_dir.mkdir()
+    (run_dir / "config.toml").write_text("[judge]\nprovider = 'azure'\n")
+
+    assert main(["report", "--run-dir", str(run_dir)]) == 2
+    output = capsys.readouterr().out
+    assert "Error:" in output
+    assert "not a benchmark run" in output

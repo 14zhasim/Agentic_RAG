@@ -16,6 +16,10 @@ METHODOLOGY = {
         "The retrieval answer and oracle answer were both incorrect, so "
         "retrieval cannot be isolated as the cause."
     ),
+    "retrieval_context_failure": (
+        "The oracle answer was correct but the retrieval-condition answer was "
+        "incorrect; the subtype records what the saved retrieval evidence supports."
+    ),
     "no_chunks_retrieved": "The retriever returned no chunks.",
     "wrong_document": ("Chunks were returned, but none came from a target filing."),
     "wrong_section_or_chunk": (
@@ -31,6 +35,19 @@ METHODOLOGY = {
     ),
     "unclassified": (
         "Missing or disputed evidence prevents an automatic causal diagnosis."
+    ),
+    "unjudged_condition": "The retrieval-condition answer has no judgment.",
+    "condition_judge_disagreement": (
+        "The two judge passes disagreed on the retrieval-condition answer."
+    ),
+    "missing_oracle": "No oracle result exists for the question.",
+    "oracle_did_not_fit": "The oracle prompt did not fit the context window.",
+    "unjudged_oracle": "The oracle answer has no judgment.",
+    "oracle_judge_disagreement": (
+        "The two judge passes disagreed on the oracle answer."
+    ),
+    "insufficient_analysis_data": (
+        "Gold-page or retrieved-chunk provenance is missing or invalid."
     ),
 }
 
@@ -69,6 +86,8 @@ def _mark(
 def build_failure_analysis(
     predictions: list[dict[str, Any]],
     judgments: dict[str, dict[str, Any]],
+    *,
+    top_k: int = 10,
 ) -> list[dict[str, Any]]:
     """Classify each saved retrieval-condition result against its oracle."""
     predictions_by_question_and_condition = {
@@ -92,11 +111,18 @@ def build_failure_analysis(
         target_documents = sorted({doc_name for doc_name, _ in gold_page_pairs})
         chunks = prediction.get("retrieved_chunks")
 
-        retrieved_page_pairs: set[tuple[str, int]] = set()
-        retrieved_documents: set[str] = set()
+        ranked_chunks: list[dict[str, Any]] = []
         chunk_provenance_is_valid = isinstance(chunks, list)
         if isinstance(chunks, list):
-            for chunk in chunks:
+            if any(type(chunk.get("rank")) is not int for chunk in chunks):
+                chunk_provenance_is_valid = False
+            else:
+                ranked_chunks = sorted(chunks, key=lambda chunk: chunk["rank"])[:top_k]
+
+        retrieved_page_pairs: set[tuple[str, int]] = set()
+        retrieved_documents: set[str] = set()
+        if chunk_provenance_is_valid:
+            for chunk in ranked_chunks:
                 doc_name = chunk.get("doc_name")
                 pages = chunk.get("pages")
                 if not isinstance(doc_name, str) or not isinstance(pages, list):
@@ -250,7 +276,7 @@ def build_failure_analysis(
                     manual_review=True,
                 )
             )
-        elif not chunks:
+        elif not ranked_chunks:
             analysis_rows.append(
                 _mark(
                     row,

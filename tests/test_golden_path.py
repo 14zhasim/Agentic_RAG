@@ -64,6 +64,7 @@ provider = "azure"
 model = "DeepSeek-V4-Flash"
 deployment = "DeepSeek-V4-Flash"
 prompt_version = "financebench-binary-judge-v2"
+temperature = 0.0
 max_output_tokens = 512
 timeout_seconds = 30.0
 max_retries = 2
@@ -182,6 +183,54 @@ def test_all_conditions_and_retrieval_scopes(sample):
         build_condition(question, "single_store", pdf_dir, (), retriever=None)
 
 
+def test_retrieval_condition_sorts_and_limits_chunks_before_building_context(sample):
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]
+    pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
+
+    def retrieve(query, scope, top_k):
+        return [
+            {
+                "chunk_id": "rank-3",
+                "text": "must not reach the model",
+                "doc_name": "b.pdf",
+                "pages": [3],
+                "rank": 3,
+            },
+            {
+                "chunk_id": "rank-1",
+                "text": "first",
+                "doc_name": "b.pdf",
+                "pages": [1],
+                "rank": 1,
+            },
+            {
+                "chunk_id": "rank-2",
+                "text": "second",
+                "doc_name": "b.pdf",
+                "pages": [2],
+                "rank": 2,
+            },
+        ]
+
+    condition = build_condition(
+        question,
+        "single_store",
+        pdf_dir,
+        ("a.pdf", "b.pdf"),
+        retriever=retrieve,
+        top_k=2,
+    )
+
+    assert [chunk["chunk_id"] for chunk in condition["retrieved_chunks"]] == [
+        "rank-1",
+        "rank-2",
+    ]
+    assert condition["context_pages"] == [("b.pdf", 1), ("b.pdf", 2)]
+    assert condition["context"].index("first") < condition["context"].index("second")
+    assert "must not reach the model" not in condition["context"]
+
+
 def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
     chunks = [
         {"doc_name": "wrong.pdf", "pages": [2], "rank": 1},
@@ -245,6 +294,7 @@ def test_report_places_multi_skill_prediction_in_each_skill_view(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "config.toml").write_text(
+        "[run]\nretrieval_depth=10\n"
         "[selection]\nconditions=['single_store', 'oracle']\nlimit=1\n"
     )
     prediction = {
@@ -340,6 +390,7 @@ def test_report_counts_failed_and_missing_jobs_by_condition(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "config.toml").write_text(
+        "[run]\nretrieval_depth=10\n"
         "[selection]\nconditions=['shared_store', 'oracle']\nlimit=2\n"
     )
     oracle_prediction = {
@@ -497,6 +548,7 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
     assert Path(config["run"]["results_dir"]).is_absolute()
     assert config["generation"]["reasoning_effort"] == "high"
     assert config["generation"]["max_output_tokens"] == 8192
+    assert config["judge"]["temperature"] == 0.0
     assert config["run"]["retrieval_depth"] == 10
 
     config_path.write_text(
@@ -514,6 +566,17 @@ def test_load_config_resolves_paths_and_rejects_unknown_condition(sample, tmp_pa
         )
     )
     with pytest.raises(ValueError, match="experiment and variant"):
+        load_config(config_path)
+
+    _write_config(config_path, sample)
+    config_path.write_text(
+        config_path.read_text()
+        .replace("[judge]\nprovider", "[judge]\ntemperature = 3.0\nprovider")
+        .replace(
+            "temperature = 0.0\nmax_output_tokens = 512", "max_output_tokens = 512"
+        )
+    )
+    with pytest.raises(ValueError, match="Judge temperature"):
         load_config(config_path)
 
 

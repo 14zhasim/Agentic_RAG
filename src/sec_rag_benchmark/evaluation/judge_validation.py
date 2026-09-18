@@ -225,6 +225,38 @@ def create_validation_sample(
     return sample_rows
 
 
+def _existing_validation_sample(run_path: Path) -> list[dict[str, Any]] | None:
+    """Recognise a validation directory without mistaking a benchmark run for one."""
+    if not run_path.exists() or not any(run_path.iterdir()):
+        return None
+
+    sample_path = run_path / "validation_sample.jsonl"
+    predictions_path = run_path / "predictions.jsonl"
+    if not sample_path.is_file() or not predictions_path.is_file():
+        raise ValueError(
+            "Refusing to initialise judge validation in a non-empty directory "
+            "that is not an existing validation run"
+        )
+
+    sample = _read_jsonl(sample_path)
+    predictions = _read_jsonl(predictions_path)
+    sample_job_ids = {row.get("job_id") for row in sample}
+    prediction_job_ids = {row.get("job_id") for row in predictions}
+    if (
+        not sample_job_ids
+        or any(
+            not isinstance(job_id, str) or not job_id.startswith("judge-validation:")
+            for job_id in sample_job_ids
+        )
+        or prediction_job_ids != sample_job_ids
+    ):
+        raise ValueError(
+            "Refusing to resume judge validation because its sample and "
+            "predictions do not identify the same validation jobs"
+        )
+    return sample
+
+
 def _latest_judgments(path: Path) -> dict[str, dict[str, Any]]:
     """Keep the newest append-only judgment for each validation job."""
     if not path.exists():
@@ -339,10 +371,8 @@ def validate_judge(
             / f"judge-validation-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
         )
     )
-    sample_path = run_path / "validation_sample.jsonl"
-    if sample_path.exists():
-        sample = _read_jsonl(sample_path)
-    else:
+    sample = _existing_validation_sample(run_path)
+    if sample is None:
         sample = create_validation_sample(config, run_path)
         shutil.copy2(config_path, run_path / "config.toml")
 
