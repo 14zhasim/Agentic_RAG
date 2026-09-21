@@ -19,3 +19,5 @@ skills-lock.json
 /.pytest_cache/
 /.ruff_cache/
 HANDOFF.md
+/scripts/
+.DS_Store
