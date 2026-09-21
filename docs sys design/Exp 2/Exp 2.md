@@ -34,7 +34,8 @@ Same models as Experiment 1:
 - **Reranker**: Voyage reranker API (`rerank-3-lite`).
 - **Answer generation**: `z-ai/glm-5.3-flash` via OpenRouter, same settings as every other condition and experiment.
 - **Judge**: DeepSeek-V4-Flash via Azure Foundry.
-- **Parser**: Azure Document Intelligence `prebuilt-layout` (PageIndex as a live fallback — see Design decisions).
+- **Parser**: Azure Document Intelligence `prebuilt-layout`; the Stage 0 spike rejected PageIndex
+  because Azure found the heading text and spans needed here.
 
 - **The only architectural change is the dense scorer:**
   - Experiment 1's chunk-embedding-only cosine similarity is replaced by chunk-similarity plus structure-similarity.
@@ -47,7 +48,7 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
 
 **Ingestion**
 - **Parse the filing (UNCHANGED).**
-  - Azure Document Intelligence `prebuilt-layout` (PageIndex as a live fallback — see Design decisions), producing markdown output plus structural JSON.
+  - Azure Document Intelligence `prebuilt-layout`, producing markdown output plus structural JSON.
   - Cached to disk once, out of Git; chunking never re-parses.
 - **Chunk within page boundaries (UNCHANGED).**
   - One chunk = one page, so page-based retrieval metrics stay exact.
@@ -55,7 +56,8 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - Each chunk carries metadata for filtering: filing type, company ticker, financial year, page number.
 - **Extract document structure (NEW).**
   - For every heading in the parsed document, record its text, its nesting level, and its start page.
-    - Comes from whichever parser is used — structure source is still open (see Design decisions).
+    - Azure supplies the heading text and character spans. Its raw levels go through the cached,
+      structurally validated heading-fix pass before attribution.
 - **Attribute headings to chunks (NEW).**
   - From each heading's start page, compute its page range.
     - The range ends where the next heading at the same or higher nesting level starts.
@@ -167,9 +169,12 @@ flowchart TD
 
 ## Design decisions
 
-- **Structure source: still OPEN.**
-  - Either Azure Document Intelligence or PageIndex works with the same method, as long as it gives each heading, its nesting level, and its start page.
-  - This needs to be checked on 2-3 filings before committing — specifically whether Azure's `sections` actually nest correctly and whether Item headings sit at the top level, or whether PageIndex is needed instead.
+- **Structure source: Azure, decided by the Stage 0 spike.**
+  - Azure found all 21 Item headings in 3M 2018, nested sections to depth 8 and populated every
+    section span. PageIndex was rejected because a second paid parse was unnecessary.
+  - Azure's raw levels are not used unchanged: the same Item series appeared across four levels, so
+    Stage 1.3 corrects heading text and levels once per filing before attributing paths by character
+    offset.
 - **HiChunk cut.**
   - HiChunk's chunk-point predictor needs a fine-tuned model run over vLLM, which needs a GPU. Not used here.
 - **SLM virtual node deferred.**

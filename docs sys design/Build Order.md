@@ -216,6 +216,16 @@ field and turn a weight on" rather than a refactor.
 
 ## 1.1 Parse
 
+- keep the benchmark harness and the system being evaluated as separate top-level packages
+  - `src/sec_rag_benchmark/` owns FinanceBench conditions, execution, evaluation and reporting
+  - `src/sec_rag/` owns parsing, chunking, indexing, retrieval, reranking, generation and the
+    experiment pipelines
+  - expose a separate `sec-rag` CLI for building and inspecting the RAG system; keep
+    `sec-rag-benchmark` for benchmark runs and reports
+  - use one Python project and lockfile, explicitly packaging both top-level modules with
+    `uv_build`; a workspace would add administration without changing the experiment
+  - keep the RAG settings in `configs/sec_rag.toml`, separate from FinanceBench's evaluation and
+    run settings in `configs/financebench.toml`
 - parse document: extract text, identify structural elements (sections, titles, tables, text,
   figures), preserve information like table structure and data
   - output as `.md` — like Kim et al. (2025) found improvements on — or JSON
@@ -228,15 +238,6 @@ field and turn a weight on" rather than a refactor.
   - just using an LLM misses metadata (year, file type, company) and structural content (e.g. the
     subheading of each chunk)
   - preserve metadata in the doc i.e. page numbers, denoting (sub)headings, tables etc.
-- parsing options considered (keep for the write-up justification)
-  - "VLM-agentic" parsers read the page like a person, with a correction/verification pass: e.g.
-    LlamaParse, Reducto ($$$), Azure Document Intelligence ($100 for ~80 docs around 12,000 pages,
-    82.7% on RD-TableBench, **use base Layout**), GPT-5.6. Good if endless edge cases exist in human
-    writing — just use a VLM
-  - "layout engine" parsers use specialised detection models + rules, no LLM in the loop by default,
-    self-hostable and free: PyMuPDF / pymupdf4llm, good for machine-generated docs like statements,
-    apparently not that good for tables
-  - verdict: use Azure Document Intelligence as I have startup credits
 - Azure Document Intelligence, `prebuilt-layout` (base Layout), markdown output
   - setup is light: create resource → endpoint + key → `azure-ai-documentintelligence` SDK
   - paid tier only (free tier reads first 2 pages), ~$10 / 1,000 pages → ~$100 budget for this
@@ -244,9 +245,20 @@ field and turn a weight on" rather than a refactor.
 - parser output decisions
   - parse once, cache forever: save Azure's raw JSON per PDF (out of Git, with a manifest like data
     prep), never re-parse when chunking changes
+    - group each filing's derived parser artefacts under
+      `data/financebench/parsed/<doc_name>/`; keep the source PDF only in the prepared dataset's
+      `pdfs/` directory so there is one source of truth
+    - save the production cache as `<doc_name>/azure-layout.json`; an optional, reproducible
+      `<doc_name>/structure.txt` is an inspection report, not part of cache validity
+    - keep a separate `data/financebench/parsed/manifest.json`; the prepared-dataset manifest and
+      parse manifest record different operations
   - raw JSON is the source of truth; markdown is one field inside it (`content`), other fields
     (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position,
     which is how each piece maps back to a page
+  - preserve `result.as_dict()` verbatim, including `content`, `pages`, `paragraphs`, `tables`,
+    `sections`, `styles`, figures and any other returned fields. Section 1.1 acquires immutable raw
+    input; noise removal, page-index conversion, metadata attachment, heading correction and
+    chunking are transformations in 1.2-1.3
   - strip page headers/footers/page numbers (Azure labels these) before chunking
     - they appear inline in `content` as `<!-- PageHeader="..." -->` and `<!-- PageNumber="13" -->`;
       4% of paragraphs on 3M 2018
@@ -255,17 +267,43 @@ field and turn a weight on" rather than a refactor.
   this stage should follow, and its `analyse` step is how to inspect the result
   - uploads the PDF bytes to `prebuilt-layout` with `DocumentContentFormat.MARKDOWN`, waits on the
     long-running poller, writes `result.as_dict()` verbatim to
-    `data/financebench/parsed/<doc_name>.json`
+    `data/financebench/parsed/<doc_name>/azure-layout.json`
   - skips any doc whose JSON already exists — this is what makes "parse once, cache forever" real
   - writes `.json.partial` then renames, so an interrupted write cannot leave a half-file that the
     cache check would later mistake for a finished parse
   - reads credentials from the environment inside `parse` only, so `analyse` runs offline with none
   - NOT yet done there, and required here: **write a manifest entry per parsed filing** (which docs,
-    when, which API version and settings). Without it a half-finished corpus parse looks identical
+    when, which SDK version and settings). Without it a half-finished corpus parse looks identical
     to a complete one. `data/financebench/manifest.json` is the dataset-prep manifest; this is a
     separate record
+    - each entry records document name, source-PDF hash, cached-JSON hash, page count, model and
+      output settings, SDK version, completion time, and whether it came from
+      the paid response or was reconstructed from a validated cache
+    - validate an existing cache before letting it suppress another paid call: readable JSON,
+      non-empty content and an Azure page count matching PyMuPDF's source-PDF page count. Detailed
+      page-number and span checks belong to 1.2-1.3, where those fields are used
+    - a valid `azure-layout.json` always prevents another Azure call. If its manifest entry is
+      missing after a crash, reconstruct that entry offline; if the cache is invalid or its source
+      PDF changed, stop for inspection rather than silently overwriting or paying again
   - when 1.3 is built, move `find_headings`, `section_depths` and `build_page_map` out of the script
     into `src/` with tests, leaving the script as a thin report generator importing from there
+    - Section 1.1 may move the report-only analysis into `sec_rag` earlier so
+      `sec-rag inspect-parse` can create `structure.txt` for the initial test filings; this does
+      not perform the LLM heading-fix pass
+- corpus command and spending guard
+  - `sec-rag parse --config configs/sec_rag.toml` is a read-only plan: with no document arguments
+    it checks all prepared PDFs, and `--documents ...` narrows it to explicitly named filings
+  - classify each selected filing before creating an Azure client as complete, missing or invalid.
+    Any invalid cache stops the operation before spending
+  - `--execute-paid` recreates a missing manifest entry from an already-valid cache, then parses
+    only missing filings, serially. Stop on the first failure; rerunning the same command skips
+    completed filings and resumes the remainder
+  - read credentials and create the client lazily only when a missing filing will actually be
+    submitted
+  - validate a paid response before atomically renaming its temporary JSON into place; atomically
+    update the manifest after every filing
+  - before the full corpus, use `--documents` for a small named batch, generate their offline
+    `structure.txt` reports, inspect them, and only then run all remaining filings
 - CONFIRMED by the Stage 0.1 spike on 3M 2018 (160 pages, cached JSON is 21.5 MB)
   - the whole result is cached, not just headings: `content`, `pages`, `paragraphs`, `tables`,
     `sections`, `styles`
@@ -439,6 +477,31 @@ reports.
     rewriting the interface underneath finished runs
   - doing this after Stage 2/3 would mean re-verifying every prediction row and report built against
     the old sequence
+- keep FinanceBench's five condition definitions in `sec_rag_benchmark`; they are evaluation
+  protocols, not RAG-system behaviour
+  - closed-book, oracle and long-context select no pages, gold pages or all filing pages,
+    respectively, then pass those supplied context items to `sec_rag`'s direct-answer pipeline
+  - single-store and shared-store select one-filing or all-filing document scope, respectively,
+    then pass the question and scope to the selected RAG pipeline
+  - `sec_rag` must not receive FinanceBench condition names. It receives either supplied context
+    or retrieval scope, formats the common `[Document | Page | Section]` context, and owns every
+    model-facing operation
+- remove the benchmark's current retriever callback by decomposing it rather than moving it
+  wholesale
+  - `conditions.py` keeps condition selection and document-scope construction, but no longer calls
+    retrieval or formats retrieved chunks
+  - move shared generation, answer-prompt construction and context formatting from
+    `sec_rag_benchmark/pipeline/generation.py` into `sec_rag`
+  - the direct, one-round RAG and future agent pipelines all return the common answer + final chunks
+    + retrieval stages + trace + usage/provenance result
+  - the benchmark alone calculates metrics, checkpoints predictions, judges answers and reports
+- when implementing this migration, update
+  `docs sys design/benchmark/FinanceBench Implementation Guide.md` in the same slice so its data
+  shapes, code-reading order, pseudocode, tests and terminal commands describe the code actually
+  present
+- verify the migration with fake-pipeline tests over all five conditions, the complete no-spend
+  test suite, and the README's smoke and pattern dry-run commands before any paid benchmark smoke
+  run
 
 ## 2.1 LLM query enhancement
 

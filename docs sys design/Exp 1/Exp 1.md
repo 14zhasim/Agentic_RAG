@@ -87,10 +87,14 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
   - Tables are their own chunks: each table becomes a chunk on its own; an oversized table is split by rows, repeating the header row in each split.
   - Everything that isn't a table goes to a 1,024-token recursive/sentence splitter (token count, not character count).
 - **Metadata:**
-  - Document-level metadata (company, doc_type, doc_period) is read from `financebench_document_information.jsonl`, not inferred from parsing — FinanceBench has no ticker field.
+  - Document-level metadata (company, doc_type, doc_period) is read from
+    `financebench_document_information_10k.jsonl`, not inferred from parsing — FinanceBench has no
+    ticker field.
   - Each chunk carries metadata for filtering: SEC filing type, company ticker, financial year, and page number.
-- **This is currently open:** whether Azure Document Intelligence's section nesting is good enough to also carry heading paths (needed for Experiment 2) is unverified.
-  - The fallback is PageIndex if Azure's `sections` don't nest correctly or Item headings aren't at the top level.
+- **Structure source:** the Stage 0 spike selected Azure and rejected PageIndex.
+  - Heading text detection is reliable and section spans are populated, but Azure's raw levels are
+    not usable directly. The cached raw headings are corrected in the separate Stage 1.3
+    heading-fix pass; this does not change Experiment 1's parse.
 
 **Storage** — two indexes are built over the chunks, each filterable by metadata before search runs.
 

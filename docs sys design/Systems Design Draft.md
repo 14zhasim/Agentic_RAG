@@ -285,7 +285,24 @@ Ingest files
       - setup is light: create resource → endpoint + key → `azure-ai-documentintelligence` SDK, `prebuilt-layout` model, markdown output. Paid tier only (free tier reads first 2 pages). ~$10 / 1,000 pages
   - Parser output decisions: goal is to identify subheading structure accurately!
     - parse once, cache forever: save Azure's raw JSON per PDF (out of Git, with manifest like data prep), never re-parse when chunking changes
+      - store derived parser artefacts per filing:
+        `data/financebench/parsed/<doc_name>/azure-layout.json` plus an optional reproducible
+        `structure.txt`; do not copy the source PDF out of the prepared dataset's `pdfs/` directory
+      - keep `data/financebench/parsed/manifest.json` separate from the prepared-dataset manifest.
+        It records each PDF/JSON hash, page count, model/output settings and SDK provenance,
+        completion time and whether a missing entry was repaired from an already-valid cache
+      - the unflagged `sec-rag parse --config configs/sec_rag.toml` command is read-only and checks
+        every PDF unless `--documents` narrows it. `--execute-paid` recreates any missing manifest
+        entry from a valid cache, then submits only genuinely missing filings, serially
+      - before a cache can suppress another paid call, require readable JSON, non-empty content and
+        an Azure page count matching PyMuPDF's PDF page count. Detailed page-number and span
+        validation belongs to 1.2-1.3, where those fields are used
+      - write the JSON and manifest atomically after each filing, stop on the first failure, and
+        resume by skipping completed documents
     - raw JSON is the source of truth; markdown is one field inside it (`content`), other fields (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position, which is how each piece maps back to a page
+      - save `result.as_dict()` verbatim, preserving all returned fields including figures and
+        `styles`. Section 1.1 only acquires and validates raw input; stripping noise, page-index
+        conversion, metadata attachment, heading repair and chunking happen in sections 1.2-1.3
       - attribution is therefore by character offset, not by page range (e.g. 200,000 characters in a filing, it gives character 'width' of each page, paragraph, table etc.): every paragraph, table, section and page carries spans (offset + length), so text is attached to its heading exactly rather than approximately
     - strip page headers/footers/page numbers (Azure labels these) before chunking
       - they appear inline in content as \<!-- PageHeader="..." --> and \<!-- PageNumber="13" -->;
@@ -428,6 +445,14 @@ Generate answer
 
 - decide model: GLM-5.3-flash with openrouter, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
   - same model, settings and answer prompt across every condition and experiment, so only retrieval differs
+  - model-facing behaviour belongs to `sec_rag`, while the benchmark owns what each evaluation
+    condition is allowed to supply
+    - closed-book, oracle and long-context give the direct-answer pipeline no context, gold-page
+      context or full-filing context
+    - single-store and shared-store give a RAG pipeline one-document or all-document scope
+    - `sec_rag` receives supplied context or document scope, never FinanceBench condition names
+    - one shared formatter produces `[Document | Page | Section]` blocks for supplied pages and
+      retrieved chunks, then one shared prompt/generator answers
 - HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings):
   - `reasoning_effort` low → high (GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`)
   - `retrieval_depth` 5 → 10
@@ -449,7 +474,14 @@ this makes case for letting agents intelligently navigate files, THEN load its c
     4. (loop) calculator
     5. answer
   - deferred tools: fetch whole page (see Deferred section), decompose query: FinSTAR: decompose query into 'atomic' subqueries, use symbolic logic topology of (∩ / \ / aggregation), to figure out how they will lead to answer, before conductin retrieval and compare retrieved info against plan to adjust as go along
-  - HARNESS (build with Exp3): `execution/job.py` currently runs a fixed sequence (build context → one model call → save). An agent calls the model before and between retrievals, so job.py must hand the whole question over instead: the plug becomes "pipeline returns answer + final chunks + trace + usage", not "retriever returns chunks". Exp1/Exp2 then become one-round pipelines behind the same plug. Largest single item (~a day)
+  - HARNESS (build at Stage 2.0, before Exp1 results): `execution/job.py` currently runs a fixed sequence (build context → one model call → save). An agent calls the model before and between retrievals, so job.py must hand the condition inputs to a selected pipeline instead: the plug becomes "pipeline returns answer + final chunks + retrieval stages + trace + usage/provenance", not "retriever returns chunks". Exp1/Exp2 then become one-round pipelines behind the same plug. Largest single item (~a day)
+    - decompose the benchmark's `_build_retrieval_context()` rather than moving it: condition code
+      keeps scope selection; `sec_rag` owns retrieval and context formatting
+    - move `pipeline/generation.py`'s shared prompt, context-limit check and OpenRouter generation to
+      `sec_rag` at the same time
+    - keep metric calculation, prediction checkpointing, judging and reporting in the benchmark
+    - update the FinanceBench implementation guide, README commands and fake-pipeline tests over
+      all five conditions in the same migration slice
     - page recall/precision computed on the FINAL retrieval only (comparable with Exp1/Exp2). NOT tracking "all chunks seen" as a separate scored set — too much plumbing for the value; the trace already shows what was searched
     - report average k (passages used), since it now varies per question — as LOFin does
     - save a trace per question (its own file next to `predictions.jsonl`): each iteration's filters, query, tool, results. This is what makes the failure-mode tree usable for Exp3

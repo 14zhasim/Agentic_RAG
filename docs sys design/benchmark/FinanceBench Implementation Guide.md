@@ -54,6 +54,21 @@ Deferred:
 - real single-store/shared-store retriever and vector store;
 - HiREC/LOFin;
 
+Approved future integration boundary (implemented at `Build Order.md` Stage 2.0, not present in
+the code described by this guide yet):
+
+- `sec_rag_benchmark` keeps FinanceBench's five condition definitions, job checkpointing, metrics,
+  judging and reports
+- `sec_rag` owns shared context formatting, the answer prompt and generation, plus retrieval,
+  reranking and the experiment pipelines
+- closed-book, oracle and long-context pass supplied context items to a direct-answer pipeline;
+  single-store and shared-store pass document scope to a RAG pipeline
+- the benchmark's current retriever callback is replaced by a pipeline result carrying answer,
+  final chunks, retrieval stages, trace and usage/provenance
+- when that migration is implemented, revise this guide's data shapes, sections 7-8 and 10,
+  diagrams, code-reading order, tests and terminal commands in the same slice. Until then, the
+  sections below intentionally document the current executable retriever/generator interface
+
 The paid generation run completed all 336 closed-book, oracle and long-context
 jobs. Judge prompt v2 passed the published-label gate at 28/30 (93.3%), and all
 336 saved predictions have been judged and reported.
