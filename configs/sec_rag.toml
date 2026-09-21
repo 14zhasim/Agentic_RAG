@@ -1,0 +1,9 @@
+[corpus]
+prepared_dir = "data/financebench"
+parsed_dir = "data/financebench/parsed"
+expected_documents = 64
+
+[parsing]
+provider = "azure-document-intelligence"
+model_id = "prebuilt-layout"
+output_content_format = "markdown"

@@ -25,10 +25,14 @@ dependencies = [
 
 [project.scripts]
 sec-rag-benchmark = "sec_rag_benchmark.cli:main"
+sec-rag = "sec_rag.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.25,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["sec_rag", "sec_rag_benchmark"]
 
 [dependency-groups]
 dev = [
