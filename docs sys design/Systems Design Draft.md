@@ -221,7 +221,9 @@ Then start building system design:
 
 Progress
 
-- [ ] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
+- [x] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
+  - ANSWERED at `llama-index-retrievers-bm25==0.8.0`: yes — the filter becomes a `corpus_weight_mask` applied before scoring, so filter-then-rank holds and the fallback is not needed. Kept as `tests/test_bm25_metadata_filters.py`
+  - CAVEAT that changes retrieval code: filtered chunks are not dropped, they are returned with `score == 0.0` as padding when `similarity_top_k` exceeds the surviving count. Retrieval MUST discard zero-score hits, or out-of-scope chunks reach the context block. A filter matching nothing raises `ValueError` rather than returning the whole corpus
 - [ ] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
 - Edit the existing file:
 results/20260917-012959--financebench--baseline-context-conditions-v1/manual_review.csv
@@ -255,21 +257,21 @@ Tech stack
   - filtering applies to the chunks searched; BM25 word statistics still come from the whole corpus (same as Elasticsearch, so results stay comparable if we switch)
 - Azure Document Intelligence — parsing. OPEN: PageIndex is a live fallback if Azure's section nesting is poor
 - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker. Same account and same `VOYAGE_API_KEY` for both; two endpoints
-  - DECIDE DURING IMPLEMENTATION: call Voyage directly (`voyageai` client: `vo.rerank(query, documents, model, top_k)` / `vo.embed(...)`) or through LlamaIndex (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`)
-    - preference is LlamaIndex, for consistency with the rest of the pipeline — the post-processor drops onto `QueryFusionRetriever` output
-    - but direct is simpler and one less package if we are assembling the candidate list ourselves (which Exp2's custom retriever does anyway). Pick whichever is less friction on contact, and use the same choice for embeddings and reranking
+  - DECIDED (Stage 0.4): call Voyage **directly** via the `voyageai` client (`vo.embed(...)`, `vo.rerank(query, documents, model, top_k)`), for both embeddings and reranking — not through `llama-index-postprocessor-voyageai-rerank` / `llama-index-embeddings-voyageai`
+    - two fewer packages, and we assemble the candidate list ourselves anyway (Exp2's custom retriever must), so the LlamaIndex wrappers buy no consistency we actually use
+    - it keeps `input_type` explicit at the call site — `document` for chunks, `query` for questions. Mixing them degrades retrieval silently rather than erroring, so a wrapper default is the wrong place for it
   - reranker call limits: ≤1,000 documents per call; query + any single document ≤32,000 tokens; (query tokens × documents) + all document tokens ≤600,000 per call. At ~50 chunks × ~1k tokens we use ~60k, so no batching needed
 - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing). LlamaIndex components don't call the model, so nothing clashes
 - pandas + pytest — reporting and tests (already in place)
 - LATER (document as future work): Elasticsearch as a second retriever behind the same interface — keyword, vectors (HNSW) and filters in one query. At ~10k chunks exact search is faster to build and more accurate, so it buys skills, not results
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`, `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`, `numpy`
-  - plus, if Voyage goes through LlamaIndex (see decision above): `llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`
+- new dependencies, installed and exact-pinned at Stage 0.4: `llama-index-core==0.14.24`, `llama-index-retrievers-bm25==0.8.0`, `llama-index-vector-stores-chroma==0.6.0`, `chromadb==1.5.9`, `azure-ai-documentintelligence==1.0.2`, `voyageai==0.5.0`, `numpy==2.5.3` (`bm25s==0.3.11` comes in transitively)
+  - the LlamaIndex Voyage wrappers are deliberately NOT installed (see the Voyage decision above)
 - credentials needed in `.env` / `.env.example`: `OPENROUTER_API_KEY` (generation), `AZURE_DEEPSEEK_API_KEY` + `AZURE_DEEPSEEK_ENDPOINT` (judge), `VOYAGE_API_KEY` (embeddings + reranker), `AZURE_DOCUMENT_INTELLIGENCE_KEY` + `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (parsing)
 
 Ingest files
 
 - Load doc
-- Parse document: extract text, identify structural elements (sections, titles, tables, text, figures), preserve information like table structure and data
+- Parser output decisions - goal is it should identify different media (tables etc.) and nested subheading structure accurately!
   - output as .md - like Kim et al., (2025) found improvements on - or json
   - Jimeno Yepes (2024) used basic VLM to identify text, titles, tables and chunk along those boundaries (+LLM generated summary to embed)
     - Rationale:
@@ -281,29 +283,55 @@ Ingest files
     - "layout engine" parsers (specialized detection models + rules, no LLM-in-the-loop by default, self-hostable and free): PyMuPDF / pymupdf4llm, good for machine-generated docs like statements - apparently not that good for tables
     - verdict: use Azure Document Intelligence as i have startup credits (unless it has complicated setup/infra?)
       - setup is light: create resource → endpoint + key → `azure-ai-documentintelligence` SDK, `prebuilt-layout` model, markdown output. Paid tier only (free tier reads first 2 pages). ~$10 / 1,000 pages
-  - Parser output decisions
+  - Parser output decisions: goal is to identify subheading structure accurately!
     - parse once, cache forever: save Azure's raw JSON per PDF (out of Git, with manifest like data prep), never re-parse when chunking changes
     - raw JSON is the source of truth; markdown is one field inside it (`content`), other fields (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position, which is how each piece maps back to a page
+      - attribution is therefore by character offset, not by page range (e.g. 200,000 characters in a filing, it gives character 'width' of each page, paragraph, table etc.): every paragraph, table, section and page carries spans (offset + length), so text is attached to its heading exactly rather than approximately
     - strip page headers/footers/page numbers (Azure labels these) before chunking
-    - document-level metadata (company, doc_type, doc_period) comes from `financebench_document_information.jsonl`, not from parsing. No ticker field in FinanceBench
+      - they appear inline in content as \<!-- PageHeader="..." --> and \<!-- PageNumber="13" -->;
+    - document-level metadata (company, doc_type, doc_period) comes from `financebench_document_information_10k.jsonl`, not from parsing. No ticker field in FinanceBench
     - page numbers: FinanceBench `evidence_page_num` is zero-indexed; Azure `pageNumber` is 1-indexed → `evidence_page_num = pageNumber - 1`. Never use the footer's printed page number. Add a test
+
+  - Fix the heading list before chunking 
+    - an LLM pass takes the heading rows (text, level, page) plus the file's metadata and returns the same rows corrected
+      - repairs split-word typos — Busines s., ESTIMA TES, Equit y (16 of 295 headings)
+      - drops headings that only restate the file metadata, e.g. UNITED STATES SECURITIES AND EXCHANGE COMMISSION..., which is otherwise the root ancestor of ~106 pages. This can be derived from the filename
+      - splits absorbed headings — Azure glued PART I onto the end of the previous title
+      - re-levels based of common sense e.g. heading called 'part 2' should not be different level to 'part 1' - using the generic rule that a numbered series (Item 7, Chapter 3, Article II) are siblings
+    - cached per filing like the parse, so everything downstream is deterministic and identical across every condition and experiment
+    - validated structurally, with no domain knowledge: every output heading traces to an input heading (whitespace repair and splits only), levels form a valid tree with no jumps greater than one, numbered series share a level, pages unchanged. On failure, keep Azure's raw levels for that filing and log it
+    - accepted limitation: genuinely missed sub-headings (underlined/italic ones Azure never marked) cannot be recovered. Not too much impact, because Exp 2 weights headings by similarity rather than by depth
 
 - Chunk (+structure parsing) + save metadata for each chunk (SEC-filing-type + company ticker + financial year + page number), for filtering chunks. _View chunks manually, writing has infinite edge cases_
 
   Backwards compatible as long as chunks + embeddings are saved as plain files and search sits behind the existing retriever interface; ES then becomes one more loader + retriever
 
-  - table-aware chunking
-  - fixed-size chunking7
-    - 1,024 tokens, 30 overlap, via Langchain's RecursiveCharacterTextSplitter - HiRec (Choe et al., (2025)). Can supplement with semantic chunking (split around sentences, not arbitrary words, via regex)
+  - hard rule: no chunk crosses a page boundary ie one page per chunk. This is what keeps page recall/precision/MRR exact against evidence_page_num. A chunk spanning 3 pages would get three chances to contain the gold page, making the metric's bias vary with chunk size
+  - table-aware chunking: doable, as each item e.g. 'table' has its own character offset location
+    - after removing tables and noise, join the page's remaining prose into one stream before cutting.
+  - fixed-size chunking
+    - 512 tokens (whatever is the median of structural parsing chunking, this size also still backed by literature)
+      - 30 overlap that is allowed to come from previous page, via Langchain's RecursiveCharacterTextSplitter - HiRec (Choe et al., (2025)). 
+      - Can supplement with semantic chunking (split around sentences, not arbitrary words, via regex)
+      - include headers in the text to chunk
     - ideally, attach metadata + pg no. to each chunk
   - chunking decisions
     - use LlamaIndex (not LangChain) for splitting, consistent with BM25/hybrid/routing choice
-    - chunk within page boundaries: each chunk covers exactly one page, so page metrics stay exact. Overlap applies within a page only
-      - HARNESS: assert one page per chunk — a chunk with two pages is a chunking bug
-    - tables: each table is its own chunk; oversized table split by rows, repeating header row. Everything else → sent to the 1,024-token splitter (count tokens, not characters)
-    - dropped "semantic chunking via regex": the recursive/sentence splitter already prefers paragraph then sentence breaks
     - inspection script: "show all chunks for doc X, page Y"; run on a question's gold page to spot missed-table failures
-  - experiment 2:
+  - experiment 2 (2 versions - one with chunking but dont use heading for similarity score, one where you do):
+    - cut at section headings instead, with a floor of ~250 tokens and a ceiling of 1,024
+    - accept a heading cut only if the piece before it and the remainder both clear ~250 tokens; otherwise skip that cut
+    - anything still over 1,024 tokens is halved at the nearest sentence boundary to its midpoint, recursively. Halving something over 1,024 always leaves both sides over 512, so the floor can't be violated
+    - on 3M 2018 this gives 244 text chunks + 119 table chunks, median 512 tokens, 89% between 250 and 1,024
+    - 30-token overlap, split around sentences, allowed to come from the previous page, but page metric still only 1 page
+      - if a heading cut is rejected for being too small, keep the page whole and merge the heading paths: shared ancestors once, distinct tails joined
+      - PART I > [Item 2. Properties | Item 3. Legal Proceedings]
+      - this works with Exp 2 unchanged, because the structure vector is a softmax-weighted average over a set of headings, not a single path — the weights favour whichever tail matches the chunk's content
+    -  if a subheading exceeds the depth limit of 5, ignore it and pretend the text sits under the nearest surviving 
+    - keep track of the following:
+      - its merged heading_path, derived from character offsets
+      - its page_num — exactly one page, never a set, because of the hard page boundary
+      - doc_name and the file metadata from the JSONL
     - FinSTAR: keep track of document structure to attach as metadata to a chunk (HiChunk).
       - is there way to preserve boundaries for (sections, titles, tables, text, figures) like Jimeno Yepes, to chunk along? e.g. more than one chunk same page
       - is there way to extract the structure/hierarchy of document, so we know the headings of each chunk? 
@@ -350,7 +378,7 @@ Retrieve - Elastic search? can think about tech stack later
 - LLM query enhancement - to what extent? check lesson 7 + claude link on prompting: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview
   - ONE LLM call returning structured JSON: company, year(s), doc_type, keyword query (rephrase shorthand expanded - PPNE → property, plant and equipment; COGS, DPO, FCF, capex), semantic query.
   - Metadata filtering: filenames are `COMPANY_YEAR_TYPE.pdf`, so the LLM supplies all three and we select the filing by filename (not from metadata table columns). Parse from the RIGHT — `JOHNSON_JOHNSON_2022_10K` has an underscore in the company name. Simplest: give it the filename list and have it return a filename. Filter chunks BEFORE search. Let it know whether its desired file exists + was retrieved. Like Claude Code, maybe naively give prompt all available metadata / files they can search from.
-  - 
+
 - Hybrid search
   - BM25 (keyword search) - like FinCARDS (2026), use k1-1.5, b=0.75
     - calculate BM25(term, doc) = bm25_tf \* bm25_idf
@@ -401,7 +429,7 @@ Generate answer
 - decide model: GLM-5.3-flash with openrouter, determined with https://www.vals.ai/benchmarks/fabv2 (which we cant use as doesnt score retrieval)
   - same model, settings and answer prompt across every condition and experiment, so only retrieval differs
 - HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings):
-  - `reasoning_effort` low → medium
+  - `reasoning_effort` low → high (GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`)
   - `retrieval_depth` 5 → 10
   - `max_output_tokens` 2048 → 8192: reasoning tokens count as output, and an agent spends them every turn. Headroom is fine (largest prompt 535,722 of 1,048,576)
   - merge the judge branch (`feature/azure-ragas-judge`: judge, `did_not_fit`, accuracy reporting) — not on `main` yet
@@ -427,7 +455,7 @@ this makes case for letting agents intelligently navigate files, THEN load its c
     - save a trace per question (its own file next to `predictions.jsonl`): each iteration's filters, query, tool, results. This is what makes the failure-mode tree usable for Exp3
   - loop caps: max iterations (start at 5) + max tool calls; hitting the cap is a FOURTH outcome alongside success / error / `did_not_fit` — skipped on resume, excluded from the accuracy denominator, counted in reports, so n stays constant across experiments. Checkpoint after each question
     - tell the model its budget in the prompt, and how many iterations remain each turn, so it can answer with what it has instead of being cut off mid-search
-  - reasoning effort: raise from `low` to `medium` for ALL conditions and experiments (currently low in config). If Exp3 uses `high`, that is a deviation to justify in the write-up, or run it as an ablation
+  - reasoning effort: raise from `low` to `high` for ALL conditions and experiments. GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`. If Exp3 uses `max`, that is a deviation to justify in the write-up, or run it as an ablation
   - ablation ladder: (A) Exp1 single pass → (B) + retry when retrieval is empty/wrong filing → (C) + calculator/verification. A vs B alone is a result
 
 

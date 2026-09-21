@@ -29,15 +29,49 @@ experiment arrives.
 
 ## Timeline reality check
 
-Code completion ~18 Sep, first draft 19 Sep, final 21 Sep (from `AGENTS.md`). Stages 0-4 total
-roughly four days of building before any writing. Durations below are rough scope estimates, not
-measurements: they assume working with Claude Code, and they exclude API run time and
-first-contact debugging of unfamiliar libraries.
+Revised 18 Sep 2026 after a two-week extension. The time is **not** two clear weeks — the job takes
+the weekdays, so it is two four-day blocks plus the days between them.
+
+| Block | Dates | What must be true at the end |
+|---|---|---|
+| Build | Fri 18 – Mon 21 Sep | Stages 0-3 done: Exp1 and Exp2 built, run, and their results written into `Exp 1.md` / `Exp 2.md`. Stage 4 (Exp3) **not expected** |
+| Work | Tue 22 – Thu 24 Sep | Nothing owed. At most, tidy notes taken during the build |
+| Write | Fri 25 – Sun 27 Sep | A complete first draft covering Exp1 and Exp2 end to end, results included |
+| Work | Mon 28 Sep – Thu 1 Oct | Nothing owed |
+| Finish | Fri 2 – Sun 4 Oct | Draft finished. Only then, in this order, if time genuinely remains: (1) debug and improve the existing experiments, (2) Exp3, (3) deferred items |
+| Submit | Mon 5 Oct | Final submission — CONFIRM against the formal extension |
+
+Durations in the stages below are rough scope estimates, not measurements: they assume working
+with Claude Code, and they exclude API run time and first-contact debugging of unfamiliar
+libraries.
 
 - Stages 0-2 are non-negotiable: they produce Exp1, the dissertation's spine
 - Stage 3 (Exp2) is the most likely novel contribution — protect it
-- Stage 4 (Exp3) is the largest build; expect rungs A and B only, and say so
+- Stage 4 (Exp3) now sits **below writing** in priority. A designed-but-not-run Exp3 chapter is an
+  acceptable outcome and the cut list already anticipates it. An unfinished dissertation is not
 - every stage has a **minimum result**: hitting the minimum on all three beats finishing one
+
+### Scope freeze
+
+The extension buys **depth on work already scoped**. It does not buy more scope.
+
+- nothing moves back up the cut list and nothing deferred becomes live again — in particular LoFin,
+  Exp2's rung C virtual node, and Exp3's query decomposition stay out
+- a new idea goes into Deferred as future work, not into the build
+- the extra time goes on understanding what is being built, testing it, and failure analysis — the
+  things the original three-day plan was going to skip
+- if a block finishes early the next block starts early; it does not expand to fill the time
+
+### Guarding against drift
+
+The old plan had a deadline close enough to feel. This one does not, so the pressure has to come
+from the blocks above rather than from the date.
+
+- close a numbered stage each session; a session ending mid-stage records exactly what remains
+- a stage is not done until its result is in the relevant `Exp N.md` — see the write-up rule at the
+  bottom of this file
+- if a block's "what must be true" is not true by the end of it, cut scope rather than borrow time
+  from the next block
 
 ---
 
@@ -57,6 +91,16 @@ corrupt or invalidate a paid run.
     before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data
   - if not: fall back to building the retriever from an already-filtered node list (2 lines)
   - keep it as a test so a version bump can't silently break it
+  - **ANSWERED (`llama-index-retrievers-bm25==0.8.0`): yes, with one caveat.** Kept as
+    `tests/test_bm25_metadata_filters.py`; the fallback is not needed
+    - the filter is applied BEFORE scoring, as the design assumes: internally it becomes a
+      `corpus_weight_mask` handed to `bm25s`, so out-of-scope chunks never compete for rank
+    - BUT filtered chunks are not removed from the result list — they are returned with
+      `score == 0.0` as padding whenever `similarity_top_k` exceeds the number of surviving
+      chunks. **Retrieval must discard zero-score hits**, otherwise chunks from filings the
+      question never asked about reach the context block
+    - a filter matching nothing raises `ValueError` rather than silently returning the whole
+      corpus, which is the behaviour we want
 - is Azure Document Intelligence's section nesting good enough for Exp2's heading path?
   - run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest,
     and do Item headings sit at the top level?) and at `paragraphs` with role `title` /
@@ -64,6 +108,14 @@ corrupt or invalidate a paid run.
   - if nesting is flat or wrong, use PageIndex instead
   - structure source is OPEN either way: both work with the same method, as long as it gives each
     heading, its nesting level and its start page
+  - **ANSWERED (3M 2018, `scripts/spike_azure_structure.py`): use Azure; PageIndex not needed.**
+    - heading TEXT detection is reliable — all 21 Items found, sections nest to depth 8, spans
+      populated 296/296
+    - heading LEVELS are not usable raw — the same 21 Items sit across four levels, leaving 106 of
+      160 pages with no Item-level ancestor, including 75 of the 76 financial-statement pages
+    - so the answer is "yes, after a fixing pass": see the heading-fix step at the start of 1.3.
+      Rejecting PageIndex because the text is already right — only the levels need work, and a
+      re-parse would cost the money again
 - if the fallback is needed, PageIndex's how-to (from the draft, so a failed spike isn't a dead end)
   - use `get_tree()` to pull structure (pure parsing of e.g. the contents page, section headings) —
     section headings and the starting page for each one, and nesting to indicate a sub-heading
@@ -79,10 +131,11 @@ corrupt or invalidate a paid run.
 
 These invalidate answers generated at the old settings, so they come before spending anything.
 
-- `reasoning_effort` low → medium
+- `reasoning_effort` low → high
+  - GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`
   - same model, settings and answer prompt across every condition and experiment, so only
     retrieval differs
-  - if Exp3 uses `high`, that is a deviation to justify in the write-up, or run it as an ablation
+  - if Exp3 uses `max`, that is a deviation to justify in the write-up, or run it as an ablation
 - `retrieval_depth` 5 → 10 (FinCARDS uses top-10)
 - `max_output_tokens` 2048 → 8192
   - reasoning tokens count as output, and an agent spends them every turn
@@ -104,11 +157,12 @@ These invalidate answers generated at the old settings, so they come before spen
 
 ## 0.4 Tech stack set-up
 
-- new dependencies: `llama-index-core`, `llama-index-retrievers-bm25`,
-  `llama-index-vector-stores-chroma`, `chromadb`, `azure-ai-documentintelligence`, `voyageai`,
-  `numpy`
-  - plus `llama-index-postprocessor-voyageai-rerank` and `llama-index-embeddings-voyageai` if Voyage
-    goes through LlamaIndex
+- new dependencies, added and exact-pinned to match the existing house style (DONE):
+  `llama-index-core==0.14.24`, `llama-index-retrievers-bm25==0.8.0`,
+  `llama-index-vector-stores-chroma==0.6.0`, `chromadb==1.5.9`,
+  `azure-ai-documentintelligence==1.0.2`, `voyageai==0.5.0`, `numpy==2.5.3`
+  - `bm25s==0.3.11` arrives transitively via the BM25 retriever
+  - the two LlamaIndex Voyage wrappers are NOT installed — see the Voyage decision below
 - credentials to add to `.env` and `.env.example`: `VOYAGE_API_KEY`,
   `AZURE_DOCUMENT_INTELLIGENCE_KEY`, `AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT` (alongside the existing
   `OPENROUTER_API_KEY`, `AZURE_DEEPSEEK_API_KEY`, `AZURE_DEEPSEEK_ENDPOINT`)
@@ -125,10 +179,11 @@ These invalidate answers generated at the old settings, so they come before spen
   - Azure Document Intelligence — parsing (PageIndex is the live fallback)
   - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker; one account, one
     `VOYAGE_API_KEY`, two endpoints
-    - DECIDE HERE: call Voyage directly (`voyageai` client) or via LlamaIndex
-      (`llama-index-postprocessor-voyageai-rerank`, `llama-index-embeddings-voyageai`). Preference
-      is LlamaIndex for consistency; direct is simpler and one less package when we assemble the
-      candidate list ourselves. Same choice for both embeddings and reranking
+    - DECIDED: call Voyage **directly** through the `voyageai` client, for both embeddings and
+      reranking. Two fewer packages, and we assemble the candidate list ourselves anyway, so the
+      LlamaIndex wrappers buy nothing. It also keeps `input_type` (`document` for chunks, `query`
+      for questions) explicit at the call site rather than hidden in a wrapper's default — getting
+      it wrong degrades retrieval quietly instead of erroring
   - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing).
     LlamaIndex components don't call the model, so nothing clashes
   - pandas + pytest — reporting and tests (already in place)
@@ -146,7 +201,7 @@ These invalidate answers generated at the old settings, so they come before spen
   - at ~10k chunks exact search is faster to build and more accurate, so it buys skills, not results
 
 **Done when:** both spikes answered, `uv run pytest` green, and a 5-question **oracle** smoke run at
-medium effort shows sane cost and latency (no retrieval pipeline exists yet, so closed-book or
+high effort shows sane cost and latency (no retrieval pipeline exists yet, so closed-book or
 oracle are the only conditions available).
 
 **Minimum result:** the config and correctness fixes. Spikes can be answered during Stage 1 if
@@ -193,7 +248,39 @@ field and turn a weight on" rather than a refactor.
     (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position,
     which is how each piece maps back to a page
   - strip page headers/footers/page numbers (Azure labels these) before chunking
+    - they appear inline in `content` as `<!-- PageHeader="..." -->` and `<!-- PageNumber="13" -->`;
+      4% of paragraphs on 3M 2018
   - figures are out of scope
+- **reference implementation: `scripts/spike_azure_structure.py`.** Its `parse` step is the call
+  this stage should follow, and its `analyse` step is how to inspect the result
+  - uploads the PDF bytes to `prebuilt-layout` with `DocumentContentFormat.MARKDOWN`, waits on the
+    long-running poller, writes `result.as_dict()` verbatim to
+    `data/financebench/parsed/<doc_name>.json`
+  - skips any doc whose JSON already exists — this is what makes "parse once, cache forever" real
+  - writes `.json.partial` then renames, so an interrupted write cannot leave a half-file that the
+    cache check would later mistake for a finished parse
+  - reads credentials from the environment inside `parse` only, so `analyse` runs offline with none
+  - NOT yet done there, and required here: **write a manifest entry per parsed filing** (which docs,
+    when, which API version and settings). Without it a half-finished corpus parse looks identical
+    to a complete one. `data/financebench/manifest.json` is the dataset-prep manifest; this is a
+    separate record
+  - when 1.3 is built, move `find_headings`, `section_depths` and `build_page_map` out of the script
+    into `src/` with tests, leaving the script as a thin report generator importing from there
+- CONFIRMED by the Stage 0.1 spike on 3M 2018 (160 pages, cached JSON is 21.5 MB)
+  - the whole result is cached, not just headings: `content`, `pages`, `paragraphs`, `tables`,
+    `sections`, `styles`
+  - attribution is by **character offset, not page range**: every paragraph, table, section and page
+    carries `spans` (offset + length), so text attaches to its heading exactly. Page 13 of 3M owns
+    characters 54,574-58,758; a heading at offset 54,629 therefore starts on page 13
+  - `sections` spans ARE populated on real filings (296/296), unlike Microsoft's sample where they
+    are empty
+  - no table spans a page (119/119 on one page), so "each table is its own chunk" stays unambiguous
+  - full corpus is 10,757 pages ≈ $108, so a re-parse is not a small mistake
+- **font styling is NOT purchased — decide before the full parse.** `styles` carries only
+  `isHandwritten`; bold/italic/underline need the `STYLE_FONT` add-on
+  - rejected: it would not change Azure's own heading categorisation, only add data for us to
+    post-process
+  - add-ons are chosen at parse time, so adding it later means paying for all 64 filings twice
 
 ## 1.2 Page mapping — write the test
 
@@ -204,34 +291,87 @@ field and turn a weight on" rather than a refactor.
 
 ## 1.3 Chunk
 
-- chunk (+ structure parsing) + save metadata for each chunk, for filtering chunks
-- chunking decisions
-  - use LlamaIndex (not LangChain) for splitting, consistent with the BM25/hybrid/routing choice
-  - chunk within page boundaries: each chunk covers exactly one page, so page metrics stay exact.
-    Overlap applies within a page only
-    - HARNESS: assert one page per chunk — a chunk with two pages is a chunking bug
-  - tables: each table is its own chunk; an oversized table is split by rows, repeating the header
-    row. Everything else → the 1,024-token splitter (count tokens, not characters)
-  - 1,024 tokens, 30 overlap — HiREC (Choe et al., 2025), who used LangChain's
-    `RecursiveCharacterTextSplitter`; use LlamaIndex's equivalent sentence/token splitter instead,
-    configured to count tokens
-  - dropped "semantic chunking via regex": the recursive/sentence splitter already prefers
-    paragraph then sentence breaks
+### Before chunking: fix the heading list
+
+Azure detects heading **text** reliably but its **levels** are not usable as they come. On 3M 2018
+all 21 Items were found, but spread across four levels, leaving 106 of 160 pages with no
+Item-level ancestor — including 75 of the 76 financial-statement pages, where most FinanceBench
+answers live.
+
+- an LLM pass takes the heading rows `(text, level, page)` plus the file's metadata and returns the
+  same rows corrected
+  - repairs split-word typos — `Busines s.`, `ESTIMA TES`, `Equit y` (16 of 295 headings)
+  - drops headings that only restate the file metadata, e.g. the SEC cover boilerplate, otherwise
+    the root ancestor of ~106 pages
+  - splits absorbed headings — Azure glued `PART I` onto the end of the previous title
+  - re-levels using the generic rule that a numbered series (`Item 7`, `Chapter 3`, `Article II`)
+    are siblings
+- deliberately NOT SEC-specific regex: matching `^Item \d+` overfits to 10-Ks and would not
+  transfer to other document types
+- cached per filing like the parse, so everything downstream is deterministic and identical across
+  every condition and experiment
+- validated structurally, with no domain knowledge: every output heading traces to an input heading
+  (whitespace repair and splits only), levels form a valid tree with no jumps greater than one,
+  numbered series share a level, pages unchanged. On failure, keep Azure's raw levels for that
+  filing and log it
+- accepted limitation: sub-headings Azure never marked (underlined/italic) cannot be recovered.
+  Bounded, because Exp2 weights headings by similarity rather than by depth
+
+### Chunking decisions
+
+- **hard rule: no chunk crosses a page boundary.** This is what keeps page recall/precision/MRR
+  exact against `evidence_page_num` — a chunk spanning three pages gets three chances to contain the
+  gold page, so the metric's bias would vary with chunk size
+  - HARNESS: assert one page per chunk — a chunk with two pages is a chunking bug
+- use LlamaIndex (not LangChain) for splitting, consistent with the BM25/hybrid/routing choice
+- tables: each table is its own chunk; an oversized table is split by rows, repeating the header row
+- after removing tables and noise, **join the page's remaining prose into one stream before
+  cutting**. Cutting a table out of the middle leaves disconnected slivers; chunking those
+  separately produced 50% of chunks under 100 tokens in the spike
+- **Exp1 (rung A):** 512-token recursive/sentence splitter within the page, 30 overlap, no heading
+  cuts — HiREC (Choe et al., 2025) used 1,024 via LangChain's `RecursiveCharacterTextSplitter`; use
+  LlamaIndex's equivalent sentence/token splitter, configured to count tokens
+  - 512 matches the median chunk size that Exp2's structural chunking produces, so A vs B compares
+    structure rather than size
+- **Exp2 (rungs B and C):** cut at section headings instead, floor ~250 tokens, ceiling 1,024
+  - accept a heading cut only if the piece before it AND the remainder both clear ~250 tokens;
+    otherwise skip that cut
+  - anything still over 1,024 tokens is halved at the nearest sentence boundary to its midpoint,
+    recursively. Halving something over 1,024 always leaves both sides over 512, so the floor cannot
+    be violated
+  - measured on 3M 2018: 244 text chunks + 119 table chunks, median 512 tokens, 89% between 250 and
+    1,024
+  - if a heading cut is rejected for being too small, keep the page whole and **merge the heading
+    paths: shared ancestors once, distinct tails joined** —
+    `PART I > [Item 2. Properties | Item 3. Legal Proceedings]`
+    - this needs no change to Exp2: the structure vector is a softmax-weighted average over a SET of
+      headings, not a single path, so the weights favour whichever tail matches the chunk
+- 30-token overlap, split around sentences, **allowed to come from the previous page** — the overlap
+  lives in the chunk's TEXT only; `page_num` stays the chunk's own page, so metrics are untouched
+- dropped "semantic chunking via regex": the recursive/sentence splitter already prefers
+  paragraph then sentence breaks
+- a page whose whole content is under the floor is still its own chunk — the floor governs whether
+  to SPLIT, not a minimum chunk size
 - metadata per chunk: SEC filing type + company + financial year + page number
   - document-level metadata (company, doc_type, doc_period) comes from
-    `financebench_document_information.jsonl`, **not from parsing** — this keeps the duplicate
+    `data/financebench/financebench_document_information_10k.jsonl`, **not from parsing** — this keeps the duplicate
     `doc_name` conflict guard in `Benchmark.md` meaningful
   - there is no ticker field in FinanceBench, so company stands in for ticker throughout
   - the filename rule (`COMPANY_YEAR_TYPE.pdf`, parsed from the RIGHT) is a QUERY-TIME concern —
     how the LLM selects a filing in Stage 2.1 — not the source of chunk metadata
 - **Exp2 hook, built now:** every chunk carries a `heading_path` field
   - populate it in this stage if the Azure spike passed, rather than re-parsing later
-  - attribute headings to chunks: from each heading's start page, compute its page range (ends where
-    the next heading at the same or higher level starts); a chunk gets the headings whose range
-    covers its page
-    - if two headings start on the same page, attribute the one covering more of that page
+  - attribute headings to chunks **by character offset**, which the cached JSON makes exact: a
+    heading holds from its own offset until the next heading at the same or higher level starts, so
+    a chunk gets the headings whose offset range covers it
+    - the earlier page-range rule was the weaker fallback for a world without offsets; offsets are
+      present, so use them
+    - a chunk containing text under two headings merges them (see the merge rule above), rather than
+      picking one
   - Fin-STAR constraint: depth ≤ 5 — if the heading path has more than 5 levels, drop the excess
-    (deepest) headings
+    (deepest) headings, keeping the outermost five
+    - verified safe on 3M 2018: 52 of 160 pages have paths deeper than five, and keeping the first
+      five loses the Item-level anchor on ZERO of them
   - save the path as a list of headings, top level first. Each level is embedded separately at Stage
     3.2, not joined into one string
   - leave the field empty only if the spike failed and PageIndex has not yet been wired in

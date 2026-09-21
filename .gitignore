@@ -18,3 +18,6 @@ skills-lock.json
 /.mypy_cache/
 /.pytest_cache/
 /.ruff_cache/
+HANDOFF.md
+/scripts/
+.DS_Store

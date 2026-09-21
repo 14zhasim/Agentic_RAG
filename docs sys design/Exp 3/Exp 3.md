@@ -162,8 +162,9 @@ Two tools were deliberately left out of Exp3, both noted in the systems design d
   - this is a **deliberate, stated deviation** from "the answer prompt is identical everywhere".
     - Exp3's prompt carries budget/remaining-turns information that Exp1 and Exp2's prompts don't need, precisely because Exp3 is the only one that can be cut off mid-loop.
 - **Reasoning effort.**
-  - raise from `low` to `medium` for **all** conditions and experiments (currently `low` in config).
-  - if Exp3 uses `high`, that is a deviation to justify in the write-up, or run as a separate ablation row.
+  - raised from `low` to `high` for **all** conditions and experiments.
+  - GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`.
+  - if Exp3 uses `max`, that is a deviation to justify in the write-up, or run as a separate ablation row.
 - **`max_output_tokens`.**
   - raised from 2048 to 8192.
   - reason: reasoning tokens count as output, and an agent spends them every turn, not just once.

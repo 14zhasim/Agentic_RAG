@@ -522,15 +522,40 @@ generation or judging again.
 
 ## 5. Configuration loading and routing
 
+### Inputs and outputs
+
+`load_config()` takes the path to `configs/financebench.toml` and returns one
+nested configuration dictionary:
+
+```python
+{
+    "dataset": {...},
+    "generation": {...},
+    "judge": {...},
+    "judge_validation": {...},
+    "development_subsets": {...},
+    "run": {...},
+}
+```
+
+The later modules receive only their relevant part of this dictionary. For
+example, `prepare()` receives `config["dataset"]`, while `generate()` receives
+`config["generation"]`.
+
+The function does not write a file. It turns the three configured paths into
+absolute strings and checks that the settings are usable before returning them.
+Later, `run_benchmark()` copies the effective settings plus the selected
+questions/conditions into that run's `config.toml`.
+
 `config.load_config()` reads `configs/financebench.toml` and routes its sections
 as follows:
 
 ```text
-[dataset]    → data.py preparation, validation, paths, and expected counts
-[generation] → generation.py model request and context limits
-[judge]      → judge.py Azure request, prompt version, and judge limits
-[judge_validation] → judge_validation.py sample quotas, seed, and pass threshold
-[development_subsets] → development_subsets.py seed and subset sizes
+[dataset]    → dataset/financebench.py: paths, preparation, validation, counts
+[generation] → pipeline/generation.py: model request and context limits
+[judge]      → evaluation/judge.py: Azure request, prompt version, judge limits
+[judge_validation] → evaluation/judge_validation.py: quotas, seed, pass threshold
+[development_subsets] → dataset/subsets.py: seed and subset sizes
 [run]        → execution modules: experiment/variant labels, conditions,
                retrieval depth, and results path
 ```
@@ -620,6 +645,34 @@ pattern_size = 50
 ```
 
 ## 6. Data preparation and validation flow
+
+### Inputs and outputs
+
+The dataset lifecycle is:
+
+```text
+original FinanceBench JSONLs + PDFs
+    → prepare(dataset configuration)
+    → prepared 10-K JSONLs + 64 PDFs + manifest.json
+    → validate(dataset configuration)
+    → load_run_questions(dataset configuration, optional limit)
+    → list of Prepared question dictionaries
+```
+
+The four public operations have deliberately small outputs:
+
+- `prepare(config["dataset"])` reads the original repository, writes the
+  filtered 112-question/64-PDF directory, and returns only
+  `{"questions": 112, "documents": 64}`.
+- `validate(config["dataset"])` reads that prepared directory, writes nothing,
+  and returns the same count dictionary if every check passes.
+- `load_questions(prepared_directory)` reads the two prepared JSONLs and
+  returns `list[Prepared question]`. It adds `document_metadata` only in memory;
+  it does not alter either prepared JSONL file.
+- `load_run_questions(dataset_configuration, optional limit)` validates first,
+  then returns the same question list, optionally shortened for a small run.
+
+The source and prepared JSONL schemas remain unchanged throughout preparation.
 
 In `src/sec_rag_benchmark/dataset/financebench.py`, read `prepare()` → `validate()` →
 `load_run_questions()` → `load_questions()` → `_check_rows()` → the
@@ -768,6 +821,34 @@ Important behavior:
 
 ## 7. Condition construction
 
+### Inputs and outputs
+
+`build_condition()` takes:
+
+```text
+prepared question
++ condition name
++ PDF directory
++ all selected document names
++ optional retriever and retrieval depth
+```
+
+It returns one **Condition result** dictionary:
+
+```python
+{
+    "financebench_id": "...",
+    "condition": "oracle",
+    "question": "...",
+    "context": "...",          # the text generation.py sends to the model
+    "context_pages": [...],    # pages represented in that context
+    "retrieved_chunks": [...], # ranked chunks; empty when no retrieval occurred
+}
+```
+
+`retrieved_chunks` is retained only for retrieval conditions and is
+later saved in the prediction row for retrieval metrics and failure analysis.
+
 `src/sec_rag_benchmark/pipeline/conditions.py` keeps one public dispatcher
 but moves each condition's substantial work into a named builder. Read it as:
 
@@ -879,6 +960,38 @@ and saved provenance. A missing retriever raises `RetrieverUnavailable`.
 
 ## 8. Generation flow
 
+### Inputs and outputs
+
+`build_messages(question, context)` receives two strings and returns a two-item
+chat-message list:
+
+```python
+[
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+]
+```
+
+`generate(messages, config)` receives that list and `config["generation"]`.
+It returns an in-memory answer/provenance dictionary—not a full **Prediction
+row** yet:
+
+```python
+{
+    "answer": "...",
+    "requested_model": "...",
+    "request_id": "...",
+    "returned_model": "...",
+    "provider": "..." | None,
+    "usage": {...}, "cost": 0.0 | None, "latency_seconds": 0.0,
+}
+```
+
+`execution/job.py` supplies the remaining question, condition, evidence and
+metric fields to make the Section 4 **Prediction row**. A context-limit check
+raises `ContextLimitError` instead; no API response dictionary exists in that
+case.
+
 In `src/sec_rag_benchmark/pipeline/generation.py`, read `build_messages()` → `generate()`
 → `count_prompt_tokens()` → `get_tokenizer()` → `_selected_provider()`. Read alongside
 `test_generation_pins_provider_without_real_api_call()` and
@@ -971,6 +1084,22 @@ metadata. `_selected_provider()` records the endpoint marked `selected`; it
 returns `None` instead of guessing when that metadata is absent.
 
 ## 9. Retrieval metrics
+
+### Inputs and outputs
+
+`page_metrics()` receives two in-memory lists: document/page tuples from
+`gold_pages(question)`, and retrieved-chunk dictionaries from the **Condition
+result**, plus integer `top_k`. It returns only these three fields, which
+`execute_job()` inserts into a **Prediction row**:
+
+```python
+{"page_recall": 0.0, "page_precision": 0.0, "page_mrr": 0.0}
+```
+
+`cognitive_skills()` receives the raw `question_reasoning` string (or `None`)
+from a **Prepared question** and returns a normalized string list such as
+`["numerical_reasoning"]`. That list becomes the prediction row's
+`cognitive_skills` field; it is not written back to the FinanceBench source.
 
 In `src/sec_rag_benchmark/evaluation/retrieval_metrics.py`, read `page_metrics()` and
 `cognitive_skills()`. These both transform one question/job rather than
@@ -1144,6 +1273,25 @@ multiple skills.
 
 ## 10. Preflight, one-job execution and real-run orchestration
 
+### Inputs and outputs
+
+| Public operation | Input | Return value | Persisted effect |
+|---|---|---|---|
+| `dry_run()` | validated config, optional conditions and question selection | `{planned_jobs, conditions, maximum_prompt_tokens, oversized_jobs, api_requests}` | none |
+| `execute_job()` | one **Prepared question**, one condition name, a job ID, config and optional retriever/generator | one complete successful **Prediction row** | none; its caller writes it |
+| `run_benchmark()` | validated config, config path and CLI choices | `{run_dir, generated, did_not_fit, skipped, failed}` | run `config.toml`, `predictions.jsonl`, `errors.jsonl` |
+
+`select_development_subset()` is also used here: it receives a list of
+**Prepared question** dictionaries plus `smoke` or `pattern` configuration and
+returns a smaller list in the same shape and original source order.
+
+`execute_job()` uses Python tuples for `gold_pages` in memory. When its returned
+prediction is appended as JSONL, Python serialises each tuple as a two-item JSON
+array, producing the Section 4 `[["document.pdf", 12]]` representation.
+`did_not_fit` is a reduced non-answer prediction: it preserves the question,
+reference and provenance fields, but deliberately has no `request_id` because
+no OpenRouter request occurred.
+
 This workflow is split across three files because the three operations have
 different purposes. Read them in this order:
 
@@ -1283,6 +1431,26 @@ of mixing incompatible results.
 
 ## 11. Reporting and result artifacts
 
+### Inputs and outputs
+
+`write_report(run_dir)` reads the run's append-only **Prediction rows**,
+**Judgment rows**, optional **Manual-review rows**, error rows, and `config.toml`.
+It first keeps the latest row for each `job_id`, then returns one nested summary
+dictionary and writes three derived artefacts:
+
+```text
+saved JSONL rows + run config
+→ summary dictionary
+→ summary.json + failure_analysis.jsonl + summary.xlsx
+```
+
+The summary dictionary contains `run_status`, `answer_accuracy`,
+`retrieval_metrics`, `generation_performance`, and `failure_analysis`.
+Section 4 shows an **Accuracy summary row** but not the generation-performance
+row; that additional summary contains cost/latency totals and averages, not one
+question's answer or judge data. Reporting never edits a source prediction,
+judgment, or manual-review row.
+
 This section describes the implemented nested JSON, workbook and
 failure-analysis reports. The previous flat `summary.json` and wide
 `summary.csv` have been replaced.
@@ -1354,6 +1522,20 @@ accuracy including and excluding `did_not_fit`, but does not split headline
 accuracy by decision source. Provenance remains in the source JSONL files.
 
 ### Manual adjudication of judge disagreements
+
+### Inputs and outputs
+
+`export_manual_review()` reads latest **Prediction rows**, **Judgment rows**,
+and existing **Manual-review rows** from one run. It returns
+`{path, disagreements, prefilled}` and writes the editable
+`manual_review.csv`; it does not create a manual-review JSONL row.
+
+`import_manual_review()` reads that CSV plus the same saved prediction/judgment
+rows. It returns `{imported, skipped, unresolved}` and appends only completed
+human decisions in the Section 4 **Manual-review row** shape to
+`manual_reviews.jsonl`. Blank review rows stay unresolved. The CSV has extra
+display-only columns such as both judge reasons; those columns are not stored
+in a manual-review row.
 
 `src/sec_rag_benchmark/evaluation/manual_review.py` exposes two complete operations:
 
@@ -1955,6 +2137,19 @@ results/<timestamp>--<experiment>--<variant>/
 
 ### Failure-analysis implementation slice
 
+### Inputs and outputs
+
+`build_failure_analysis()` receives the latest terminal prediction dictionaries,
+the in-memory judgment mapping resolved with any human decisions, and `top_k`.
+It returns a list of Section 4 **Failure-analysis rows**. It does not change a
+prediction or judgment.
+
+`summarize_failure_analysis()` receives that list and returns a smaller
+dictionary containing the methodology legend, counts by condition, and manual-
+review/unclassified totals. `write_report()` writes the detailed list to
+`failure_analysis.jsonl`, nests the smaller dictionary in `summary.json`, and
+passes both to the workbook renderer.
+
 This implemented vertical slice keeps the classifier, derived JSONL, summary
 and workbook sheet in one runnable reporting operation. It adds no dependency
 and does not change the CLI or configuration.
@@ -2009,6 +2204,18 @@ number from another filing cannot count as a match. The calculated value is
 stored in each analysis row. The slice remains uncommitted until user review.
 
 ### Azure binary answer judge
+
+### Inputs and outputs
+
+`judge_run()` reads latest successful **Prediction rows** from a run and the
+latest existing **Judgment rows**. It returns `{judged, skipped, failed}` and
+appends one new Section 4 **Judgment row** for each formerly unjudged answer.
+It never alters `predictions.jsonl`.
+
+The judge receives only the prediction fields needed to grade: `question`,
+`gold_answer`, `gold_evidence`, `human_justification`, `model_answer`, and
+`job_id`. The message lists and individual Azure response objects are temporary;
+only the combined judgment dictionary is persisted.
 
 Read `src/sec_rag_benchmark/evaluation/judge.py` from its public `judge_run()` first,
 followed by `_judge_answer()`, `_build_judge_messages()`,
@@ -2159,6 +2366,20 @@ terminal jobs in the denominator while adding no correct answer for them.
 
 ### Human-label validation gate
 
+### Inputs and outputs
+
+`create_validation_sample()` reads published FinanceBench result rows plus the
+prepared-question dictionaries they reference. It writes
+`validation_sample.jsonl` and synthetic successful prediction rows in a new
+validation directory, then returns the selected sample-row list.
+
+Those synthetic prediction rows deliberately follow the Section 4 prediction
+shape closely enough for `judge_run()`, but differ from generated predictions:
+their answer/model fields come from a published result and they have no
+`completed_at` timestamp. `validate_judge()` returns a validation-summary
+dictionary, writes it to `judge_validation.json`, and includes the nested judge
+counts plus the pass/fail fields shown in Section 4.
+
 Read `evaluation/judge_validation.py` after `evaluation/judge.py`. Start with `validate_judge()`, then
 follow `create_validation_sample()` through `_source_candidates()`,
 `_select_candidates()` and `_prediction_from_sample()`. Finish with
@@ -2230,6 +2451,23 @@ check produced all 30 required rows across all three question types and 16
 published result files without creating an Azure client.
 
 ## 12. CLI and complete call flow
+
+### Inputs and outputs
+
+`main(argv)` receives either a list of terminal argument strings or `None`
+(meaning the real terminal arguments). It parses them, calls one public
+operation above, prints a short human-readable result, and returns an integer
+exit code:
+
+```text
+0 = requested operation completed
+1 = judge validation completed but did not meet its agreement threshold
+2 = invalid input, missing file/credential, or application error
+```
+
+The CLI does not convert dictionaries into new benchmark records. Its output is
+text for the terminal; the command it delegates to owns any JSONL, JSON, CSV,
+or workbook file it writes.
 
 Finish with `src/sec_rag_benchmark/cli.py`. Its single public function,
 `main()`, contains argument definition, argument parsing, explicit `match/case`
@@ -2507,6 +2745,15 @@ uv run sec-rag-benchmark validate-judge \
 ```
 
 ## 13. Test design and requirement traceability
+
+### Inputs and outputs
+
+Tests construct small dictionaries that intentionally have the same shapes as
+Section 4's prepared questions, condition results, predictions, judgments and
+manual reviews. Fake OpenRouter and Azure clients return response-like objects
+only to the module under test. The observable outputs are returned dictionaries,
+generated files in pytest's temporary directory, or raised errors; tests never
+call a paid API or depend on the ignored real dataset.
 
 | Requirement or behavior | Test or status |
 |---|---|
