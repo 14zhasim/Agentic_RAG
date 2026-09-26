@@ -26,6 +26,27 @@ from typing import Any
 
 import pymupdf
 
+# Retry settings for the Azure client, so a Wi-Fi drop mid-run is waited out
+# rather than stopping the run and costing a repeat parse. They change only how
+# long a request is retried, never what Azure returns, so they don't affect
+# results and live here rather than in config.
+#
+# azure-core's defaults give up on a failed connection after 3 retries spaced
+# 0, 1.6 and 3.2 seconds (retry_backoff_factor 0.8, doubling), too short for a
+# network reconnect. With factor 2, doubling, capped at 60 s, 10 connection
+# retries wait about 0, 4, 8, 16, 32, then 60 s each: roughly six minutes.
+# Read retries don't apply to the upload itself (a POST): azure-core never
+# retries a POST after it was sent, so a PDF can't be billed twice this way.
+# Confirmed in .venv/.../azure/core/pipeline/policies/_retry.py
+# (RetryPolicy.__init__, get_backoff_time, _is_method_retryable).
+AZURE_RETRY_SETTINGS: dict[str, int] = {
+    "retry_total": 15,
+    "retry_connect": 10,
+    "retry_read": 5,
+    "retry_backoff_factor": 2,
+    "retry_backoff_max": 60,
+}
+
 
 class ParseStateError(ValueError):
     """A saved parse, a fresh Azure result or a filing name can't be trusted."""
@@ -172,7 +193,9 @@ def _create_azure_client() -> Any:
             "AZURE_DOCUMENT_INTELLIGENCE_KEY and "
             "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT must be set for --execute-paid"
         )
-    return DocumentIntelligenceClient(endpoint, AzureKeyCredential(key))
+    return DocumentIntelligenceClient(
+        endpoint, AzureKeyCredential(key), **AZURE_RETRY_SETTINGS
+    )
 
 
 def _send_to_azure(client: Any, pdf_path: Path, model_id: str) -> dict[str, Any]:

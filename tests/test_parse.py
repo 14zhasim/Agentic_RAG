@@ -226,3 +226,27 @@ def test_credentials_needed_only_when_paying(
         parse_corpus(config, ("beta_2024_10K",), execute_paid=True)
     assert "AZURE_DOCUMENT_INTELLIGENCE_KEY" in str(error.value)
     assert "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT" in str(error.value)
+
+
+def test_azure_client_gets_patient_retry_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real client is built with the longer retries, so a Wi-Fi drop is waited out."""
+    import azure.ai.documentintelligence as azure_di
+
+    from sec_rag.ingestion.parse import AZURE_RETRY_SETTINGS, _create_azure_client
+
+    built: dict[str, Any] = {}
+
+    def fake_client(endpoint, credential, **kwargs):
+        built.update(endpoint=endpoint, **kwargs)
+        return "client"
+
+    monkeypatch.setattr(azure_di, "DocumentIntelligenceClient", fake_client)
+    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", "test-key")
+    monkeypatch.setenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", "https://example.test/")
+
+    assert _create_azure_client() == "client"
+    assert built["endpoint"] == "https://example.test/"
+    for name, value in AZURE_RETRY_SETTINGS.items():
+        assert built[name] == value
