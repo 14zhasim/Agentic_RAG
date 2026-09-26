@@ -101,7 +101,44 @@ uv run sec-rag-benchmark validate --config configs/financebench.toml
 
 Preparation filters the original source files to 10-Ks and creates the local
 112-question/64-PDF subset under `data/financebench/`. Validation checks the
-questions, metadata, evidence pages, PDFs and manifest.
+questions, metadata, evidence pages, PDFs and the dataset preparation record.
+
+## Parse and inspect filings
+
+These commands belong to the SEC RAG system, not the benchmark harness. Start
+with the no-spend plan: it reads local state only and reports which filings
+are already parsed and which are missing.
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml
+```
+
+For the initial small test batch, the next command is deliberately paid: it
+sends only those named, currently missing PDFs to Azure Document Intelligence.
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml \
+  --documents PEPSICO_2022_10K JPMORGAN_2022_10K --execute-paid
+```
+
+Inspect those saved Azure results locally before authorising the rest of the
+corpus. This writes a `<doc_name>.structure.txt` report next to each saved
+parse and does not need Azure credentials or make an API request.
+
+```bash
+uv run sec-rag inspect-parse --config configs/sec_rag.toml \
+  --documents 3M_2018_10K PEPSICO_2022_10K JPMORGAN_2022_10K
+```
+
+Only after reviewing the reports should you run the visibly paid full-corpus
+command:
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml --execute-paid
+```
+
+Azure parsing and benchmark generation are separate paid operations. The
+benchmark dry runs below neither parse documents nor call a generation model.
 
 ## Run a no-spend preflight
 

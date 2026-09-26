@@ -6,8 +6,8 @@
 > time. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Status:** Gates 1 (architecture and libraries), 2 (files, data and
-> interfaces) and 3 (pseudocode, slices and tests) approved. Slice 1 built;
-> slices 2 and 3 not started.
+> interfaces) and 3 (pseudocode, slices and tests) approved. Slices 1 and 2
+> built; slice 3 not started.
 
 **Goal:** all 64 FinanceBench filings parsed by Azure exactly once, saved,
 checked, and readable as clean pages ready for chunking.
@@ -542,7 +542,7 @@ safely.
 `tests/test_parse.py`, `tests/test_sec_rag_cli.py`.
 
 **Reading path:** `parse_corpus()` → `select_documents()` → `json_path()` →
-`_read_json()` → `check_parse()` → `_create_azure_client()` →
+`read_json()` → `check_parse()` → `_create_azure_client()` →
 `_send_to_azure()` → `_write_json()`.
 
 #### `parse_corpus()`
@@ -558,7 +558,7 @@ parse_corpus(config, document_names, execute_paid, client):
         IF json_path(config, doc_name) doesn't exist:     # parsed/3M_2018_10K.json
             add pdf_path to missing
             CONTINUE
-        raw = _read_json(that path)        # ParseStateError if it won't open
+        raw = read_json(that path)        # ParseStateError if it won't open
         check_parse(raw, pdf_path)         # ParseStateError if it fails: stop,
                                            # never overwrite or pay again
         add doc_name to done
@@ -598,7 +598,7 @@ select_documents(config, document_names):
 json_path(config, doc_name):
     RETURN <parsed_dir>/<doc_name>.json
 
-_read_json(path):
+read_json(path):
     RETURN json.loads(the file's text)
     won't open or isn't valid JSON -> ParseStateError("<doc_name>: cannot read saved parse: ...")
 
@@ -718,7 +718,7 @@ inspect_parses(config, document_names):
     FOR each pdf_path in select_documents(config, document_names):
         path = json_path(config, doc_name)
         IF path doesn't exist -> ValueError("<doc_name>: not parsed yet")
-        raw = _read_json(path)
+        raw = read_json(path)
         check_parse(raw, pdf_path)
         reports.append((<parsed_dir>/<doc_name>.structure.txt,
                         build_structure_report(doc_name, raw)))
@@ -730,12 +730,12 @@ inspect_parses(config, document_names):
 
 #### How Azure's JSON becomes a heading list and a report
 
-Neither function works out the structure itself. Azure has already done that:
-every paragraph arrives labelled with a role, and the `sections` list records
-which section contains which. Steps 1-2 read those labels into the heading
-list (`extract_headings`, in `headings.py`); steps 3-4 summarise that list as
-the report (`build_structure_report`, in `structure_report.py`), so you can
-judge whether Azure got the structure right.
+Neither function works out the structure itself; Azure has already done that.
+But its JSON splits what we need across two lists: `paragraphs` know each
+heading's text, page and position but not its depth, and `sections` know the
+nesting but refer to paragraphs only by number. Steps 1-3 join the two into
+the heading list (`extract_headings`, in `headings.py`); steps 4-5 summarise
+that list as the report (`build_structure_report`, in `structure_report.py`).
 
 The worked example below is a made-up miniature of 3M's first pages, small
 enough to follow by hand.
@@ -760,34 +760,44 @@ sections (Azure's flat list; each says what it contains, by reference):
   [5] contains /paragraphs/5
 ```
 
-**Step 1 (`extract_headings`) — find the headings.** Keep only paragraphs whose
-role is `title` or `sectionHeading`, noting each one's text, start page
-(`boundingRegions[0].pageNumber`) and raw position in `content`
-(`spans[0].offset`). Paragraph 2 is body text, so it's skipped. The headings
-are returned sorted by raw position, which is reading order.
+Think of each section as a box listing what's inside it. The first thing in a
+box, if it's a paragraph, is that box's heading.
 
-**Step 2 (`extract_headings`) — work out each heading's level from the
-sections tree.**
+**Step 1 (`section_depths`) — how deep is each box?** Every box starts at 0;
+going through them in order, each box listed inside another gets its
+parent's depth + 1. One pass works only because Azure lists a parent before
+its children (true on 3M).
 
 ```text
-section 0 is the top:                      depth 0
-section 0 contains sections 1 and 4:       depth 1 each
-section 1 contains sections 2 and 3:       depth 2 each
-section 4 contains section 5:              depth 2
-
-a section's first /paragraphs/N is the heading that opens it:
-  section 1 opens with paragraph 0  ->  "PART I"                 level 1
-  section 2 opens with paragraph 1  ->  "Item 1. Business"       level 2
-  section 3 opens with paragraph 3  ->  "Item 1A. Risk Factors"  level 2
-  section 4 opens with paragraph 4  ->  "PART II"                level 1
-  section 5 opens with paragraph 5  ->  "Item 5. Market for ..." level 2
+start                   [0, 0, 0, 0, 0, 0]
+box 0 holds 1 and 4  -> [0, 1, 0, 0, 1, 0]
+box 1 holds 2 and 3  -> [0, 1, 2, 2, 1, 0]
+box 4 holds 5        -> [0, 1, 2, 2, 1, 2]
 ```
 
-This relies on Azure listing a parent section before its children, which held
-on 3M. A heading that doesn't open any section gets `level=None`; the report
-counts such headings and leaves them out of the page path (none on 3M).
+**Step 2 — give each box's depth to the paragraph that opens it.** Look only
+at each box's first element. Box 0 opens with a box, so it has no heading;
+paragraph 2 (body text) opens nothing, so it never gets a level.
 
-**Step 3 (`build_structure_report`) — carry the headings across pages.**
+```text
+level_of_paragraph = {0: 1, 1: 2, 3: 2, 4: 1, 5: 2}
+```
+
+**Step 3 — keep the headings.** Go through the paragraphs, skip any whose
+role isn't `title` or `sectionHeading`, and build a `Heading` from
+`spans[0].offset`, `boundingRegions[0].pageNumber`, the level from step 2
+(`None` if the paragraph opens no box) and the tidied text. Sort by offset,
+which is reading order:
+
+```text
+Heading(offset=0,   page=4,  level=1, text="PART I")
+Heading(offset=10,  page=4,  level=2, text="Item 1. Business")
+Heading(offset=60,  page=10, level=2, text="Item 1A. Risk Factors")
+Heading(offset=90,  page=13, level=1, text="PART II")
+Heading(offset=100, page=13, level=2, text="Item 5. Market for ...")
+```
+
+**Step 4 (`build_structure_report`) — carry the headings across pages.**
 
 ```text
 active path = empty
@@ -815,23 +825,22 @@ chunks by raw position instead, so a page with several headings is split
 correctly. The path is shown at full depth, however deep Azure nests it, so
 the report shows exactly what Azure returned.
 
-**Step 4 (`build_structure_report`) — write the report.** Six sections, each
-answering one question:
+**Step 5 (`build_structure_report`) — write the report.** Three sections, one
+per question asked before paying for the rest of the corpus:
 
-1. **Role census** — how many paragraphs have each role, and what share is
-   header/footer/page-number noise?
-2. **Sections tree** — how many sections, how deep they nest, and whether they
-   carry character positions.
-3. **Headings** — one line per heading: raw offset, page, level, text. Plus how many
-   `Item ...` headings there are and at which levels. On a well-structured
-   filing all Items share one level.
-4. **Page → heading path** — step 3's result, with Azure's page number and
+1. **Headings** — one line per heading: raw offset, page, level, text. Plus how
+   many `Item ...` headings there are and at which levels. On a
+   well-structured filing all Items share one level.
+2. **Page → heading path** — step 4's result, with Azure's page number and
    FinanceBench's page number side by side.
-5. **Figures** — how many `<figure>` tags are in `content`, and how many
+3. **Figures** — how many `<figure>` tags are in `content`, and how many
    entries in Azure's `figures` list (0 if the field is absent).
-6. **Page count** — the page count, already checked against the PDF.
 
-On the real 3M parse, sections 3 and 4 are where the problems show: the 21
+Page noise, the raw section tree and the page count are left out: none of
+them changes a decision (noise is blanked regardless, section positions were
+confirmed in Stage 0, and a wrong page count stops the run before any report).
+
+On the real 3M parse, sections 1 and 2 are where the problems show: the 21
 Items sit at four different levels, so on page 12 `Item 4` appears *under*
 `Item 1B`. That's what the Stage 1.3 heading-fix pass corrects. This report
 uses Azure's raw levels and is for eyeballing only.
@@ -845,7 +854,9 @@ headings.
 position and the heading's permanent ID (later stages rename and re-level
 headings but never change it); at the level calculation, that depth 0 is a
 real level (so check `is not None`, not truthiness), and that the single
-forward pass assumes parents are listed before children.
+forward pass assumes parents are listed before children. `spans` and
+`boundingRegions` are lists, so `[0]` takes the first entry;
+`split("/")[-1]` turns `"/sections/4"` into section number 4.
 
 #### Tests — `tests/test_headings.py`
 
@@ -862,7 +873,7 @@ forward pass assumes parents are listed before children.
 | Test | Setup | Expected |
 |---|---|---|
 | writes a report with no credentials | 1 PDF + valid saved JSON, no credentials | `<doc_name>.structure.txt` written next to the JSON; returns `{"inspected": 1}` |
-| report builder touches no files | a small made-up dictionary, called directly | returns text containing the doc name and all six section titles |
+| report builder touches no files | a small made-up dictionary, called directly | returns text containing the doc name and all three section titles |
 | page path | the worked example above | page 10 → `PART I > Item 1A. Risk Factors`; page 13 → `PART II > Item 5. Market for ...` |
 | heading outside the tree | a heading with `level=None` | counted in the Headings section; left out of the page path |
 | figure count | made-up `content` with two `<figure>` tags | Figures section reports 2 |
@@ -872,6 +883,26 @@ forward pass assumes parents are listed before children.
 `Inspected: 1` and exits `0`.
 
 **Draft commit:** `Extract heading list and simplify inspection`
+
+#### As built
+
+Built as planned, in `headings.py`, `inspect_parse.py` and
+`structure_report.py`, with 6 tests in `tests/test_headings.py` and 6 in
+`tests/test_inspect_parse.py`. Where the code differs from the plan:
+
+- `read_json` (in `parse.py`) is public, since `inspect_parse.py` uses it and
+  `load_pages` will too.
+- The worked example is a shared pytest fixture, `worked_example_parse`, in
+  `tests/conftest.py`, used by both test files.
+- `test_headings.py` has one extra test: line breaks and repeated spaces
+  inside a heading's text become single spaces.
+- The report has three sections, not the six first planned: page noise, the
+  raw section tree and the page count were dropped as changing no decision.
+- Checked on the real 3M parse: 295 headings, none outside the tree; 21 Items
+  at four levels (1: 3, 2: 7, 3: 8, 4: 3); `PART II` at offset 54,616 and
+  `Item 5` at 54,629, both page 13; no figures; 160 pages. Page 12's path
+  still shows `Item 4` under `Item 1B`, the known Azure mis-nesting that
+  Stage 1.3's heading-fix pass corrects.
 
 ### Slice 3: clean pages
 
