@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pymupdf
@@ -44,7 +45,23 @@ def test_parse_command_plans_without_spending(tmp_path: Path, capsys) -> None:
     exit_code = main(["parse", "--config", str(config_path)])
 
     assert exit_code == 0
-    assert "Missing: 1" in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        "Selected: 1\nDone: 0\nMissing: 1\nParsed now: 0\n"
+    )
+
+
+def test_parse_command_reports_missing_credentials(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """A paid run without credentials prints the error and exits 1."""
+    monkeypatch.delenv("AZURE_DOCUMENT_INTELLIGENCE_KEY", raising=False)
+    monkeypatch.delenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+
+    exit_code = main(["parse", "--config", str(config_path), "--execute-paid"])
+
+    assert exit_code == 1
+    assert "Error: AZURE_DOCUMENT_INTELLIGENCE_KEY" in capsys.readouterr().out
 
 
 def test_parse_command_returns_one_for_runtime_configuration_error(
@@ -58,3 +75,23 @@ def test_parse_command_returns_one_for_runtime_configuration_error(
 
     assert exit_code == 1
     assert "Error:" in capsys.readouterr().out
+
+
+def test_inspect_parse_command_writes_report(tmp_path: Path, capsys) -> None:
+    """The offline command renders a report without parsing or credentials."""
+    config_path = _write_config_with_pdf(tmp_path)
+    cache_dir = config_path.parent.parent / "data" / "financebench" / "parsed"
+    cache_dir.mkdir(parents=True)
+    raw = {
+        "content": "# Filing title",
+        "pages": [{"pageNumber": 1}],
+        "paragraphs": [],
+        "sections": [],
+    }
+    (cache_dir / "example_2024_10K.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    exit_code = main(["inspect-parse", "--config", str(config_path)])
+
+    assert exit_code == 0
+    assert "Inspected: 1" in capsys.readouterr().out
+    assert (cache_dir / "example_2024_10K.structure.txt").is_file()
