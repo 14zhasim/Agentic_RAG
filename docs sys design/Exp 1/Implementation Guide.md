@@ -6,8 +6,8 @@
 > time. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Status:** Gates 1 (architecture and libraries), 2 (files, data and
-> interfaces) and 3 (pseudocode, slices and tests) approved. Slices 1 and 2
-> built; slice 3 not started.
+> interfaces) and 3 (pseudocode, slices and tests) approved. All three slices
+> built; Stage 1.1 closes when all 64 filings are parsed and pass the check.
 
 **Goal:** all 64 FinanceBench filings parsed by Azure exactly once, saved,
 checked, and readable as clean pages ready for chunking.
@@ -995,6 +995,21 @@ The last test reads the real saved parse only if it exists (it lives in the
 Git-ignored `data/` folder), so the suite still passes on a fresh clone.
 
 **Draft commit:** `Add load_pages with position-preserving cleaning`
+
+#### As built
+
+Built as planned, in `src/sec_rag/ingestion/load_pages.py` with 16 tests in
+`tests/test_load_pages.py`. Where the code differs from the plan:
+
+- One extra test: a marker whose quoted text runs over two lines keeps its
+  newline, and only the other characters become spaces.
+- The bad-filename test covers three cases: no underscores, no year, and a
+  two-digit year.
+- The marker regular expression is a module constant, `PAGE_MARKER`, compiled
+  once.
+- Checked on the real 3M parse: 160 pages, no `<!--` left on any page, no
+  blank pages; page index 12 starts at raw 54,574, is 4,184 characters long,
+  and `text[42:52] == "## PART II"`.
 
 ### Running it
 
