@@ -249,7 +249,7 @@ The preparation command creates this generated local directory:
 data/financebench/
 ├── financebench_open_source_10k.jsonl
 ├── financebench_document_information_10k.jsonl
-├── manifest.json
+├── dataset-preparation-record.json
 └── pdfs/
     └── 64 selected FinanceBench PDFs
 ```
@@ -668,7 +668,7 @@ The dataset lifecycle is:
 ```text
 original FinanceBench JSONLs + PDFs
     → prepare(dataset configuration)
-    → prepared 10-K JSONLs + 64 PDFs + manifest.json
+    → prepared 10-K JSONLs + 64 PDFs + dataset-preparation-record.json
     → validate(dataset configuration)
     → load_run_questions(dataset configuration, optional limit)
     → list of Prepared question dictionaries
@@ -704,11 +704,11 @@ prepare()
 ├── _select_10k_subset()
 ├── _check_rows()
 ├── _replace_prepared_files()
-└── _write_manifest()
+└── _write_preparation_record()
 
 validate()
 ├── _check_rows()
-└── _validate_manifest()
+└── _validate_preparation_record()
 
 load_questions()
 └── read both JSONLs and join metadata in memory
@@ -734,7 +734,7 @@ flowchart TD
     H --> I
     I --> J[Copy 64 PDFs]
     I --> K[Write both filtered JSONLs]
-    J --> L[Write manifest with counts, names and hashes]
+    J --> L[Write preparation record with counts, names and hashes]
     K --> L
 ```
 
@@ -746,14 +746,14 @@ prepare(config):
     questions, metadata = _select_10k_subset(...)
     _check_rows(questions, metadata, source PDFs, expected counts)
     generated_files = _replace_prepared_files(...)
-    _write_manifest(generated_files, selection information)
+    _write_preparation_record(generated_files, selection information)
     return observed counts
 
 validate(config):
     load generated JSONLs
     _check_rows(questions, metadata, prepared PDFs, expected counts)
     compare expected and actual PDF filenames
-    _validate_manifest(...)
+    _validate_preparation_record(...)
     return counts
 
 load_questions(output_dir):
@@ -800,11 +800,11 @@ _replace_prepared_files():
     write both filtered JSONLs
     return every generated file that must be hashed
 
-_write_manifest():
+_write_preparation_record():
     record source, filter, counts, PDF names and file hashes
 
-_validate_manifest():
-    compare manifest settings, filenames and hashes with prepared files
+_validate_preparation_record():
+    compare recorded settings, filenames and hashes with prepared files
 ```
 
 `_check_rows()` is the shared dataset gate. `prepare()` calls it against the
@@ -830,7 +830,8 @@ Important behavior:
 - Both JSONL schemas and complete evidence lists remain intact.
 - Evidence pages are zero-indexed and document-aware.
 - Preparation deletes stale PDFs only inside the generated output directory.
-- The manifest acts as provenance receipt, file inventory, and integrity check.
+- The dataset preparation record acts as provenance receipt, file inventory,
+  and integrity check.
 - `_check_rows()` opens each distinct PDF once and reuses its page count when
   several questions reference the same filing.
 
@@ -2842,7 +2843,7 @@ they make no paid request.
 |---|---|
 | Layered subpackages and many wrappers | Small flat modules with one visible responsibility |
 | Nested immutable dataclasses and `MappingProxyType` | Ordinary documented dictionaries |
-| Atomic staging, backup activation, source fingerprints | Direct deterministic preparation plus manifest hashes |
+| Atomic staging, backup activation, source fingerprints | Direct deterministic preparation plus preparation-record hashes |
 | `run_plan.json` and result-store abstraction | Effective `config.toml`, append helpers, stable job IDs |
 | Many narrow test files | Compact golden-path and focused behavior suites |
 | Approximately 4,000 more implementation/test lines | Smaller path intended for learner review |
@@ -2851,7 +2852,7 @@ Safeguards retained because they directly support benchmark validity:
 
 - exact question/document counts and schema checks;
 - evidence page and PDF validation;
-- source/filter/file-hash manifest;
+- source/filter/file-hash preparation record;
 - explicit context-limit failure;
 - provider pinning and lazy credentials;
 - immediate checkpoints and compatible configuration snapshot;
@@ -2866,7 +2867,7 @@ Sections 2, 3 and 5–13 now describe the code as built:
 - `config.py` owns `load_config()`;
 - `dataset/subsets.py` owns reproducible smoke/pattern question selection;
 - `dataset/financebench.py` separates selection, row checks, prepared-file replacement and
-  manifest work into named helpers;
+  preparation-record work into named helpers;
 - `pipeline/conditions.py` dispatches to one named builder per condition;
 - `pipeline/generation.py` separates capacity checking, client construction and response
   parsing;
@@ -2909,7 +2910,7 @@ accuracy for reporting.
 The source comments intentionally mirror this guide at the boundaries where a
 reader needs design context:
 
-- `dataset/financebench.py` comments trace 10-K selection, idempotent rebuilding, manifest
+- `dataset/financebench.py` comments trace 10-K selection, idempotent rebuilding, preparation-record
   provenance, complete-PDF validation, and the in-memory metadata join;
 - `config.py` comments explain path resolution and cross-section checks;
 - `dataset/subsets.py` comments explain proportional allocation, fixed

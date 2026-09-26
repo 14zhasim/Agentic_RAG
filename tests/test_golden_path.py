@@ -91,6 +91,9 @@ results_dir = "{run_config["results_dir"]}"
 def test_prepare_validate_and_load_preserve_source_rows(sample):
     assert prepare(sample["dataset"]) == {"questions": 2, "documents": 2}
     assert validate(sample["dataset"]) == {"questions": 2, "documents": 2}
+    assert (
+        Path(sample["dataset"]["output_dir"]) / "dataset-preparation-record.json"
+    ).is_file()
     questions = load_questions(sample["dataset"]["output_dir"])
     assert [q["financebench_id"] for q in questions] == ["q1", "q2"]
     assert len(questions[1]["evidence"]) == 2
