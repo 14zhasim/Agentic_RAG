@@ -224,7 +224,8 @@ Progress
 - [x] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
   - ANSWERED at `llama-index-retrievers-bm25==0.8.0`: yes — the filter becomes a `corpus_weight_mask` applied before scoring, so filter-then-rank holds and the fallback is not needed. Kept as `tests/test_bm25_metadata_filters.py`
   - CAVEAT that changes retrieval code: filtered chunks are not dropped, they are returned with `score == 0.0` as padding when `similarity_top_k` exceeds the surviving count. Retrieval MUST discard zero-score hits, or out-of-scope chunks reach the context block. A filter matching nothing raises `ValueError` rather than returning the whole corpus
-- [ ] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
+- [x] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
+  - ANSWERED by the spike on 3M 2018: use Azure. It finds the heading text reliably (all 21 Items), but its heading levels can't be used as they come, so they're fixed first — see "Fix the heading list before chunking"
 - Edit the existing file:
 results/20260917-012959--financebench--baseline-context-conditions-v1/manual_review.csv
   -  Then import it:
@@ -255,7 +256,7 @@ Tech stack
 - Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll save/load. For Exp2, pull the embeddings out and score in numpy
 - `bm25s` (via LlamaIndex) — keyword index. `BM25Retriever.from_defaults(filters=MetadataFilters(...))` filters before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data. Fallback: build the retriever from an already-filtered node list (2 lines)
   - filtering applies to the chunks searched; BM25 word statistics still come from the whole corpus (same as Elasticsearch, so results stay comparable if we switch)
-- Azure Document Intelligence — parsing. OPEN: PageIndex is a live fallback if Azure's section nesting is poor
+- Azure Document Intelligence — parsing, including the heading structure (confirmed by the Stage 0 spike on 3M 2018)
 - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker. Same account and same `VOYAGE_API_KEY` for both; two endpoints
   - DECIDED (Stage 0.4): call Voyage **directly** via the `voyageai` client (`vo.embed(...)`, `vo.rerank(query, documents, model, top_k)`), for both embeddings and reranking — not through `llama-index-postprocessor-voyageai-rerank` / `llama-index-embeddings-voyageai`
     - two fewer packages, and we assemble the candidate list ourselves anyway (Exp2's custom retriever must), so the LlamaIndex wrappers buy no consistency we actually use
@@ -271,46 +272,43 @@ Tech stack
 Ingest files
 
 - Load doc
-- Parser output decisions - goal is it should identify different media (tables etc.) and nested subheading structure accurately!
-  - output as .md - like Kim et al., (2025) found improvements on - or json
+- Parser requirements - goal is it should identify different media (tables etc.) and nested subheading structure accurately!
   - Jimeno Yepes (2024) used basic VLM to identify text, titles, tables and chunk along those boundaries (+LLM generated summary to embed)
     - Rationale:
     - helps LLM read non-plaintext file formats to LLM-interpretable representations, like tables.
     - Also, just using LLM misses out metadata (year, file type, ticker) and structural content (e.g. subheading of each chunk)
-  - Preserve metadata in the doc i.e. pg numbers, denoting (sub)headings, tables etc.
   - Parsing Options
     - "VLM-agentic" parsers (read the page like a person, with a correction/verification pass). E.g. Llamaparse, reducto ($$$), Azure Document Intelligence ($100 for ~80 docs around 12,000 pages, 82.7% on RD-TableBench, use base Layout), GPT-5.6 sol. **Good if endless edge cases exist in human writing, just use VLM**
     - "layout engine" parsers (specialized detection models + rules, no LLM-in-the-loop by default, self-hostable and free): PyMuPDF / pymupdf4llm, good for machine-generated docs like statements - apparently not that good for tables
     - verdict: use Azure Document Intelligence as i have startup credits (unless it has complicated setup/infra?)
       - setup is light: create resource → endpoint + key → `azure-ai-documentintelligence` SDK, `prebuilt-layout` model, markdown output. Paid tier only (free tier reads first 2 pages). ~$10 / 1,000 pages
-  - Parser output decisions: goal is to identify subheading structure accurately!
-    - parse once, cache forever: save Azure's raw JSON per PDF (out of Git, with manifest like data prep), never re-parse when chunking changes
-      - store derived parser artefacts per filing:
-        `data/financebench/parsed/<doc_name>/azure-layout.json` plus an optional reproducible
-        `structure.txt`; do not copy the source PDF out of the prepared dataset's `pdfs/` directory
-      - keep `data/financebench/parsed/manifest.json` separate from the prepared-dataset manifest.
-        It records each PDF/JSON hash, page count, model/output settings and SDK provenance,
-        completion time and whether a missing entry was repaired from an already-valid cache
-      - the unflagged `sec-rag parse --config configs/sec_rag.toml` command is read-only and checks
-        every PDF unless `--documents` narrows it. `--execute-paid` recreates any missing manifest
-        entry from a valid cache, then submits only genuinely missing filings, serially
-      - before a cache can suppress another paid call, require readable JSON, non-empty content and
-        an Azure page count matching PyMuPDF's PDF page count. Detailed page-number and span
-        validation belongs to 1.2-1.3, where those fields are used
-      - write the JSON and manifest atomically after each filing, stop on the first failure, and
-        resume by skipping completed documents
-    - raw JSON is the source of truth; markdown is one field inside it (`content`), other fields (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position, which is how each piece maps back to a page
-      - save `result.as_dict()` verbatim, preserving all returned fields including figures and
-        `styles`. Section 1.1 only acquires and validates raw input; stripping noise, page-index
-        conversion, metadata attachment, heading repair and chunking happen in sections 1.2-1.3
-      - attribution is therefore by character offset, not by page range (e.g. 200,000 characters in a filing, it gives character 'width' of each page, paragraph, table etc.): every paragraph, table, section and page carries spans (offset + length), so text is attached to its heading exactly rather than approximately
-    - strip page headers/footers/page numbers (Azure labels these) before chunking
-      - they appear inline in content as \<!-- PageHeader="..." --> and \<!-- PageNumber="13" -->;
-    - document-level metadata (company, doc_type, doc_period) comes from `financebench_document_information_10k.jsonl`, not from parsing. No ticker field in FinanceBench
-    - page numbers: FinanceBench `evidence_page_num` is zero-indexed; Azure `pageNumber` is 1-indexed → `evidence_page_num = pageNumber - 1`. Never use the footer's printed page number. Add a test
+  - Parser output decisions
+    - **Output as markdown AND JSON.** Kim et al. (2025) found markdown helps, and Azure gives us both: the markdown is the `content` field inside its raw JSON
+      - The raw JSON is the source of truth. Its other fields (`pages`, `paragraphs`, `tables`, `sections`) point into that markdown by character position, which is how every piece maps back to a page
+      - We save `result.as_dict()` exactly as Azure returns it, keeping every field
+    - **Preserve the structure: page numbers, (sub)headings, tables.**
+      - Every paragraph, table, section and page carries a span (start position + length) in the markdown. E.g. in 3M 2018, page 13 owns characters 54,574-58,758, so a heading at character 54,629 starts on page 13
+      - So text is attached to its page and heading exactly, by character position, rather than guessed from page ranges
+      - Confirmed on 3M 2018: every section carries its character positions (296/296), and no table crosses a page (119/119 sit on one page), so each table can be its own chunk without breaking the one-page-per-chunk rule
+    - **How the parse run works.** One command loops over the 64 PDFs, sends each to Azure and saves the JSON it returns as `data/financebench/parsed/<doc_name>.json` (kept out of Git). Each filing costs ~$1.70 and takes a few minutes, ~$108 for all 64, so the run must never pay twice or leave a broken file. Each rule below guards against one thing going wrong:
+      - **Skip filings that are already saved.** Why: re-running the command, or re-running after it stopped halfway, would otherwise pay again for everything. What it does: before calling Azure for a PDF, it checks whether that PDF's JSON is already on disk and moves on if so. This is what "parse once, never re-parse" means in code
+      - **Nothing is spent unless you add `--execute-paid`.** Why: running the command by accident, or just wanting to see where things stand. What it does: plain `sec-rag parse` only reports, e.g. "1 done, 63 to do", and spends nothing. You add `--execute-paid` when you mean it (project rule: paid commands must be obviously paid)
+      - **Pick specific filings with `--documents`.** Why: parse 3 filings, look at the output, and only then spend the other ~$100. What it does: `--documents 3M_2018_10K PEPSICO_2022_10K` parses just those two
+      - **One filing at a time, stop at the first error.** Why: a wrong key or Azure refusing a request shouldn't fail 64 times. What it does: the loop stops straight away; everything saved so far stays saved, so re-running picks up where it stopped
+      - **Write to a temporary file, then rename it.** Why: if the laptop dies or you press Ctrl-C mid-write, a half-written 21 MB file would sit on disk, the skip rule would see it and skip that filing forever. What it does: writes `<doc_name>.json.partial` first and renames it to `<doc_name>.json` only once complete. Renaming is instant, so the file is either fully there or not there at all
+      - **Check a saved file before trusting it.** Why: Azure could return something truncated or empty, or the saved file could be corrupt. What it does: before a saved file counts as "done", it checks the JSON opens, the text isn't empty, and Azure's page count equals the PDF's real page count (counted with PyMuPDF, the PDF library already installed). If a file fails, stop and tell me — don't overwrite it or pay again automatically
+      - **Eyeball the structure with `sec-rag inspect-parse`.** Why: to see whether Azure found the Items and headings before trusting it. What it does: writes `<doc_name>.structure.txt`, a readable list of the headings and each page's heading path. Inspection only; nothing depends on it. While inspecting the first 2-3 filings, also check whether Azure returned any figures (`<figure>` tags in `content`) — the 3M parse has none
+    - **The heading list: `extract_headings`.** Why: the inspection report now, and the heading-fix pass and chunker later, all need the same list of headings, each with a fixed position to match chunks against. What it does: reads the saved JSON into one row per heading — raw offset in `content` (from the paragraph's span), page, level (from Azure's sections tree) and text. The offset never changes, even when a later pass renames or re-levels a heading, so it doubles as the heading's permanent ID
+    - **Reading the parsed JSON: `load_pages(doc_name)`.** Turns one saved JSON into clean pages ready for chunking. Runs locally in about a second, so it's free. It never edits the saved JSON: every span is a character position in `content`, so deleting any text would shift every position after it and break the page/heading mapping. Each page it returns has:
+      - **Page headers, footers and page numbers blanked out.** Azure labels these, and they appear inline in `content` as \<!-- PageHeader="..." --> and \<!-- PageNumber="13" -->. Each marker is replaced by the same number of spaces rather than cut out, so the page's text stays exactly as long as its slice of `content`
+      - **The page's start position in `content`** (`start_offset`). Why: chunks get their heading path by matching positions with the heading list, so every piece of text must keep its raw position. What it does: position `i` in a page's text is raw position `start_offset + i` — e.g. 3M page 13 starts at 54,574 and its `PART II` heading at 54,616 is at position 42. The leftover spaces are tidied when each chunk's final text is made
+      - **Figure text kept as ordinary page text.** Whatever Azure reads from a chart — captions, axis labels, numbers — stays in the page's text and gets chunked like prose, so a number that only appears in a chart can still be found
+      - **The filing's company name, year and filing type**, split from the PDF's filename (`COMPANY_YEAR_TYPE`), not from parsing. Read from the right, because one company name itself contains an underscore: `JOHNSON_JOHNSON_2022_10K` → `JOHNSON_JOHNSON` / `2022` / `10K`. The filename is also what the model picks from when choosing which filing to search, so the chunk metadata and the model's choice use the same name. Checked against FinanceBench's own metadata: the years match for all 64 filings and the company names match apart from punctuation (`COCACOLA` vs "Coca-Cola")
+      - **The FinanceBench page number.** FinanceBench's `evidence_page_num` counts from 0; Azure's `pageNumber` counts from 1, so `evidence_page_num = pageNumber - 1`. Never use the page number printed in the footer. Add a test: every page metric depends on this
 
   - Fix the heading list before chunking 
-    - an LLM pass takes the heading rows (text, level, page) plus the file's metadata and returns the same rows corrected
+    - Why: on 3M 2018 Azure found all 21 Items, but put them across four different heading levels. As a result 106 of 160 pages have no Item heading above them, including 75 of the 76 financial-statement pages, so their heading paths would be wrong
+    - an LLM pass takes the heading rows (offset, text, level, page) plus the file's metadata and returns the same rows corrected, keyed by offset
       - repairs split-word typos — Busines s., ESTIMA TES, Equit y (16 of 295 headings)
       - drops headings that only restate the file metadata, e.g. UNITED STATES SECURITIES AND EXCHANGE COMMISSION..., which is otherwise the root ancestor of ~106 pages. This can be derived from the filename
       - splits absorbed headings — Azure glued PART I onto the end of the previous title
@@ -352,7 +350,6 @@ Ingest files
     - FinSTAR: keep track of document structure to attach as metadata to a chunk (HiChunk).
       - is there way to preserve boundaries for (sections, titles, tables, text, figures) like Jimeno Yepes, to chunk along? e.g. more than one chunk same page
       - is there way to extract the structure/hierarchy of document, so we know the headings of each chunk? 
-      - What we could do: use Azure doc intelligence PageIndex - just need heading, nesting level, and its start page. PageIndex https://docs.pageindex.ai/sdk/documents#read-a-document. Use get_tree() to pull structure (using pure parsing of e.g. contents page, section headings!) - section headings and starting page for each one, and nesting to indicate if it is a sub-heading. Can use 'local mode' to be quick, tho need to check pdfs are machine-readable, not image-only pdfs (for both datasets!). Also, only shows starting, not ending page; can compute with nesting and starting page of subsequent sections. then, construct data structure storing concatenated headings (each one has its own embedding score), with its corresponding page ranges, then for own parsed pdf, compare chunk's page with this to know which heading belongs to it
       - (DEFERRED, add later) FinSTAR: get SLM to generate another section header based on the section's content specifically
       - Save the chunk's heading path (list of headings, top level first) as metadata to chunk. Each heading level is embedded separately and combined at retrieval (see retrieval → Experiment 2 theory), not joined into one string
       - attribute headings to chunks: from each heading's start page, compute its page range (ends where the next heading at the same or higher level starts); a chunk gets the headings whose range covers its page. If two headings start on the same page, attribute the one covering more of that page
@@ -411,7 +408,7 @@ Retrieve - Elastic search? can think about tech stack later
       - Structural injection is computed as follows: given a chunk embedding `H_ci = Embed(c_i) ∈ R^d` and its hierarchical path levels `p_1, ..., p_n` (ancestor headers plus virtual node), each level is independently embedded as `V_j = Embed(p_j)`; relevance scores are computed via dot product `s_j = H_ci · V_j`, then normalised with standard `√d`-scaled softmax, `a_j = exp(s_j/√d) / Σ_k exp(s_k/√d)`, giving `a_j ≥ 0` and `Σ_j a_j = 1`; these weights are used to aggregate the level embeddings into a structural context vector `H_si = Σ_j a_j·V_j`, equivalent to `Attn(Q=H_ci, K=V={V_1,...,V_n})` with `W_Q=W_K=W_V=I` (no learned projections); this is then concatenated — not summed — with the original chunk embedding to form the final index vector `H+_ci = [H_si ; H_ci] ∈ R^{2d}`, preserving the chunk embedding unmodified in its own sub-space; at retrieval time the query embedding `q = Embed(query)` is duplicated to match dimensionality, `q+ = [q ; q] ∈ R^{2d}`, so that the retrieval score decomposes additively as `q+ · H+_ci = (q · H_si) + (q · H_ci)` — a structural-relevance term plus a content-relevance term, computed independently. All embeddings are produced by the same off-the-shelf embedding model with no access to model internals or hidden states required, the vector store collection dimension is set to `2d`, and no training loop, labelled data, or loss function is needed.
       - Exp2 decisions (from review; confirm or strike)
         - Exp2 = Exp1 pipeline with ONE change: the dense score. Parsing, chunks, query enhancement, BM25, RRF, reranker, generation all identical
-        - structure source: OPEN — Azure Document Intelligence or PageIndex. Either works with the same method, as long as it gives each heading, its nesting level and its start page (see chunking → experiment 2 attribution rule). Check both on 2-3 filings
+        - structure source: Azure Document Intelligence, after the heading-fix pass (answered by the Stage 0 spike). It gives each heading, its nesting level and its start page, which is all the method needs (see chunking → experiment 2 attribution rule)
         - SLM virtual node DEFERRED (add later)
         - Fin-STAR constraints: depth ≤ 5 applies now — if the heading path has more than 5 levels, drop the excess (deepest) headings. Discriminativeness only applies to the virtual node, so it comes back when that does
         - softmax divisor (temperature) is a CONFIG SETTING, starting value 0.05. Try 1 / √d only if time allows
