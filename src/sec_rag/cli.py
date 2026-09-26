@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from .config import load_config
-from .ingestion.inspection import inspect_parses
+from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
 
 

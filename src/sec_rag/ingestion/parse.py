@@ -61,7 +61,7 @@ def parse_corpus(
         if not path.is_file():
             missing.append(pdf_path)
             continue
-        raw = _read_json(path)
+        raw = read_json(path)
         check_parse(raw, pdf_path)
         done.append(pdf_path.stem)
 
@@ -122,7 +122,7 @@ def json_path(config: dict[str, Any], doc_name: str) -> Path:
     return Path(config["corpus"]["parsed_dir"]) / f"{doc_name}.json"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def read_json(path: Path) -> dict[str, Any]:
     """Load one saved parse, naming the filing if the file can't be read."""
     try:
         raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))

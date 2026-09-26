@@ -165,3 +165,44 @@ def sample(tmp_path: Path):
             "results_dir": str(tmp_path / "results"),
         },
     }
+
+
+def _azure_paragraph(text: str, offset: int, page: int, role: str | None) -> dict:
+    """Build one Azure paragraph with its span and start page."""
+    paragraph: dict = {
+        "content": text,
+        "spans": [{"offset": offset, "length": len(text)}],
+        "boundingRegions": [{"pageNumber": page}],
+    }
+    if role is not None:
+        paragraph["role"] = role
+    return paragraph
+
+
+@pytest.fixture
+def worked_example_parse() -> dict:
+    """The implementation guide's miniature of 3M's first pages, as Azure JSON.
+
+    Six paragraphs (one of them body text) and six sections, over 13 pages:
+    PART I > Item 1 on p4, Item 1A on p10, PART II > Item 5 on p13.
+    """
+    return {
+        "content": "",
+        "pages": [{"pageNumber": n} for n in range(1, 14)],
+        "paragraphs": [
+            _azure_paragraph("PART I", 0, 4, "title"),
+            _azure_paragraph("Item 1. Business", 10, 4, "sectionHeading"),
+            _azure_paragraph("3M is a diversified ...", 30, 4, None),
+            _azure_paragraph("Item 1A. Risk Factors", 60, 10, "sectionHeading"),
+            _azure_paragraph("PART II", 90, 13, "title"),
+            _azure_paragraph("Item 5. Market for ...", 100, 13, "sectionHeading"),
+        ],
+        "sections": [
+            {"elements": ["/sections/1", "/sections/4"]},
+            {"elements": ["/paragraphs/0", "/sections/2", "/sections/3"]},
+            {"elements": ["/paragraphs/1", "/paragraphs/2"]},
+            {"elements": ["/paragraphs/3"]},
+            {"elements": ["/paragraphs/4", "/sections/5"]},
+            {"elements": ["/paragraphs/5"]},
+        ],
+    }
