@@ -302,11 +302,11 @@ Ingest files
     - **Reading the parsed JSON: `load_pages(doc_name)`.** Turns one saved JSON into clean pages ready for chunking. Runs locally in about a second, so it's free. It never edits the saved JSON: every span is a character position in `content`, so deleting any text would shift every position after it and break the page/heading mapping. Each page it returns has:
       - **Page headers, footers and page numbers blanked out.** Azure labels these, and they appear inline in `content` as \<!-- PageHeader="..." --> and \<!-- PageNumber="13" -->. Each marker is replaced by the same number of spaces rather than cut out, so the page's text stays exactly as long as its slice of `content`
       - **The page's start position in `content`** (`start_offset`). Why: chunks get their heading path by matching positions with the heading list, so every piece of text must keep its raw position. What it does: position `i` in a page's text is raw position `start_offset + i` — e.g. 3M page 13 starts at 54,574 and its `PART II` heading at 54,616 is at position 42. The leftover spaces are tidied when each chunk's final text is made
-      - **Figure text kept as ordinary page text.** Whatever Azure reads from a chart — captions, axis labels, numbers — stays in the page's text and gets chunked like prose, so a number that only appears in a chart can still be found
+      - **Figure text kept in the page text.** Whatever Azure reads from a chart — captions, axis labels, numbers — stays in the page's text, so a number that only appears in a chart can still be found. The chunker then cuts each figure out as its own chunk (see Chunk)
       - **The filing's company name, year and filing type**, split from the PDF's filename (`COMPANY_YEAR_TYPE`), not from parsing. Read from the right, because one company name itself contains an underscore: `JOHNSON_JOHNSON_2022_10K` → `JOHNSON_JOHNSON` / `2022` / `10K`. The filename is also what the model picks from when choosing which filing to search, so the chunk metadata and the model's choice use the same name. Checked against FinanceBench's own metadata: the years match for all 64 filings and the company names match apart from punctuation (`COCACOLA` vs "Coca-Cola")
       - **The FinanceBench page number.** FinanceBench's `evidence_page_num` counts from 0; Azure's `pageNumber` counts from 1, so `evidence_page_num = pageNumber - 1`. Never use the page number printed in the footer. Add a test: every page metric depends on this
 
-  - Fix the heading list before chunking 
+  - Fix the heading list (built at Build Order Stage 3.0, after Exp1 has results — Exp1 cuts chunks at the raw heading offsets and doesn't need the corrected levels)
     - Why: on 3M 2018 Azure found all 21 Items, but put them across four different heading levels. As a result 106 of 160 pages have no Item heading above them, including 75 of the 76 financial-statement pages, so their heading paths would be wrong
     - an LLM pass takes the heading rows (offset, text, level, page) plus the file's metadata and returns the same rows corrected, keyed by offset
       - repairs split-word typos — Busines s., ESTIMA TES, Equit y (16 of 295 headings)
@@ -319,41 +319,54 @@ Ingest files
 
 - Chunk (+structure parsing) + save metadata for each chunk (SEC-filing-type + company ticker + financial year + page number), for filtering chunks. _View chunks manually, writing has infinite edge cases_
 
-  Backwards compatible as long as chunks + embeddings are saved as plain files and search sits behind the existing retriever interface; ES then becomes one more loader + retriever
+  Backwards compatible as long as chunks + embeddings are saved as plain files and search sits behind the existing retriever interface; Elastic Search then becomes one more loader + retriever
 
-  - hard rule: no chunk crosses a page boundary ie one page per chunk. This is what keeps page recall/precision/MRR exact against evidence_page_num. A chunk spanning 3 pages would get three chances to contain the gold page, making the metric's bias vary with chunk size
-  - table-aware chunking: doable, as each item e.g. 'table' has its own character offset location
-    - after removing tables and noise, join the page's remaining prose into one stream before cutting.
-  - fixed-size chunking
-    - 512 tokens (whatever is the median of structural parsing chunking, this size also still backed by literature)
-      - 30 overlap that is allowed to come from previous page, via Langchain's RecursiveCharacterTextSplitter - HiRec (Choe et al., (2025)). 
-      - Can supplement with semantic chunking (split around sentences, not arbitrary words, via regex)
-      - include headers in the text to chunk
-    - ideally, attach metadata + pg no. to each chunk
-  - chunking decisions
-    - use LlamaIndex (not LangChain) for splitting, consistent with BM25/hybrid/routing choice
-    - inspection script: "show all chunks for doc X, page Y"; run on a question's gold page to spot missed-table failures
-  - experiment 2 (2 versions - one with chunking but dont use heading for similarity score, one where you do):
-    - cut at section headings instead, with a floor of ~250 tokens and a ceiling of 1,024
-    - accept a heading cut only if the piece before it and the remainder both clear ~250 tokens; otherwise skip that cut
+  - **Which experiments use this.** Exp1 builds these chunks; Exp2 searches the identical chunks and changes only the dense score. The rules below are applied in this order, one page at a time
+  - **1. Hard rule: no chunk crosses a page.** Why: this is what keeps page recall/precision/MRR exact against `evidence_page_num` — a chunk spanning 3 pages would get three chances to contain the gold page, making the metric's bias vary with chunk size. What it does: every chunk has exactly one `page_num`, and the harness asserts it
+  - **2. Tables and figures: each is its own chunk, never split.** Doable because Azure gives every table and figure its own character position (the element boundaries Jimeno Yepes (2024) chunked along: sections, titles, tables, text, figures — so a page can hold several chunks)
+    - tables: on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside Voyage's 32,000-token embed/rerank limit, so no row-splitting is needed
+    - figures: cut out like a table, so a chart's labels and numbers stay together instead of mixing into the prose. On all 64 filings: 266 figures, none crosses a page or overlaps a table, median 38 tokens
+    - a figure with no text (39 of 266, likely logos) is not a chunk: there is nothing to search
+  - **3. Prose: join the page, then cut at headings (structure-based chunking).**
+    - after removing tables, figures and noise, join the page's remaining prose into one stream before cutting (chunking the slivers between tables separately made 50% of chunks under 100 tokens in the spike)
+    - cut at section headings, with a floor of ~250 tokens and a ceiling of 1,024. Accept a heading cut only if the piece before it and the remainder both clear ~250 tokens; otherwise skip that cut. Several headings on one page are tried in order, left to right
+
+    - cut using Azure's heading positions as it returned them, before the heading fix. Every heading has a position (where it starts in the text, e.g. 3M's `Item 5` at character 54,629 — Azure gets these right) and a level (how deep it sits in the outline — Azure gets these wrong)
     - anything still over 1,024 tokens is halved at the nearest sentence boundary to its midpoint, recursively. Halving something over 1,024 always leaves both sides over 512, so the floor can't be violated
-    - on 3M 2018 this gives 244 text chunks + 119 table chunks, median 512 tokens, 89% between 250 and 1,024
-    - 30-token overlap, split around sentences, allowed to come from the previous page, but page metric still only 1 page
-      - if a heading cut is rejected for being too small, keep the page whole and merge the heading paths: shared ancestors once, distinct tails joined
-      - PART I > [Item 2. Properties | Item 3. Legal Proceedings]
+      - the chunker only needs positions: "is there a heading here, and would cutting leave both pieces over ~250 tokens?" doesn't depend on the level, so Exp1 doesn't wait for the heading fix
+      - the fix changes only levels and wording (`Item 5` level 3 → 2, `Busines s.` → `Business.`), never positions, so every cut stays where it was and the chunks don't change
+      - what the fix does change is the heading path, built from levels — which only Exp2 uses. So Exp1 (run before the fix) and Exp2 (after) search identical chunks, and the heading score is the only difference
+    - a page whose whole prose is under the floor is still its own chunk: the floor governs whether to split, not a minimum chunk size
+    - heading lines stay in the chunk's text (as markdown), so a chunk's own words include its heading
+  - **4. Overlap (up to ~100 tokens) when a chunk starts at a page break or a halving cut, not at the start of a new section.** What it does: the new chunk starts with the last sentence before the cut, complete or broken off, capped at ~100 tokens so it almost always carries the whole sentence (a 10-K sentence is often 25-40 tokens). Nothing at a heading cut — a new section doesn't need the previous section's last sentence
+    - why page breaks: 18% of page breaks across the 64 filings split a sentence, and the page rule forces a cut there; when a page ended cleanly, the carried sentence still gives the lead-in ("This increase was driven by..." needs the sentence before it)
+    - why halving cuts: they fall between sentences, so no sentence is broken, but the link between sentences is — the same problem as a clean page break. One rule covers both, which is simpler to code, test and explain
+    - the carried sentence is in the chunk's text only — page_num and raw offsets stay its own piece's, so the page metric still counts 1 page
+    - a chunk can exceed the 1,024 ceiling by up to the ~100-token cap; the floor is unaffected
+  - **5. What each chunk records.**
+    - its page_num — exactly one page, never a set, because of the hard page boundary
+    - doc_name and the file metadata (company, year, filing type), split from the filename by `load_pages`
+    - its raw start/end offsets in Azure's `content`, so heading_path can be attributed at Stage 3 without re-chunking
+    - its heading_path — present on every chunk, empty until Stage 3
+  - **6. The heading path (filled in at Build Order Stage 3, for Exp2).** Like FinSTAR, keep the document structure as metadata on each chunk; Azure's sections give the hierarchy, corrected by the heading-fix pass above
+    - attribute headings to chunks by character offset: a heading holds from its own offset until the next heading at the same or higher level starts, and a chunk gets the headings whose range covers it. This replaces the earlier page-range rule (a heading's page range, ties on a page going to the heading covering more of it), which was the fallback for a world without offsets
+    - a chunk covering text under two headings (e.g. a heading cut rejected for being too small) merges the heading paths: shared ancestors once, distinct tails joined — PART I > [Item 2. Properties | Item 3. Legal Proceedings]
       - this works with Exp 2 unchanged, because the structure vector is a softmax-weighted average over a set of headings, not a single path — the weights favour whichever tail matches the chunk's content
-    -  if a subheading exceeds the depth limit of 5, ignore it and pretend the text sits under the nearest surviving 
-    - keep track of the following:
-      - its merged heading_path, derived from character offsets
-      - its page_num — exactly one page, never a set, because of the hard page boundary
-      - doc_name and the file metadata from the JSONL
-    - FinSTAR: keep track of document structure to attach as metadata to a chunk (HiChunk).
-      - is there way to preserve boundaries for (sections, titles, tables, text, figures) like Jimeno Yepes, to chunk along? e.g. more than one chunk same page
-      - is there way to extract the structure/hierarchy of document, so we know the headings of each chunk? 
-      - (DEFERRED, add later) FinSTAR: get SLM to generate another section header based on the section's content specifically
-      - Save the chunk's heading path (list of headings, top level first) as metadata to chunk. Each heading level is embedded separately and combined at retrieval (see retrieval → Experiment 2 theory), not joined into one string
-      - attribute headings to chunks: from each heading's start page, compute its page range (ends where the next heading at the same or higher level starts); a chunk gets the headings whose range covers its page. If two headings start on the same page, attribute the one covering more of that page
-      - FinSTAR method: For chunk ci, and hierarchical path hi, use SLM, Gθ, to generate virtual node vi = Gθ(ci, hi), where enriched path Pi = hi⊕vi. To ensure robustness, Pi is constrained by (1) depth control, enforcing Depth(Pi) <= 5 and (2) discriminativeness, requiring vi to capture essential semantics absent from hi.
+    - depth limit of 5 (Fin-STAR): if a path has more than 5 levels, drop the deepest, so the text is treated as sitting under the deepest surviving heading
+    - save the path as a list of headings, top level first. Each heading level is embedded separately and combined at retrieval (see retrieval → Experiment 2 theory), not joined into one string
+  - **7. Tools.**
+    - LlamaIndex (not LangChain), consistent with the BM25/hybrid/routing choice — for its token counter and sentence detector, both bundled offline in `llama-index-core`. The cutting rules above are our own code: LlamaIndex's `SentenceSplitter` packs sentences up to the size limit and leaves the remainder as a small last piece, breaking the floor
+    - inspection script: "show all chunks for doc X, page Y"; run on a question's gold page to spot missed-table failures
+  - **Deferred**
+    - fixed-size chunking — only if time remains: an Exp1 ablation against the structure-based chunking above
+      - 512 tokens (the median of structure-based chunking, so the comparison tests structure rather than size; this size also still backed by literature)
+      - 30 overlap that is allowed to come from previous page, via Langchain's RecursiveCharacterTextSplitter - HiRec (Choe et al., (2025)) — use LlamaIndex's equivalent
+      - split around sentences, not arbitrary words
+      - include headers in the text to chunk
+      - needs its own embeddings and BM25 index, so it is a full extra run
+    - FinSTAR virtual node (Exp2 rung C): get an SLM to generate another section header based on the section's content specifically
+      - method: for chunk ci and hierarchical path hi, use SLM Gθ to generate virtual node vi = Gθ(ci, hi), where enriched path Pi = hi⊕vi. To ensure robustness, Pi is constrained by (1) depth control, enforcing Depth(Pi) <= 5 and (2) discriminativeness, requiring vi to capture essential semantics absent from hi
+    - HiChunk's learned chunk-point predictor: cut, it needs a GPU
 
 - Pre-process for keyword search (/Users/zubairasim/rag-search-engine/course_notes/module-01-preprocessing.md, /Users/zubairasim/rag-search-engine/cli/lib/keyword_search.py)
   - what normal keyword search does is, for both the query AND the document store:
@@ -430,11 +443,11 @@ Retrieve - Elastic search? can think about tech stack later
     - no reliable public reranker leaderboard exists (unlike RTEB for embedders); published comparisons put the leading rerankers within 1-3 NDCG points, and the loudest claims are vendor self-citations. So decide it on OUR pre/post-rerank page metrics, not a leaderboard
     - write-up: FinSage used bge-reranker-v2-gemma; it needs GPU inference, so a hosted reranker of comparable class was substituted
   - HARNESS (build with Exp1): compute page metrics both before and after reranking (call `page_metrics()` twice, two sets of fields on the prediction row), so the reranker's effect is visible
-- feed LLM top-n results: but include metadata and heading as well
+- feed LLM top-n results, labelled with document and page. DECIDED: no section/heading label in any experiment — Exp2's heading path feeds only the scorer, so Exp2 changes ranking alone rather than ranking plus what the answer model reads
 - retrieval decisions (from review; confirm or strike)
   - if the filter matches no filing, search unfiltered rather than returning nothing
   - HARNESS (build with Exp1): record filter accuracy — chosen filename == gold `doc_name`. Splits "wrong document" from "wrong chunk" in the failure tree. Only meaningful in shared_store (single_store already scopes to the question's filing)
-  - HARNESS (build with Exp1): make the oracle and retrieval context blocks identical, `[Document | Page | Section]` (Section once Exp2's heading path exists), so prompt shape can't explain a results gap
+  - HARNESS (build with Exp1): make the oracle and retrieval context blocks identical, `[Document | Page]`, so prompt shape can't explain a results gap
   - Exp1 retrieval must be ONE function taking arguments — query, retrieval method (BM25 / semantic / hybrid), metadata filters, top_k — not a hardcoded pipeline. Exp3's search tool is this same function, with the agent choosing those arguments at runtime; Exp1 passes fixed ones. Getting this wrong means writing retrieval twice
   - the query-enhancement prompt lives in one place, called by both: Exp1 calls it once up front, Exp3's agent does the same job through steps 1-2. Otherwise the two experiments quietly diverge
 
@@ -448,7 +461,7 @@ Generate answer
       context or full-filing context
     - single-store and shared-store give a RAG pipeline one-document or all-document scope
     - `sec_rag` receives supplied context or document scope, never FinanceBench condition names
-    - one shared formatter produces `[Document | Page | Section]` blocks for supplied pages and
+    - one shared formatter produces `[Document | Page]` blocks for supplied pages and
       retrieved chunks, then one shared prompt/generator answers
 - HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings):
   - `reasoning_effort` low → high (GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`)

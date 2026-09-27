@@ -232,7 +232,7 @@ here so the stage can be built without switching files.
 
 - **What the parser has to give us.** Text, tables and (sub)headings, each tied to the page it sits on, so every chunk can later carry its page number and heading path. Azure Document Intelligence `prebuilt-layout`, markdown output
   - Why not hand the PDF straight to an LLM: it loses the metadata (year, filing type, company) and each chunk's subheading, and it reads tables badly (Jimeno Yepes, 2024)
-  - Figures: no 10-K figure is expected to carry an answer, so nothing is built for them — but they aren't removed from Azure's output either
+  - Figures: no 10-K figure is expected to carry an answer, so nothing is built for them at parse time — but they aren't removed from Azure's output either. The chunker (1.3) gives each figure its own chunk
   - Jimeno Yepes also embeds an LLM-written summary of each chunk. That step is deferred
   - Cost: ~$10 per 1,000 pages, paid tier only (the free tier reads just the first 2 pages). The full corpus is 10,757 pages ≈ $108
 - **Output as markdown AND JSON.** Kim et al. (2025) found markdown helps, and Azure gives us both: the markdown is the `content` field inside its raw JSON
@@ -280,31 +280,36 @@ sections keep their numbers.
 
 ## 1.3 Chunk
 
-### Before chunking: fix the heading list
+### Before chunking: fix the heading list — moved to 3.0
 
-Azure detects heading **text** reliably but its **levels** are not usable as they come. On 3M 2018
-all 21 Items were found, but spread across four levels, leaving 106 of 160 pages with no
-Item-level ancestor — including 75 of the 76 financial-statement pages, where most FinanceBench
-answers live.
+The heading-fix LLM pass now runs at the start of Stage 3, after Exp1 has results. Exp1 still chunks
+along the document structure, because cutting needs only where each heading **is**, not its level:
+the chunker cuts at Azure's heading **positions** as it returned them, before the fix. Positions are
+already reliable (all 21 Items found on 3M 2018); only the levels are wrong, and cutting doesn't use
+levels.
 
-- an LLM pass takes the heading rows `(text, level, page)` plus the file's metadata and returns the
-  same rows corrected
-  - repairs split-word typos — `Busines s.`, `ESTIMA TES`, `Equit y` (16 of 295 headings)
-  - drops headings that only restate the file metadata, e.g. the SEC cover boilerplate, otherwise
-    the root ancestor of ~106 pages
-  - splits absorbed headings — Azure glued `PART I` onto the end of the previous title
-  - re-levels using the generic rule that a numbered series (`Item 7`, `Chapter 3`, `Article II`)
-    are siblings
-- deliberately NOT SEC-specific regex: matching `^Item \d+` overfits to 10-Ks and would not
-  transfer to other document types
-- cached per filing like the parse, so everything downstream is deterministic and identical across
-  every condition and experiment
-- validated structurally, with no domain knowledge: every output heading traces to an input heading
-  (whitespace repair and splits only), levels form a valid tree with no jumps greater than one,
-  numbered series share a level, pages unchanged. On failure, keep Azure's raw levels for that
-  filing and log it
-- accepted limitation: sub-headings Azure never marked (underlined/italic) cannot be recovered.
-  Bounded, because Exp2 weights headings by similarity rather than by depth
+- the fix corrects levels and text, which only `heading_path` uses — and `heading_path` is Exp2's
+- chunk boundaries are fixed once made: the fix at 3.0 relabels `heading_path` and **never moves a
+  cut**, so Exp1 and Exp2 search exactly the same chunks. Its effect on cut positions would be
+  negligible anyway — re-levelling and typo repair move no offsets, a split absorbed heading would
+  create a piece far under the floor, and dropping cover-page boilerplate removes a cut or two on
+  page 1
+  - measured on all 64 filings by simulating the cut rule: of 20,789 headings only 3,327 produce a
+    cut (the floor rejects the rest). Of 2,553 suspicious-looking headings (pages 1-2, or the same
+    text on 3+ pages of a filing, e.g. Adobe's running page header), 185 produce a cut, and those are
+    real headings the fix would keep (`BRAZIL`, `DENMARK` in an exhibit, `Year 2017 results:`).
+    Running headers sit at the top of a page, so the floor always rejects a cut there
+  - headings that restate the filing's metadata (cover-page boilerplate, "Form 10-K", "Securities
+    and Exchange Commission"): 224 across the 64 filings, 1 produces a cut — and that one is a real
+    heading (`ITEM 16. FORM 10-K SUMMARY`). They sit on cover pages, where the floor rejects the cut
+  - other false headings are not dropped by the fix as designed, so running it early would not
+    remove them; and a false cut still leaves two pieces over the floor, split at a line break — no
+    worse than a halving cut
+  - missing headings are not a reason to fix first either: the fix cannot add headings (every output
+    heading must trace to an input one), so a section Azure never marked stays unmarked whenever the
+    fix runs
+- No re-parse is needed at Stage 3: the headings come from the cached JSON, and each chunk stores
+  its raw offsets so `heading_path` can be attributed without re-chunking
 
 ### Chunking decisions
 
@@ -312,17 +317,26 @@ answers live.
   exact against `evidence_page_num` — a chunk spanning three pages gets three chances to contain the
   gold page, so the metric's bias would vary with chunk size
   - HARNESS: assert one page per chunk — a chunk with two pages is a chunking bug
-- use LlamaIndex (not LangChain) for splitting, consistent with the BM25/hybrid/routing choice
-- tables: each table is its own chunk; an oversized table is split by rows, repeating the header row
-- after removing tables (headers/footers/page numbers are already blanked — `load_pages`, 1.1), **join
-  the page's remaining prose into one stream before cutting**. Cutting a table out of the middle leaves disconnected slivers; chunking those
-  separately produced 50% of chunks under 100 tokens in the spike
-- **Exp1 (rung A):** 512-token recursive/sentence splitter within the page, 30 overlap, no heading
-  cuts — HiREC (Choe et al., 2025) used 1,024 via LangChain's `RecursiveCharacterTextSplitter`; use
-  LlamaIndex's equivalent sentence/token splitter, configured to count tokens
-  - 512 matches the median chunk size that Exp2's structural chunking produces, so A vs B compares
-    structure rather than size
-- **Exp2 (rungs B and C):** cut at section headings instead, floor ~250 tokens, ceiling 1,024
+- use LlamaIndex (not LangChain), consistent with the BM25/hybrid/routing choice — for its token
+  counter and sentence detector, both bundled offline in `llama-index-core`. The cutting rules
+  below are our own code: LlamaIndex's `SentenceSplitter` packs sentences up to the size limit and
+  leaves the remainder as a small last piece, which would break the ~250-token floor
+- tables: each table is its own chunk, never split
+  - measured on 48 filings: 5,044 tables, none crosses a page, largest 3,863 tokens (median 346) —
+    far inside the 32,000-token input limit of both the Voyage embedder and reranker, so the
+    earlier "split an oversized table by rows" rule was dropped as unneeded
+- figures: each figure is its own chunk too, cut out exactly like a table — Azure's text for it
+  (axis labels, legend, numbers) stays together rather than being mixed into the prose
+  - measured on all 64 filings: 266 figures in 52 filings, none crosses a page or overlaps a table,
+    median 38 tokens, largest 336 — mostly stock-performance graphs
+  - a figure with no text (39 of 266, likely logos) is not a chunk: there is nothing to search
+- after removing tables and figures (headers/footers/page numbers are already blanked —
+  `load_pages`, 1.1), **join the page's remaining prose into one stream before cutting**. Cutting a
+  table out of the middle leaves disconnected slivers; chunking those separately produced 50% of
+  chunks under 100 tokens in the spike
+- **Structure-based chunking — used by Exp1, and unchanged by Exp2** (Exp2 is Exp1 with only the
+  dense score changed, so it searches the same chunks): cut at section headings, floor ~250 tokens,
+  ceiling 1,024
   - accept a heading cut only if the piece before it AND the remainder both clear ~250 tokens;
     otherwise skip that cut
   - anything still over 1,024 tokens is halved at the nearest sentence boundary to its midpoint,
@@ -335,8 +349,33 @@ answers live.
     `PART I > [Item 2. Properties | Item 3. Legal Proceedings]`
     - this needs no change to Exp2: the structure vector is a softmax-weighted average over a SET of
       headings, not a single path, so the weights favour whichever tail matches the chunk
-- 30-token overlap, split around sentences, **allowed to come from the previous page** — the overlap
-  lives in the chunk's TEXT only; `page_num` stays the chunk's own page, so metrics are untouched
+    - the merge happens when `heading_path` is attributed at Stage 3, from the chunk's raw offsets
+  - re-measure on all 64 filings when the chunker is built: the 3M figures above used characters ÷
+    4 as a token proxy
+- **DEFERRED, only if time remains — fixed-size chunking ablation for Exp1:** a 512-token
+  recursive/sentence splitter within the page, no heading cuts, compared against structure-based
+  chunking
+  - 512 to match the structural chunks' median, so the comparison tests structure rather than size
+  - HiREC (Choe et al., 2025) used 1,024 via LangChain's `RecursiveCharacterTextSplitter`; use
+    LlamaIndex's equivalent sentence/token splitter, configured to count tokens
+  - needs its own embeddings and BM25 index, so it is a full extra run, not a flag
+- **overlap at every cut that is not a heading: carry the last sentence** — at a page break or a
+  halving cut, the new chunk starts with the last sentence before the cut, complete or broken off,
+  capped at ~100 tokens. Nothing is carried at a heading cut: a new section doesn't need the previous
+  section's last sentence
+  - why page breaks: the page rule forces a cut at every page break, and on all 64 filings 18% of
+    page breaks (1,789 of 10,194) split a sentence — e.g. 3M 2018 page ends "...investment losses on
+    plan", next page starts "assets, and relevant legislative...". Carrying the last sentence
+    restores it; when the page ended cleanly, it still carries the lead-in ("This increase was
+    driven by..." needs the sentence before it)
+  - why halving cuts: they fall between sentences, so no sentence breaks, but the link between them
+    does — the same problem as a clean page break
+  - one rule for both, rather than a page-break-only fragment rule: simpler to code, test and
+    explain. This replaces the earlier blind 30-token overlap
+  - the carried sentence lives in the chunk's TEXT only; `page_num` and the chunk's raw offsets stay
+    those of its own piece, so page metrics and Stage 3's heading attribution are untouched
+  - a chunk can exceed the 1,024 ceiling by up to the ~100-token cap; the floor is unaffected and
+    the embedder's limit is 32,000
 - dropped "semantic chunking via regex": the recursive/sentence splitter already prefers
   paragraph then sentence breaks
 - a page whose whole content is under the floor is still its own chunk — the floor governs whether
@@ -347,10 +386,12 @@ answers live.
   - the same filenames are what the LLM picks from when selecting a filing in Stage 2.1, so a
     chunk's metadata and the model's choice always use the same name
 - **Exp2 hook, built now:** every chunk carries a `heading_path` field
-  - populate it in this stage if the Azure spike passed, rather than re-parsing later
-  - attribute headings to chunks **by character offset**, which the cached JSON makes exact: a
-    heading holds from its own offset until the next heading at the same or higher level starts, so
-    a chunk gets the headings whose offset range covers it
+  - left empty in Stage 1.3; populated at Stage 3 once the heading fix (3.0) has corrected the
+    levels. Populating it now from Azure's raw levels would give 106 of 160 pages on 3M 2018 no
+    Item-level ancestor
+  - how it is populated at Stage 3 — attribute headings to chunks **by character offset**, which
+    the cached JSON makes exact: a heading holds from its own offset until the next heading at the
+    same or higher level starts, so a chunk gets the headings whose offset range covers it
     - the earlier page-range rule was the weaker fallback for a world without offsets; offsets are
       present, so use them
     - a chunk containing text under two headings merges them (see the merge rule above), rather than
@@ -361,7 +402,6 @@ answers live.
       five loses the Item-level anchor on ZERO of them
   - save the path as a list of headings, top level first. Each level is embedded separately at Stage
     3.2, not joined into one string
-  - leave the field empty only if the spike failed and PageIndex has not yet been wired in
 
 ## 1.4 Inspect the chunks
 
@@ -433,7 +473,7 @@ reports.
   - single-store and shared-store select one-filing or all-filing document scope, respectively,
     then pass the question and scope to the selected RAG pipeline
   - `sec_rag` must not receive FinanceBench condition names. It receives either supplied context
-    or retrieval scope, formats the common `[Document | Page | Section]` context, and owns every
+    or retrieval scope, formats the common `[Document | Page]` context, and owns every
     model-facing operation
 - remove the benchmark's current retriever callback by decomposing it rather than moving it
   wholesale
@@ -493,7 +533,8 @@ reports.
     scores
 - RRF, k=60
   - fuse longer lists (e.g. top-50 from each search), then cut to top-k after fusion
-- no auto-merge for Exp1: page-bounded ~1,024-token chunks are already ~one page, so parent ≈ chunk
+- no auto-merge for Exp1: chunks are page-bounded and at most 1,024 tokens, and a typical page's
+  prose is ~630 tokens, so a chunk is already most of a page — parent ≈ chunk
 
 ## 2.3 Rerank
 
@@ -516,9 +557,13 @@ reports.
     benchmark itself, as it doesn't score retrieval)
   - same model, settings and answer prompt across every condition and experiment, so only retrieval
     differs
-- feed the LLM top-n results, including metadata and heading as well
-- context format: make the oracle and retrieval context blocks identical, `[Document | Page |
-  Section]` (Section once Exp2's heading path exists), so prompt shape can't explain a results gap
+- feed the LLM top-n results, each labelled with its document and page
+- context format: make the oracle and retrieval context blocks identical, `[Document | Page]`, so
+  prompt shape can't explain a results gap
+  - DECIDED: no Section label, in any experiment. Exp2's heading path feeds only the scorer; if Exp2
+    also showed it to the answer model, Exp2 would change both ranking and what the model reads, and
+    a gain couldn't be attributed. It also keeps the heading fix off Exp1's critical path, and
+    matches the label the finished baseline runs already used (`conditions.py`)
 
 ## 2.5 Metrics built here
 
@@ -554,6 +599,37 @@ this is still a dissertation.**
 **Goal:** Exp1 with ONE change — the dense score. Parsing, chunks, query enhancement, BM25, RRF,
 reranker and generation stay identical, so any difference is attributable to structure.
 
+## 3.0 Fix the heading list (moved from 1.3)
+
+Moved here because Exp1 ignores headings: building this before Exp1 has results would put a new
+LLM pass in front of the dissertation's spine. It must run before 3.1, which attributes the fixed
+headings to chunks. It never changes the chunks themselves: Exp1's chunker already cut at Azure's
+raw heading offsets (1.3).
+
+Azure detects heading **text** reliably but its **levels** are not usable as they come. On 3M 2018
+all 21 Items were found, but spread across four levels, leaving 106 of 160 pages with no
+Item-level ancestor — including 75 of the 76 financial-statement pages, where most FinanceBench
+answers live.
+
+- an LLM pass takes the heading rows `(text, level, page)` plus the file's metadata and returns the
+  same rows corrected
+  - repairs split-word typos — `Busines s.`, `ESTIMA TES`, `Equit y` (16 of 295 headings)
+  - drops headings that only restate the file metadata, e.g. the SEC cover boilerplate, otherwise
+    the root ancestor of ~106 pages
+  - splits absorbed headings — Azure glued `PART I` onto the end of the previous title
+  - re-levels using the generic rule that a numbered series (`Item 7`, `Chapter 3`, `Article II`)
+    are siblings
+- deliberately NOT SEC-specific regex: matching `^Item \d+` overfits to 10-Ks and would not
+  transfer to other document types
+- cached per filing like the parse, so everything downstream is deterministic and identical across
+  every condition and experiment
+- validated structurally, with no domain knowledge: every output heading traces to an input heading
+  (whitespace repair and splits only), levels form a valid tree with no jumps greater than one,
+  numbered series share a level, pages unchanged. On failure, keep Azure's raw levels for that
+  filing and log it
+- accepted limitation: sub-headings Azure never marked (underlined/italic) cannot be recovered.
+  Bounded, because Exp2 weights headings by similarity rather than by depth
+
 ## 3.1 Heading path per chunk
 
 - save the chunk's heading path (list of headings, top level first) as metadata on the chunk
@@ -570,8 +646,8 @@ reranker and generation stay identical, so any difference is attributable to str
     `vi = Gθ(ci, hi)`, giving the enriched path `Pi = hi ⊕ vi`
   - constrained by (1) depth control, `Depth(Pi) ≤ 5`, and (2) discriminativeness, requiring `vi` to
     capture essential semantics absent from `hi`
-  - depth control already applies now (Stage 1.3); discriminativeness only applies to the virtual
-    node, so it returns with it
+  - depth control already applies now (see the `heading_path` hook in 1.3); discriminativeness
+    only applies to the virtual node, so it returns with it
 - no 2d vector store is needed, and here is why the shortcut is valid
   - the theory concatenates into `H+_ci = [H_si ; H_ci]` and duplicates the query into
     `q+ = [q ; q]`, so the score is `q+ · H+_ci = (q · H_si) + (q · H_ci)`
@@ -732,7 +808,8 @@ Cut from the bottom up. None of these invalidate the work; each becomes a stated
 5. Bootstrap confidence intervals — but then make no "A beats B" claim
 
 Already deferred and staying deferred: LOFin, the SLM virtual node, HiChunk, query decomposition,
-fetch-whole-page, Elasticsearch, OP-RAG.
+fetch-whole-page, Elasticsearch, OP-RAG, and the fixed-size chunking ablation for Exp1 (only if time
+remains, see 1.3).
 
 # Write-up runs alongside, not after
 

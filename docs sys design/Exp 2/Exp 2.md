@@ -51,18 +51,17 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - Azure Document Intelligence `prebuilt-layout`, producing markdown output plus structural JSON.
   - Cached to disk once, out of Git; chunking never re-parses.
 - **Chunk within page boundaries (UNCHANGED).**
-  - One chunk = one page, so page-based retrieval metrics stay exact.
-  - Tables are their own chunk (split by rows if oversized, header repeated); everything else goes through the 1,024-token splitter.
+  - No chunk crosses a page, so page-based retrieval metrics stay exact.
+  - Tables and figures are their own chunks, never split; prose is cut at section headings (floor ~250, ceiling 1,024 tokens), using Azure's raw heading positions — exactly Experiment 1's chunks.
   - Each chunk carries metadata for filtering: filing type, company ticker, financial year, page number.
 - **Extract document structure (NEW).**
   - For every heading in the parsed document, record its text, its nesting level, and its start page.
     - Azure supplies the heading text and character spans. Its raw levels go through the cached,
-      structurally validated heading-fix pass before attribution.
+      structurally validated heading-fix pass before attribution. The fix relabels headings only; it
+      never moves a chunk boundary, so the chunks stay identical to Experiment 1's.
 - **Attribute headings to chunks (NEW).**
-  - From each heading's start page, compute its page range.
-    - The range ends where the next heading at the same or higher nesting level starts.
-  - A chunk is given the headings whose range covers the chunk's page.
-    - If two headings start on the same page, the chunk is attributed the one that covers more of that page.
+  - By character offset: each heading holds from its own position until the next heading at the same or higher nesting level starts.
+  - A chunk is given the headings whose range covers it; a chunk covering text under two headings gets both, merged (shared ancestors once, distinct tails joined).
   - This gives each chunk a heading path — the list of headings from the top level down to the most specific one that applies to it.
 
 **Storage**
@@ -101,9 +100,9 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - The reranker only ever sees chunk text — not the structure score (see Metrics, pre/post-rerank reporting).
 
 **Generation**
-- **Context assembly (partly NEW).**
-  - Same `[Document | Page | Section]` shape as Experiment 1.
-  - The Section field is now populated from the chunk's heading path, which only exists because of this experiment's ingestion changes.
+- **Context assembly (UNCHANGED).**
+  - Same `[Document | Page]` shape as Experiment 1.
+  - The heading path is deliberately NOT shown to the answer model. It feeds only the dense score, so this experiment changes ranking alone; showing it would also change what the model reads, and a gain could not be attributed to either.
 - **Answer model (UNCHANGED).**
   - GLM-5.3-flash via OpenRouter, same settings as every other condition and experiment.
 
@@ -112,7 +111,7 @@ flowchart TD
     subgraph INGESTION
         A1["Parse PDF (Azure DI / PageIndex) — unchanged"] --> A2["Chunk: one page per chunk, table-aware — unchanged"]
         A2 --> A3{{"NEW: extract heading, nesting level, start page for every heading"}}
-        A3 --> A4{{"NEW: attribute headings to chunks via page-range rule"}}
+        A3 --> A4{{"NEW: attribute headings to chunks by character offset"}}
     end
 
     subgraph STORAGE
@@ -138,7 +137,7 @@ flowchart TD
     end
 
     subgraph GENERATION
-        D2 --> E1["Top-n chunks + metadata + heading path → prompt — unchanged"]
+        D2 --> E1["Top-n chunks + document and page → prompt — unchanged"]
         E1 --> E2["GLM-5.3-flash answer — unchanged"]
     end
 ```
@@ -173,8 +172,9 @@ flowchart TD
   - Azure found all 21 Item headings in 3M 2018, nested sections to depth 8 and populated every
     section span. PageIndex was rejected because a second paid parse was unnecessary.
   - Azure's raw levels are not used unchanged: the same Item series appeared across four levels, so
-    Stage 1.3 corrects heading text and levels once per filing before attributing paths by character
-    offset.
+    Stage 3.0 corrects heading text and levels once per filing before attributing paths by character
+    offset. Chunk boundaries were already cut at the raw heading positions in Stage 1.3 and are not
+    changed by the fix.
 - **HiChunk cut.**
   - HiChunk's chunk-point predictor needs a fine-tuned model run over vLLM, which needs a GPU. Not used here.
 - **SLM virtual node deferred.**

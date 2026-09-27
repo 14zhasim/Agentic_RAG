@@ -83,9 +83,13 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 - **Page mapping:** Azure's `pageNumber` is 1-indexed; FinanceBench's `evidence_page_num` is zero-indexed.
   - Convert by subtracting 1 — never use the printed footer page number.
 - **Chunk:** chunking is page-bounded — every chunk covers exactly one page.
-  - Any overlap applies only within a page. A chunking bug is defined as any chunk spanning two pages, and the harness asserts against this — this is what keeps page-based retrieval metrics exact.
-  - Tables are their own chunks: each table becomes a chunk on its own; an oversized table is split by rows, repeating the header row in each split.
-  - Everything that isn't a table goes to a 1,024-token recursive/sentence splitter (token count, not character count).
+  - A chunking bug is defined as any chunk belonging to two pages, and the harness asserts against this — this is what keeps page-based retrieval metrics exact.
+  - Overlap: a chunk that starts at a page break or a halving cut begins with the last sentence before the cut (capped at ~100 tokens), because 18% of page breaks split a sentence. That sentence is part of the chunk's text only; the chunk's page number is still its own page. Nothing is carried at a heading cut.
+  - Tables are their own chunks: each table becomes one chunk, never split — on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside the embedder's and reranker's 32,000-token limit.
+  - Figures are their own chunks too, cut out like tables, so a chart's labels and numbers stay together; a figure with no text (e.g. a logo) is not a chunk.
+  - The remaining prose is chunked along the document structure: cut at section headings, with a floor of ~250 tokens and a ceiling of 1,024 (token count, not character count). A heading cut is taken only if both pieces clear the floor; anything over the ceiling is halved at the sentence boundary nearest its midpoint.
+    - Cuts use Azure's raw heading positions. The later heading-fix pass (Experiment 2) corrects heading levels for the heading path but never moves a cut, so Experiments 1 and 2 search identical chunks.
+    - A fixed-size (512-token) chunking ablation is deferred, run only if time remains.
 - **Metadata:**
   - Document-level metadata (company, doc_type, doc_period) is read from
     `financebench_document_information_10k.jsonl`, not inferred from parsing — FinanceBench has no
@@ -93,8 +97,9 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
   - Each chunk carries metadata for filtering: SEC filing type, company ticker, financial year, and page number.
 - **Structure source:** the Stage 0 spike selected Azure and rejected PageIndex.
   - Heading text detection is reliable and section spans are populated, but Azure's raw levels are
-    not usable directly. The cached raw headings are corrected in the separate Stage 1.3
-    heading-fix pass; this does not change Experiment 1's parse.
+    not usable directly. Experiment 1 needs only the headings' positions, to cut chunks; the levels
+    are corrected in the separate heading-fix pass at Stage 3.0, for Experiment 2's heading path.
+    This changes neither Experiment 1's parse nor its chunks.
 
 **Storage** — two indexes are built over the chunks, each filterable by metadata before search runs.
 
@@ -130,7 +135,8 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 
 **Generation** — the reranked context is formatted consistently and handed to the answer model.
 
-- **Context format:** the reranked chunks, each labelled with document, page, and (once Experiment 2 exists) section, are assembled into a `[Document | Page | Section]` context block.
+- **Context format:** the reranked chunks, each labelled with document and page, are assembled into a `[Document | Page]` context block.
+  - No section label, in this or any experiment: Experiment 2's heading path feeds only its retrieval score, so that Experiment 2 changes ranking alone and not also what the answer model reads.
   - The oracle condition and the retrieval-condition context blocks are built in the identical shape, so prompt formatting itself can't explain a results gap between conditions.
 - **Answer model:** GLM-5.3-flash, via OpenRouter, produces the free-text answer.
   - The same model, settings, and prompt are used across every condition and every experiment, so retrieval is isolated as the only variable.
@@ -141,8 +147,8 @@ flowchart TB
         A1[Parse PDF<br/>Azure Document Intelligence<br/>prebuilt-layout]
         A2[Cache raw JSON<br/>content + pages/paragraphs/tables/sections]
         A3[Strip headers/footers/page numbers]
-        A4[Page-bounded chunking<br/>1 chunk = 1 page]
-        A5[Tables -&gt; own chunk<br/>split by rows if oversized]
+        A4[Page-bounded chunking<br/>no chunk crosses a page<br/>prose cut at headings, 250-1,024 tokens]
+        A5[Tables and figures -&gt; own chunk<br/>never split]
         A6[Attach chunk metadata<br/>ticker, filing type, year, page]
         A1 --> A2 --> A3 --> A4
         A4 --> A5
@@ -171,7 +177,7 @@ flowchart TB
     end
 
     subgraph GEN["GENERATION"]
-        D1[Assemble context<br/>Document | Page | Section]
+        D1[Assemble context<br/>Document | Page]
         D2[GLM-5.3-flash via OpenRouter]
         D3[Free-text answer]
         D1 --> D2 --> D3
@@ -190,8 +196,9 @@ flowchart TB
 |---|---|
 | Azure Document Intelligence for parsing (paid tier, `prebuilt-layout`, markdown output) | "VLM-agentic" parsers read a page the way a person would, with a correction/verification pass — good when endless edge cases exist in human-authored layout (tables spanning pages, inconsistent styling). Chosen over `sec-parser` (unmaintained), Unstructured.io (PDF-oriented but dependency friction), and a hand-built BeautifulSoup classifier (heading detection unresolved, since bold is often applied via inline CSS rather than `<b>`/`<strong>`). Startup credits made cost a non-issue; setup is light (endpoint + key, one SDK). Still open: whether its section nesting is reliable enough for Experiment 2's heading path — PageIndex is the live fallback. |
 | Parse once, cache forever | Azure's raw JSON is saved per PDF as `parsed/<doc_name>.json`, out of Git; a filing counts as parsed when that file exists and passes the page-count check. Re-chunking should never require re-parsing. |
-| Page-bounded chunking (one chunk = one page, overlap only within a page) | Keeps page-based retrieval metrics (recall, precision, MRR) exact — a chunk can't straddle a page boundary and blur which page it "belongs" to. Enforced with a harness assertion. |
-| Tables as their own chunks | Table structure and the footnote/table relationship is exactly where naive text chunking breaks; giving each table its own chunk (splitting oversized ones by row, repeating the header) preserves it. |
+| Page-bounded chunking (every chunk belongs to exactly one page; a carried-over sentence is text only) | Keeps page-based retrieval metrics (recall, precision, MRR) exact — a chunk can't straddle a page boundary and blur which page it "belongs" to. Enforced with a harness assertion. |
+| Tables and figures as their own chunks | Table structure and the footnote/table relationship is exactly where naive text chunking breaks; giving each table its own chunk preserves it. No table is large enough to need splitting (largest 3,863 tokens against a 32,000-token limit). Figures get the same treatment so a chart's labels and numbers stay together. |
+| Structure-based chunking for prose (cut at headings, ~250-1,024 tokens) | Chunks follow the document's own sections, so each chunk mostly sits under one heading — which also gives Experiment 2 clean heading paths on the same chunks. Cuts use Azure's raw heading positions, so Experiment 1 doesn't wait for the heading-fix pass. A fixed-size baseline is deferred as an ablation. |
 | LlamaIndex for orchestration | Provides chunking, BM25 retrieval (wrapping `bm25s`) with metadata filters, semantic retrieval with metadata filters, RRF fusion, and a Voyage reranker postprocessor as ready components, kept consistent with the same framework across chunking, hybrid retrieval, and later the Experiment 3 agent loop, rather than mixing frameworks (e.g. LangChain for splitting). |
 | `bm25s` via LlamaIndex's `BM25Retriever` | Faster than a hand-built keyword index using the same underlying data structures; must be checked (pinned to a current version) that its `filters` argument actually filters on this project's data, since that support was only recently added — fallback is building the retriever from an already-filtered node list. |
 | voyage-4-lite for embeddings | Cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard; the 200M free-token allowance covers the full corpus (~10M tokens) even across several re-chunks. |
@@ -234,6 +241,7 @@ flowchart TB
   - Semantic only — drop BM25 and fusion, keep query enhancement and reranking.
   - No reranker — take the RRF-fused top-k straight to generation, skipping the Voyage reranking step.
   - No query enhancement — search with the raw user question, no metadata filter, no expanded keyword/semantic query pair.
+  - DEFERRED, only if time remains: fixed-size chunking — 512-token chunks within each page instead of heading cuts, to measure what structure-based chunking contributes.
 
 ## Results
 

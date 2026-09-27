@@ -47,7 +47,7 @@ Experiment 3 reuses Experiment 1's whole pipeline up to generation — parsing, 
 - Strip page headers, footers, and printed page numbers before chunking.
   - convert Azure's 1-indexed `pageNumber` to FinanceBench's zero-indexed `evidence_page_num` by subtracting 1 — never use the printed footer page number.
 - Document-level metadata (company, doc_type, doc_period) comes from `financebench_document_information.jsonl`, not from parsing.
-- Chunk within page boundaries: every chunk covers exactly one page, overlap only within a page.
+- Chunk within page boundaries: every chunk belongs to exactly one page (identical to Experiment 1's chunks).
   - reason: keeps page-based retrieval metrics (recall, precision, MRR) exact.
 - Tables are their own chunks; an oversized table is split by rows, repeating the header row. Everything else goes to a 1,024-token recursive/sentence splitter (token count, not character count).
 - Each chunk carries metadata for filtering: filing type, company ticker, financial year, page number.
@@ -76,7 +76,7 @@ Experiment 3 reuses Experiment 1's whole pipeline up to generation — parsing, 
 
 **Generation — same model, prompt, and context shape; what's new is what feeds it**
 - UNCHANGED: `z-ai/glm-5.3-flash` via OpenRouter, same settings and same answer prompt as every other condition and experiment.
-  - context blocks use the identical `[Document | Page | Section]` shape used in Exp1, so prompt formatting can't explain a results gap.
+  - context blocks use the identical `[Document | Page]` shape used in Exp1, so prompt formatting can't explain a results gap.
 - NEW: the chunks handed to the model are whatever the loop ended on — the result of however many searches and re-searches happened — not the output of one fixed retrieval call.
 - NEW: the prompt also carries budget/remaining-turns information.
   - reason: Exp3 is the only experiment that can be cut off mid-loop (see Design decisions, budget-in-prompt).
