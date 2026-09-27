@@ -443,7 +443,8 @@ levels.
   - lowercase → remove punctuation → split into tokens → remove empty tokens → remove stop words →
     stem tokens → **split letters from digits** (`FY2018` → `fy` + `2018`) → compare tokens
   - the letter/digit split matters: 98 of 112 questions use FY-style years, filings write "2018" or
-    "fiscal 2018", so `fy2018` as one token matches nothing. Expand 2-digit years (`FY22` → `2022`)
+    "fiscal 2018", so `fy2018` as one token matches nothing. Two-digit years (`FY22`) are not
+    expanded: none of the 112 questions uses one, and expanding would assume the century
   - checked against all 112 questions: punctuation removal is safe (no question uses `$`; they write
     "USD"), lowercasing is safe, stemming is safe because both sides are stemmed
 - reference implementations to reuse: `/Users/zubairasim/rag-search-engine/course_notes/module-01-preprocessing.md`
