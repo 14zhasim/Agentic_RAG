@@ -325,6 +325,15 @@ levels.
   - measured on 48 filings: 5,044 tables, none crosses a page, largest 3,863 tokens (median 346) —
     far inside the 32,000-token input limit of both the Voyage embedder and reranker, so the
     earlier "split an oversized table by rows" rule was dropped as unneeded
+  - **a table chunk carries the text just above it**, up to ~100 tokens: the visible text between
+    the previous table or figure on the page (or the page's top) and the table, keeping its end if
+    over the cap. Text only, like the overlap rule below — offsets and page stay the table's own
+    - why: cutting a table out separates it from its title, so 3M's balance-sheet table never said
+      "balance sheet" (see the corpus-run finding below)
+    - rejected: a whole-page chunk per table page (1,496 of 4,305 table pages hold 2+ tables; median
+      1,101 tokens, largest 3,870) and Azure's table captions (89 of 6,441 tables have one)
+    - caveat for Exp2: table chunks now contain nearby headings as words, which can narrow Exp2's
+      gain on table questions; state it in the write-up
 - figures: each figure is its own chunk too, cut out exactly like a table — Azure's text for it
   (axis labels, legend, numbers) stays together rather than being mixed into the prose
   - measured on all 64 filings: 266 figures in 52 filings, none crosses a page or overlaps a table,
@@ -345,7 +354,7 @@ levels.
     recursively. Halving something over 1,024 always leaves both sides over 512, so the floor cannot
     be violated
   - measured on all 64 filings with the built chunker (cl100k tokens): 21,039 chunks — 14,369
-    prose, 6,441 table, 229 figure — 9.8M tokens in all. Median prose chunk 429 tokens; 85% of prose
+    prose, 6,441 table, 229 figure — 10.1M tokens in all. Median prose chunk 429 tokens; 85% of prose
     chunks between 250 and 1,024; 71 over the ceiling, only through carried text. On 3M 2018: 341
     chunks, median prose 448 tokens, 86% in range
   - if a heading cut is rejected for being too small, keep the page whole and **merge the heading
@@ -354,10 +363,11 @@ levels.
     - this needs no change to Exp2: the structure vector is a softmax-weighted average over a SET of
       headings, not a single path, so the weights favour whichever tail matches the chunk
     - the merge happens when `heading_path` is attributed at Stage 3, from the chunk's raw offsets
-  - OPEN, found in the corpus run: 2,085 prose chunks are under the floor, 811 of them under 50
+  - DECIDED, found in the corpus run: 2,085 prose chunks are under the floor, 811 of them under 50
     tokens, and 742 of those sit on a page with a table. Many are a financial statement's title
     ("3M Company and Subsidiaries Consolidated Balance Sheet") cut off from its table, so the table
-    chunk never says "balance sheet". See Implementation Guide 1.3 → Corpus results
+    chunk never said "balance sheet". Fixed by carrying the text above each table into its chunk
+    (tables rule above); the small title chunks stay. See Implementation Guide 1.3 → Corpus results
 - **DEFERRED, only if time remains — fixed-size chunking ablation for Exp1:** a 512-token
   recursive/sentence splitter within the page, no heading cuts, compared against structure-based
   chunking
@@ -443,7 +453,7 @@ levels.
   - cheapest embedder above 80% on the RTEB(fin) leaderboard
   - first 200M tokens free, then $0.02/1M
 - embedding decisions
-  - cost: measured at 9.8M tokens over 21,039 chunks (Stage 1.3), inside the free allowance even
+  - cost: measured at 10.1M tokens over 21,039 chunks (Stage 1.3), inside the free allowance even
     with several re-chunks
   - label inputs: chunks `input_type="document"`, questions `input_type="query"`
   - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds

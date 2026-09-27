@@ -325,6 +325,11 @@ Ingest files
   - **1. Hard rule: no chunk crosses a page.** Why: this is what keeps page recall/precision/MRR exact against `evidence_page_num` — a chunk spanning 3 pages would get three chances to contain the gold page, making the metric's bias vary with chunk size. What it does: every chunk has exactly one `page_num`, and the harness asserts it
   - **2. Tables and figures: each is its own chunk, never split.** Doable because Azure gives every table and figure its own character position (the element boundaries Jimeno Yepes (2024) chunked along: sections, titles, tables, text, figures — so a page can hold several chunks)
     - tables: on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside Voyage's 32,000-token embed/rerank limit, so no row-splitting is needed
+    - **a table chunk carries the text just above it** (up to ~100 tokens). Why: cutting a table out separates it from its title — found in the corpus run, where 742 of the 811 prose chunks under 50 tokens sat on a table page, many of them a statement's title alone (3M's "Consolidated Balance Sheet" in one chunk, the balance sheet's rows in the next, which never says "balance sheet"). What it does: the visible text between the previous table or figure on the page (or the page's top) and this table is carried into the table chunk's text, keeping its end if over the cap, since the title sits right above the table. Same mechanism as rule 4: text only, offsets and page stay the table's own, and the title's prose chunk is left as it is (small, harmless noise)
+      - rejected: one chunk per table page holding the whole page. 1,496 of the 4,305 table pages hold two or more tables (e.g. income statement + comprehensive income), which would share one blurred embedding; the median table page is 1,101 tokens and the largest 3,870, so top-10 context fills with unrelated rows
+      - rejected: Azure's own table captions — only 89 of 6,441 tables have one
+      - a table at the very top of a page (often a table continued from the previous page) has nothing above it and carries nothing
+      - caveat for Exp2: a table chunk now contains its nearby heading as words, which is some of the structure signal Exp2 adds to the dense score. Defensible — it is text printed on the same page, not a heading path from elsewhere in the filing — but it can narrow Exp2's gain on table questions, and the write-up must say so
     - figures: cut out like a table, so a chart's labels and numbers stay together instead of mixing into the prose. On all 64 filings: 266 figures, none crosses a page or overlaps a table, median 38 tokens
     - a figure with no text (37 of 266, likely logos) is not a chunk: there is nothing to search. A captioned figure is always kept, since its caption sits inside its text
   - **3. Prose: join the page, then cut at headings (structure-based chunking).**
@@ -343,6 +348,7 @@ Ingest files
     - why halving cuts: they fall between sentences, so no sentence is broken, but the link between sentences is — the same problem as a clean page break. One rule covers both, which is simpler to code, test and explain
     - the carried sentence is in the chunk's text only — page_num and raw offsets stay its own piece's, so the page metric still counts 1 page
     - a chunk can exceed the 1,024 ceiling by up to the ~100-token cap; the floor is unaffected
+    - tables reuse the same carried-text field for the text just above them (rule 2), under the same ~100-token cap
   - **5. What each chunk records.**
     - its page_num — exactly one page, never a set, because of the hard page boundary
     - doc_name and the file metadata (company, year, filing type), split from the filename by `load_pages`
@@ -394,7 +400,7 @@ Ingest files
   - embed each heading level separately (each unique heading embedded once, reused across chunks)
   - store heading embeddings separately from chunk embeddings, linked by chunk ID via the chunk's heading path, not in metadata.
   - embedding decisions
-    - cost: measured at 9.8M tokens over 21,039 chunks (Build Order 1.3), inside the 200M free allowance even with several re-chunks
+    - cost: measured at 10.1M tokens over 21,039 chunks (Build Order 1.3), inside the 200M free allowance even with several re-chunks
     - label inputs: embed chunks with Voyage `input_type="document"`, questions with `input_type="query"`
     - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds changed chunks
     - HARNESS (build with Exp1): prediction row records embedding + rerank cost too, not just the answer model's

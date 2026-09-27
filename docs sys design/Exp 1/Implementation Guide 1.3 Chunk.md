@@ -1160,7 +1160,7 @@ seconds, free:
 | Measure | All 64 filings | 3M 2018 |
 |---|---|---|
 | Chunks | 21,039 (14,369 prose, 6,441 table, 229 figure) | 341 (222 prose) |
-| Tokens in all | 9.8M (prose 6.4M, tables 3.4M) | — |
+| Tokens in all | 10.1M (prose 6.4M, tables 3.7M) | — |
 | Median prose chunk | 429 tokens | 448 tokens |
 | Prose between floor and ceiling | 85.0% | 86% |
 | Prose over the ceiling (carried text only) | 71 | 2 |
@@ -1169,7 +1169,7 @@ seconds, free:
 
 - The Build Order's embedding estimate holds: it assumed ~10k chunks of
   ~1k tokens (~10M tokens). There are twice as many chunks, but smaller,
-  and the total is 9.8M.
+  and the total is 10.1M (9.8M before tables carried their titles).
 - Gold-page check (Build Order's "done when"), on both FinanceBench
   questions about 3M 2018:
   - `financebench_id_03029`, FY2018 capital expenditure, $1,577m, page
@@ -1177,12 +1177,47 @@ seconds, free:
     ("Purchases of property, plant and equipment (PP&E) (1,577)").
   - `financebench_id_04672`, page index 57: `p57:c1` is the whole balance
     sheet table.
-- **Open: statement titles are cut off from their tables.** Of the 2,085
+- **Found: statement titles were cut off from their tables.** Of the 2,085
   prose chunks under the floor, 811 are under 50 tokens, and 742 of those
   sit on a page with a table. Many are a financial statement's title, e.g.
   `p57:c0` is only "3M Company and Subsidiaries Consolidated Balance Sheet
   At December 31" plus a one-line note, while the table chunk `p57:c1`
-  never says "balance sheet". Keyword and dense search for "balance sheet"
-  would then find the title, not the numbers. The rules as written produce
-  this (tables are cut out whole, and the page's prose is one piece), so
-  it's a design decision for Stage 1.3, not a bug. Not yet decided.
+  never said "balance sheet". Keyword and dense search for "balance sheet"
+  would then find the title, not the numbers. The rules as first written
+  produced this (tables cut out whole, the page's prose one piece), so it
+  was a design gap, not a bug. Decided below.
+
+### Change after the corpus run: tables carry the text above them
+
+Decided 27 September 2026 (`Systems Design Draft.md` → Chunk → rule 2;
+`Build Order.md` 1.3 → tables).
+
+- **Rule.** A table chunk's `carried_text` is the visible text between the
+  previous table or figure on its page (or the page's top) and the table,
+  tidied, with words dropped from the front until it fits
+  `overlap_cap_tokens` (100). Figures carry nothing. The title's prose
+  chunk is left as it is.
+- **Rejected.** A whole-page chunk per table page: 1,496 of 4,305 table
+  pages hold two or more tables, median 1,101 tokens, largest 3,870.
+  Azure's table captions: 89 of 6,441 tables have one.
+- **Code.** `_chunk_page` step 2 tracks `above_from` (the end of the last
+  element seen, starting at the page's top) and, for a table, carries
+  `_keep_end(tidy(above), cap)`. `_keep_end` is the front-trimming loop
+  that `_last_sentence` already used, pulled out so both share it.
+- **Tests.** `tests/test_chunk.py`: `test_table_carries_its_title_from_just_above`,
+  `test_text_above_a_table_over_the_cap_keeps_its_end`,
+  `test_second_table_carries_only_the_text_after_the_first`,
+  `test_table_at_the_top_of_a_page_carries_nothing`,
+  `test_figure_carries_nothing`; the two tests that pinned a table chunk's
+  text to the bare table now check that the table ends it.
+- **Result.** Chunk counts and prose measures are unchanged; 5,643 of
+  6,441 tables (88%) now carry text, and 633 table chunks contain "balance
+  sheet". `p57:c1` now begins `[carried: ## 3M Company and Subsidiaries
+  Consolidated Balance Sheet At December 31]`. Total tokens 9.8M → 10.1M.
+- **Known limits.** A table at the top of a page (often continued from the
+  previous page) carries nothing. When the text above is an ordinary
+  paragraph, the table carries its last ~100 tokens, which is usually the
+  lead-in ("...were as follows:") and sometimes less relevant.
+- **Caveat for Exp2.** Table chunks now contain nearby headings as words,
+  part of the signal Exp2 adds to the dense score; it can narrow Exp2's
+  gain on table questions and must be stated in the write-up.

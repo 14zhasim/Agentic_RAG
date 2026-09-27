@@ -85,7 +85,7 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 - **Chunk:** chunking is page-bounded — every chunk covers exactly one page.
   - A chunking bug is defined as any chunk belonging to two pages, and the harness asserts against this — this is what keeps page-based retrieval metrics exact.
   - Overlap: a chunk that starts at a page break or a halving cut begins with the last sentence before the cut (capped at ~100 tokens), because 18% of page breaks split a sentence. That sentence is part of the chunk's text only; the chunk's page number is still its own page. Nothing is carried at a heading cut.
-  - Tables are their own chunks: each table becomes one chunk, never split — on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside the embedder's and reranker's 32,000-token limit.
+  - Tables are their own chunks: each table becomes one chunk, never split — on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside the embedder's and reranker's 32,000-token limit. Each table chunk also carries the text just above it on its page (up to ~100 tokens, usually the statement's title), because cutting a table out otherwise separates it from its title: 3M's balance-sheet table never said "balance sheet".
   - Figures are their own chunks too, cut out like tables, so a chart's labels and numbers stay together; a figure with no text (e.g. a logo) is not a chunk.
   - The remaining prose is chunked along the document structure: cut at section headings, with a floor of ~250 tokens and a ceiling of 1,024 (token count, not character count). A heading cut is taken only if both pieces clear the floor; anything over the ceiling is halved at the sentence boundary nearest its midpoint.
     - Cuts use Azure's raw heading positions. The later heading-fix pass (Experiment 2) corrects heading levels for the heading path but never moves a cut, so Experiments 1 and 2 search identical chunks.
@@ -104,7 +104,7 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 **Storage** — two indexes are built over the chunks, each filterable by metadata before search runs.
 
 - **Vector store:** chunk embeddings via `voyage-4-lite`.
-  - Chosen as the cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard segment, with a 200M-token free allowance that comfortably covers the corpus (measured at 9.8M tokens over 21,039 chunks, even across several re-chunks).
+  - Chosen as the cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard segment, with a 200M-token free allowance that comfortably covers the corpus (measured at 10.1M tokens over 21,039 chunks, even across several re-chunks).
   - Chunks are embedded with `input_type="document"`, questions with `input_type="query"`.
   - Each embedding is cached, keyed by model name plus a hash of the chunk text, so re-chunking only re-embeds what changed.
 - **Keyword index:** `bm25s`, via LlamaIndex's `BM25Retriever`.
