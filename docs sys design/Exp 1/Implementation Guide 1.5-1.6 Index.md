@@ -998,7 +998,20 @@ should be in the top 10.
   - extra test: an unchunked filing stops the run before anything is sent.
 - **Report run** (free, no key): 21,039 chunks, 0 stored, 21,039 to embed,
   ~10.1M estimated tokens (cl100k), 165 batches.
-- **Paid run:** not yet — waiting for approval.
+- **Paid run** (27 Sep 2026, run by the user after adding a Voyage payment
+  method: without one the account is limited to 3 requests and 10,000
+  tokens a minute, below one 128-chunk batch): 21,039 chunks stored; the
+  report run afterwards shows `Already stored: 21039`, `To embed: 0`.
+  Tokens billed were not recorded (inside the 200M free allowance).
+- **Check:** query embeddings (`input_type="query"`), filtered to
+  `doc_name = 3M_2018_10K`: every result is from that filing, and the
+  cash-flow table `p59:c1` ranks 8th for "3M capital expenditure 2018" and
+  6th for FinanceBench's question as written. Dense search bridges
+  "capital expenditure" to "purchases of property, plant and equipment",
+  which BM25 could not (finding 6). The scores LlamaIndex reports are
+  `exp(-(1 - cosine))` (`chroma/base.py` line 472), not the cosine itself:
+  the ranking is the same, but Exp 2 must compute its own cosines rather
+  than add these.
 
 ### Verification before a slice is called done
 
