@@ -6,8 +6,8 @@ Authoritative requirements: `../Benchmark.md`
 
 Historical inputs only:
 
-- `docs/superpowers/specs/2026-09-07-financebench-benchmark-harness-design.md`
-- `docs/superpowers/plans/2026-09-07-financebench-harness-mvp.md`
+- `../old/2026-09-07-financebench-benchmark-harness-design.md`
+- `../old/2026-09-07-financebench-harness-mvp.md`
 
 Those historical documents explain how the first, more engineered implementation
 was reached. They are not the current source of truth. This guide explains the
