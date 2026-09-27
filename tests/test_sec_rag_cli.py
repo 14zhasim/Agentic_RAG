@@ -140,3 +140,70 @@ def test_chunk_command_reports_an_unparsed_filing(tmp_path: Path, capsys) -> Non
 
     assert exit_code == 1
     assert "Error: example_2024_10K: not parsed yet" in capsys.readouterr().out
+
+
+def test_inspect_chunks_prints_one_page(tmp_path: Path, capsys) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+    _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "inspect-chunks",
+            "--config",
+            str(config_path),
+            "--document",
+            "example_2024_10K",
+            "--page",
+            "0",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "=== Page index 0 (PDF page 1) ===" in output
+    assert "Revenue grew strongly this year." in output
+
+
+def test_inspect_chunks_without_page_writes_the_filing_report(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+    project = _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "inspect-chunks",
+            "--config",
+            str(config_path),
+            "--document",
+            "example_2024_10K",
+        ]
+    )
+
+    report = project / "data/financebench/chunks/example_2024_10K.chunks.txt"
+    assert exit_code == 0
+    assert f"Wrote: {report}" in capsys.readouterr().out
+    assert report.is_file()
+
+
+def test_inspect_chunks_reports_a_filing_not_chunked_yet(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+
+    exit_code = main(
+        [
+            "inspect-chunks",
+            "--config",
+            str(config_path),
+            "--document",
+            "example_2024_10K",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "Error: example_2024_10K: not chunked yet" in capsys.readouterr().out

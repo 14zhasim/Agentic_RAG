@@ -107,3 +107,53 @@ def read_chunks(config: dict[str, Any], doc_name: str) -> list[dict[str, Any]]:
 def chunks_path(config: dict[str, Any], doc_name: str) -> Path:
     """Return where a filing's chunk file lives: chunks/<doc_name>.jsonl."""
     return Path(config["corpus"]["chunks_dir"]) / f"{doc_name}.jsonl"
+
+
+def write_chunk_report(config: dict[str, Any], doc_name: str) -> Path:
+    """Write every chunk of one filing, page by page, to chunks/<doc_name>.chunks.txt.
+
+    Stage 1.4's "view chunks manually": one readable file to hold beside the
+    PDF. Nothing downstream reads it.
+    """
+    chunks = read_chunks(config, doc_name)
+    page_indexes = sorted({chunk["page_index"] for chunk in chunks})
+    parts = [
+        f"# Chunks: {doc_name} ({len(chunks)} chunks on {len(page_indexes)} pages)"
+    ]
+    for page_index in page_indexes:
+        parts.append(format_page_chunks(chunks, page_index))
+    path = chunks_path(config, doc_name).with_suffix(".chunks.txt")
+    path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+    return path
+
+
+def format_page_chunks(chunks: list[dict[str, Any]], page_index: int) -> str:
+    """Show every chunk on one page as readable text, for Stage 1.4's eyeballing.
+
+    The header gives both page numbers: the page index (counted from 0, the
+    same as FinanceBench's evidence_page_num) and the PDF page (counted from
+    1, what a PDF viewer shows). Each chunk shows its ID, kind, size and raw
+    offsets, then any carried sentence marked `[carried: ...]`, then its own
+    text, so you can see exactly where each cut fell.
+    """
+    on_page = [chunk for chunk in chunks if chunk["page_index"] == page_index]
+    header = f"=== Page index {page_index} (PDF page {page_index + 1}) ==="
+    if not on_page:
+        return f"{header}\nNo chunks on page {page_index}"
+
+    lines = [header]
+    for chunk in on_page:
+        lines.append("")
+        lines.append(
+            f"--- {chunk['chunk_id']} | {chunk['kind']} | "
+            f"{chunk['token_count']} tokens | "
+            f"offsets {chunk['start_offset']}-{chunk['end_offset']} ---"
+        )
+        carried = chunk["carried_text"]
+        own_text = chunk["text"]
+        if carried:
+            lines.append(f"[carried: {carried}]")
+            # `text` is the carried sentence, one space, then the chunk's own text.
+            own_text = own_text[len(carried) + 1 :]
+        lines.append(own_text)
+    return "\n".join(lines)

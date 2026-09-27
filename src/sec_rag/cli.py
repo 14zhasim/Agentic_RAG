@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .chunking.chunk_files import build_chunks
+from .chunking.chunk_files import (
+    build_chunks,
+    format_page_chunks,
+    read_chunks,
+    write_chunk_report,
+)
 from .config import load_config
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
@@ -25,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     chunk_parser = commands.add_parser("chunk")
     chunk_parser.add_argument("--config", type=Path, required=True)
     chunk_parser.add_argument("--documents", nargs="+")
+    inspect_chunks_parser = commands.add_parser("inspect-chunks")
+    inspect_chunks_parser.add_argument("--config", type=Path, required=True)
+    inspect_chunks_parser.add_argument("--document", required=True)
+    inspect_chunks_parser.add_argument("--page", type=int)
     args = parser.parse_args(argv)
 
     try:
@@ -35,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_inspect_parse(args)
             case "chunk":
                 return _run_chunk(args)
+            case "inspect-chunks":
+                return _run_inspect_chunks(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -83,4 +94,20 @@ def _run_chunk(args: argparse.Namespace) -> int:
     print(f"Prose over ceiling (carried text): {summary['prose_over_ceiling']}")
     print(f"Prose under floor: {summary['prose_under_floor']}")
     print(f"Empty figures skipped: {summary['empty_figures_skipped']}")
+    return 0
+
+
+def _run_inspect_chunks(args: argparse.Namespace) -> int:
+    """Print one page's chunks, or write the whole filing's chunks to a report file.
+
+    `--page` is the page index counted from 0, so a question's
+    evidence_page_num can be pasted straight in.
+    """
+    config = load_config(args.config)
+    doc_name = args.document.removesuffix(".pdf")
+    if args.page is None:
+        path = write_chunk_report(config, doc_name)
+        print(f"Wrote: {path}")
+    else:
+        print(format_page_chunks(read_chunks(config, doc_name), args.page))
     return 0

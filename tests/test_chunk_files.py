@@ -8,7 +8,13 @@ from typing import Any
 
 import pytest
 
-from sec_rag.chunking.chunk_files import build_chunks, chunks_path, read_chunks
+from sec_rag.chunking.chunk_files import (
+    build_chunks,
+    chunks_path,
+    format_page_chunks,
+    read_chunks,
+    write_chunk_report,
+)
 
 PROSE = "Revenue grew in every segment this year because demand for industrial products stayed strong."
 TABLE = "<table><tr><td>Revenue</td><td>32,765</td></tr></table>"
@@ -153,3 +159,62 @@ def test_summary_counts(tmp_path: Path) -> None:
     assert summary["prose_over_ceiling"] == 0
     assert summary["prose_under_floor"] == 0
     assert summary["empty_figures_skipped"] == 1
+
+
+# --- Slice 4: inspection ------------------------------------------------------
+
+
+def _chunk_record(page_index: int, number: int, text: str, carried: str = "") -> dict:
+    return {
+        "chunk_id": f"3M_2018_10K:p{page_index}:c{number}",
+        "page_index": page_index,
+        "kind": "prose",
+        "token_count": 7,
+        "start_offset": 100,
+        "end_offset": 150,
+        "carried_text": carried,
+        "text": f"{carried} {text}" if carried else text,
+    }
+
+
+def test_format_page_chunks_shows_each_chunk_on_the_page() -> None:
+    chunks = [
+        _chunk_record(11, 0, "Page eleven text."),
+        _chunk_record(12, 0, "Page twelve first."),
+        _chunk_record(12, 1, "Page twelve second."),
+    ]
+
+    shown = format_page_chunks(chunks, 12)
+
+    assert shown.startswith("=== Page index 12 (PDF page 13) ===")
+    assert "--- 3M_2018_10K:p12:c0 | prose | 7 tokens | offsets 100-150 ---" in shown
+    assert "Page twelve first." in shown and "Page twelve second." in shown
+    assert "Page eleven text." not in shown
+
+
+def test_format_page_chunks_marks_carried_text() -> None:
+    chunks = [_chunk_record(12, 0, "assets rose.", carried="Sales of plan")]
+
+    shown = format_page_chunks(chunks, 12)
+
+    assert "[carried: Sales of plan]\nassets rose." in shown
+
+
+def test_format_page_chunks_says_when_a_page_is_empty() -> None:
+    shown = format_page_chunks([_chunk_record(11, 0, "Text.")], 12)
+
+    assert shown.endswith("No chunks on page 12")
+
+
+def test_write_chunk_report_covers_every_page(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _add_filing(config, "3M_2018_10K")
+    build_chunks(config)
+
+    path = write_chunk_report(config, "3M_2018_10K")
+
+    report = path.read_text(encoding="utf-8")
+    assert path.name == "3M_2018_10K.chunks.txt"
+    assert report.startswith("# Chunks: 3M_2018_10K (2 chunks on 1 pages)")
+    assert "3M_2018_10K:p0:c0 | prose" in report
+    assert "3M_2018_10K:p0:c1 | table" in report

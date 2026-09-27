@@ -1136,3 +1136,17 @@ documentation commit, not with the code.
     from halving cuts. Records don't keep the `starts_at` label, and adding
     a field just for this count wasn't worth it; the corpus results below
     break the small chunks down instead.
+
+### Slice 4: inspection (Stage 1.4)
+
+- `chunk_files.py` gained `format_page_chunks` and `write_chunk_report`;
+  `cli.py` gained `inspect-chunks` (`_run_inspect_chunks`).
+- Tests: 4 more in `tests/test_chunk_files.py`, 3 more in
+  `tests/test_sec_rag_cli.py`.
+- Differences from the plan:
+  - `--page` is optional. Without it, the command writes the whole
+    filing's chunks, page by page, to `chunks/<doc_name>.chunks.txt`, which
+    is easier to hold beside the PDF than one printout per page. With it,
+    one page prints to the terminal, as planned.
+  - Page headers give both numbers: "Page index 59 (PDF page 60)", since
+    FinanceBench counts from 0 and a PDF viewer from 1.
