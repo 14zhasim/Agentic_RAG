@@ -334,8 +334,10 @@ def build_chunks(
 ) -> dict[str, Any]:
     """Chunk each selected parsed filing, write its chunk file, and return a summary."""
 
+
 def read_chunks(config: dict[str, Any], doc_name: str) -> list[dict[str, Any]]:
     """Read one filing's chunk file back into records."""
+
 
 def format_page_chunks(chunks: list[dict[str, Any]], page_index: int) -> str:
     """Show every chunk on one page, carried text marked, for eyeballing (Stage 1.4)."""
@@ -456,9 +458,9 @@ carry the previous sentence, and `"heading"` pieces don't.
 ```python
 @dataclass(frozen=True)
 class Piece:
-    start: int       # raw position in Azure's content where the piece starts
-    end: int         # raw position just after its last character
-    starts_at: str   # "page", "heading" or "halving": decides overlap
+    start: int  # raw position in Azure's content where the piece starts
+    end: int  # raw position just after its last character
+    starts_at: str  # "page", "heading" or "halving": decides overlap
 ```
 
 In the pseudocode, `text_of(piece)` means "the piece's characters from
@@ -657,7 +659,9 @@ def _cut_at_headings(prose, page_start, cut_points, floor):
     for position in cut_points:  # sorted, left to right
         if position <= first_visible:
             continue  # nothing before it to make a piece from
-        tokens_before = count_tokens(prose[piece_start - page_start : position - page_start])
+        tokens_before = count_tokens(
+            prose[piece_start - page_start : position - page_start]
+        )
         tokens_after = count_tokens(prose[position - page_start :])
         if tokens_before >= floor and tokens_after >= floor:
             pieces.append(Piece(piece_start, position, label))
