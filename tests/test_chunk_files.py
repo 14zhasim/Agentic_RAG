@@ -98,7 +98,7 @@ def test_read_chunks_round_trips(tmp_path: Path) -> None:
         "3M_2018_10K:p0:c0",
         "3M_2018_10K:p0:c1",
     ]
-    assert records[1]["text"] == TABLE
+    assert records[1]["text"].endswith(TABLE)
 
 
 def test_read_chunks_names_a_filing_not_chunked_yet(tmp_path: Path) -> None:

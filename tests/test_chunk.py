@@ -127,8 +127,69 @@ def test_table_is_its_own_chunk_and_prose_either_side_is_joined() -> None:
     assert prose["chunk_id"].endswith("c0") and prose["kind"] == "prose"
     assert prose["text"] == f"{LONG_A}\n\n{LONG_B}"
     assert table_chunk["chunk_id"].endswith("c1") and table_chunk["kind"] == "table"
-    assert table_chunk["text"] == table
+    assert table_chunk["text"] == f"{table_chunk['carried_text']} {table}"
     assert _own_text(raw, table_chunk) == table
+
+
+def test_table_carries_its_title_from_just_above() -> None:
+    title = "## Consolidated Balance Sheet"
+    table = "<table><tr><td>Cash</td><td>2,853</td></tr></table>"
+    raw, pages = _filing([f"{LONG_A}\n\n{title}\n\n{table}"], tables=(table,))
+
+    prose, table_chunk = _chunk(raw, pages)
+
+    # The title is carried as text; the prose chunk keeps it too, unchanged.
+    assert table_chunk["carried_text"].endswith(title)
+    assert table_chunk["text"].endswith(f"{title} {table}")
+    assert prose["text"] == f"{LONG_A}\n\n{title}"
+    # Offsets and page stay the table's own.
+    assert _own_text(raw, table_chunk) == table
+
+
+def test_text_above_a_table_over_the_cap_keeps_its_end() -> None:
+    table = "<table><tr><td>1</td></tr></table>"
+    raw, pages = _filing([f"{LONG_A}\n\n{table}"], tables=(table,))
+
+    _, table_chunk = _chunk(raw, pages)
+
+    carried = table_chunk["carried_text"]
+    assert carried and LONG_A.endswith(carried)
+    assert count_tokens(carried) <= SETTINGS["overlap_cap_tokens"]
+
+
+def test_second_table_carries_only_the_text_after_the_first() -> None:
+    first = "<table><tr><td>Income</td></tr></table>"
+    second = "<table><tr><td>Comprehensive</td></tr></table>"
+    raw, pages = _filing(
+        [f"Statement of Income\n\n{first}\n\nStatement of Equity\n\n{second}"],
+        tables=(first, second),
+    )
+
+    chunks = _chunk(raw, pages)
+    first_chunk, second_chunk = (c for c in chunks if c["kind"] == "table")
+
+    assert first_chunk["carried_text"] == "Statement of Income"
+    assert second_chunk["carried_text"] == "Statement of Equity"
+
+
+def test_table_at_the_top_of_a_page_carries_nothing() -> None:
+    table = "<table><tr><td>continued</td></tr></table>"
+    raw, pages = _filing([LONG_A, f"{table}\n\n{LONG_B}"], tables=(table,))
+
+    table_chunk = next(c for c in _chunk(raw, pages) if c["kind"] == "table")
+
+    # Nothing above it on its own page, and nothing from the previous page.
+    assert table_chunk["carried_text"] == ""
+    assert table_chunk["text"] == table
+
+
+def test_figure_carries_nothing() -> None:
+    figure = "<figure>\nUS 40%\n</figure>"
+    raw, pages = _filing([f"{LONG_A}\n\n{figure}"], figures=(figure,))
+
+    figure_chunk = next(c for c in _chunk(raw, pages) if c["kind"] == "figure")
+
+    assert figure_chunk["carried_text"] == ""
 
 
 def test_figure_with_text_is_a_chunk_and_empty_figure_is_skipped() -> None:

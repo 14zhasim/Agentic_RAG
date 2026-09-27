@@ -5,7 +5,8 @@ applied one page at a time:
 
 1. no chunk crosses a page;
 2. every table and figure is its own chunk, never split (a figure with no
-   text is skipped);
+   text is skipped), and a table carries the text just above it on its page
+   (usually its title), as text only;
 3. the page's remaining prose is joined and cut at Azure's heading positions,
    keeping a cut only if both pieces clear the floor; anything still over the
    ceiling is halved at the sentence start nearest its middle, recursively;
@@ -132,17 +133,28 @@ def _chunk_page(
     ]
 
     # Step 2 (rule 2): each table and figure becomes a chunk as it is, then
-    # its characters are blanked out of the prose so nothing shifts.
+    # its characters are blanked out of the prose so nothing shifts. A table
+    # also carries the text just above it (its title, usually), taken from
+    # the end of the previous table or figure on the page, or the page's top.
     # (start, end, kind, own text, carried text), one per chunk on the page
     pieces: list[tuple[int, int, str, str, str]] = []
     prose = page_text
+    cap = chunking["overlap_cap_tokens"]
+    above_from = page_start  # where the text above the next element begins
     for element in on_page:
         element_text = page_text[element.start - page_start : element.end - page_start]
         if element.kind == "figure" and not FIGURE_TAG.sub("", element_text).strip():
             pass  # an empty figure (likely a logo): nothing to search
         else:
-            pieces.append((element.start, element.end, element.kind, element_text, ""))
+            carried = ""
+            if element.kind == "table":
+                above = page_text[above_from - page_start : element.start - page_start]
+                carried = _keep_end(tidy(above), cap)
+            pieces.append(
+                (element.start, element.end, element.kind, element_text, carried)
+            )
         prose = _blank(prose, element.start - page_start, element.end - page_start)
+        above_from = element.end
 
     # Step 3 (rule 3): cut the joined prose at headings, then halve anything
     # over the ceiling. A heading inside a table or figure is not a cut
@@ -169,7 +181,6 @@ def _chunk_page(
     # sentence before the cut; "heading" pieces carry nothing, since a new
     # section doesn't need the previous one's last sentence. The carried
     # sentence goes into the chunk's text only; its offsets stay its own.
-    cap = chunking["overlap_cap_tokens"]
     for index, piece in enumerate(prose_pieces):
         carried = ""
         if piece.starts_at == "page":
@@ -311,7 +322,17 @@ def _last_sentence(text: str, cap: int) -> str:
     if not spans:
         return ""
     last_start = spans[-1][0]
-    words = tidy(text[last_start:]).split()
+    return _keep_end(tidy(text[last_start:]), cap)
+
+
+def _keep_end(text: str, cap: int) -> str:
+    """Drop words from the front of `text` until it fits `cap` tokens, keeping at least one word.
+
+    Used for all carried text: the end is what sits right next to the chunk
+    (the words before a cut, or a table's title just above it). Words are
+    joined with single spaces, so a multi-line title becomes one line.
+    """
+    words = text.split()
     while len(words) > 1 and count_tokens(" ".join(words)) > cap:
         words.pop(0)
     return " ".join(words)
