@@ -447,6 +447,11 @@ levels.
     expanded: none of the 112 questions uses one, and expanding would assume the century
   - checked against all 112 questions: punctuation removal is safe (no question uses `$`; they write
     "USD"), lowercasing is safe, stemming is safe because both sides are stemmed
+  - **DECIDED (27 Sep 2026): BM25 counts table words without their HTML tags.** Azure writes tables
+    as HTML, and `td`/`tr`/`th` are 12% of all words in the corpus (432 of 823 in 3M 2018's
+    cash-flow table), so BM25's length penalty pushed tables down. Only BM25's copy of the text is
+    stripped; chunk files, embeddings and the answer prompt keep the HTML, which shows the model
+    rows and columns. On 3M 2018, the cash-flow table moved from rank 28 to 17 for its own wording
 - reference implementations to reuse: `/Users/zubairasim/rag-search-engine/course_notes/module-01-preprocessing.md`
   and `/Users/zubairasim/rag-search-engine/cli/lib/keyword_search.py`
 - the four structures a BM25 index needs (what `bm25s` builds for us)

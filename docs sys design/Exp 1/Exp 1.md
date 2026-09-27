@@ -109,6 +109,7 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
   - Each embedding is cached, keyed by model name plus a hash of the chunk text, so re-chunking only re-embeds what changed.
 - **Keyword index:** `bm25s`, via LlamaIndex's `BM25Retriever`.
   - Standard BM25 parameters (k1=1.5, b=0.75).
+  - Words are split into letters and digits (`FY2018` → `fy` + `2018`), and tables are counted without their HTML tags, which would otherwise be 12% of the corpus's words and push tables down; the answer model still sees the tags.
   - Filtering narrows which chunks are searched, but BM25's word statistics (term frequency, document frequency) are still computed over the whole corpus — the same behaviour as Elasticsearch, kept deliberately so results stay comparable if the keyword backend is swapped later.
 - **What's stored per chunk:** the chunk text, its embedding, and its filtering metadata (ticker, filing type, year, page) together, so retrieval can filter and score in the same place.
 - **Filtering support:** both indexes support metadata filtering before search.

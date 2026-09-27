@@ -112,9 +112,35 @@ setting. Each was checked by running the installed package (27 Sep 2026):
    planned to expand them to `2022`, but none of the 112 questions uses one
    (checked against `financebench_open_source_10k.jsonl`), and expanding
    would have to assume the 21st century. Nothing is built.
+5. **A filter only works when the retriever is created (found building
+   Slice 1).** `BM25Retriever(filters=...)` turns the filter into a list
+   of which chunks may score, once, in its constructor
+   (`bm25/base.py` lines 128-146). Setting `retriever.filters` afterwards
+   changes nothing, silently: the spot check first returned Boeing and
+   Best Buy chunks for a "3M 2018 only" search that way.
+   - Fix, in Stage 2.2: load the index once with `load_bm25_index`, then
+     for each question create
+     `BM25Retriever(existing_bm25=loaded.bm25, filters=..., token_pattern=..., stemmer=...)`.
+     Creating one takes ~0.01 s, since nothing is re-indexed.
+6. **HTML table tags were counted as words (found building Slice 1).**
+   Azure writes tables as HTML, so to BM25 `<td>1,577</td>` is the words
+   "td", "1577", "td". In 3M 2018's cash-flow table 432 of 823 words are
+   tags; across the corpus, 12%. BM25 scores long chunks down (`b`), so
+   tables sank.
+   - Fix (decided 27 Sep 2026): `build_bm25_index` strips the seven tags
+     Azure uses from BM25's copy of each chunk's text (`words_only`).
+     Chunk files, Chroma and the answer prompt keep the HTML. BM25 results
+     therefore carry tag-free text; Stage 2.2 takes a result's full text
+     from Chroma by chunk ID.
+   - Effect, searching 3M 2018 only, rank of the cash-flow table
+     `p59:c1`: 28 → 17 for its own wording ("purchases of property, plant
+     and equipment 2018"); 159 → 83 for FinanceBench's question as
+     written. Neither reaches the top 10, because the question says
+     "capital expenditure" and the table doesn't: that gap is for dense
+     search and query enhancement, so the top-10 check moved to Stage 2.2.
 
-The fifth finding, Chroma measuring distance with L2 unless told
-otherwise, belongs to the vector store and is under "Vector store" below.
+Chroma measuring distance with L2 unless told otherwise belongs to the
+vector store and is under "Vector store" below.
 
 ### Embeddings: `voyageai` client, called directly
 
@@ -397,6 +423,10 @@ METADATA_KEYS = (
 )
 
 
+def load_corpus_nodes(config: dict[str, Any]) -> list[TextNode]:
+    """Read every filing's chunk file and return all chunks as nodes (both indexes start here)."""
+
+
 def chunks_to_nodes(chunks: list[dict[str, Any]]) -> list[TextNode]:
     """One TextNode per chunk record, id = chunk_id, text = the chunk's text, metadata hidden from indexing."""
 ```
@@ -483,6 +513,17 @@ references sit in the comments, so the finished code points at them too.
   wrapper indexes `get_content(metadata_mode=MetadataMode.EMBED)`)
 
 ```python
+def load_corpus_nodes(config):
+    chunks = []
+    # select_documents (ingestion/parse.py) lists the prepared PDFs, sorted;
+    # None means "all of them". Each path's stem is the filing's doc_name.
+    for pdf_path in select_documents(config, None):
+        # read_chunks (chunking/chunk_files.py) reads <chunks_dir>/<doc_name>.jsonl,
+        # raising ValueError "<doc>: not chunked yet" if the file is missing.
+        chunks.extend(read_chunks(config, pdf_path.stem))
+    return chunks_to_nodes(chunks)
+
+
 def chunks_to_nodes(chunks):
     nodes = []
     for chunk in chunks:
@@ -522,22 +563,20 @@ def chunks_to_nodes(chunks):
 
 ```python
 def build_bm25_index(config):
-    chunks = []
-    for doc_name in select_documents(config):  # the 64 filings, in the usual order
-        chunks.extend(
-            read_chunks(config, doc_name)
-        )  # ValueError if a filing isn't chunked yet
-    nodes = chunks_to_nodes(chunks)
+    # nodes.py: all 21,039 chunks as nodes, metadata hidden from the text.
+    nodes = load_corpus_nodes(config)
+    # Finding 6: BM25's copy of each text loses its HTML table tags.
+    for node in nodes:
+        node.set_content(words_only(node.get_content()))
     settings = config["bm25"]
     # bm25_retriever.md lines 80-110: from_defaults(nodes=..., stemmer=..., language=...).
     # Underneath (bm25/base.py lines 104-112) this calls bm25s.tokenize with our
     # pattern, stopwords and stemmer, then bm25s.BM25().index(...).
+    # The pattern splits FY2018 -> fy, 2018; bm25s lowercases first.
     retriever = BM25Retriever.from_defaults(
         nodes=nodes,
-        token_pattern=settings[
-            "token_pattern"
-        ],  # FY2018 -> fy, 2018; bm25s lowercases first
-        language=settings["stopwords"],  # becomes bm25s.tokenize(stopwords=...)
+        token_pattern=settings["token_pattern"],
+        language=settings["stopwords"],
         stemmer=Stemmer.Stemmer(settings["stemmer"]),
     )
     # k1=1.5, b=0.75 are bm25s's defaults (bm25s README); the wrapper does not
@@ -545,12 +584,11 @@ def build_bm25_index(config):
     bm25_dir = Path(config["corpus"]["indexes_dir"]) / "bm25"
     partial_dir = bm25_dir.with_name("bm25.partial")
     # persist (bm25/base.py lines 211-217) = bm25s's own save + retriever.json.
-    # Saved beside the old index first, so a crash never leaves half an index.
+    # Saved beside the old index first, so a crash never leaves half an index;
+    # then the old bm25/ is deleted and bm25.partial/ renamed to bm25/.
     retriever.persist(str(partial_dir))
-    replace_directory(
-        partial_dir, bm25_dir
-    )  # delete the old bm25/, rename partial to bm25/
-    return {"filings": len(select_documents(config)), "chunks": len(nodes)}
+    replace_directory(partial_dir, bm25_dir)
+    return {"filings": len(select_documents(config, None)), "chunks": len(nodes)}
 
 
 def load_bm25_index(config, similarity_top_k=10):
@@ -645,9 +683,9 @@ already have. It does that in four steps:
 
 ```mermaid
 flowchart TD
-    A[1 - Read: every chunk as a node,<br/>each with its text_hash] --> C
-    B[1 - Read: every chunk ID in Chroma,<br/>with the text_hash it was embedded from] --> C
-    C{2 - Compare, chunk by chunk}
+    A[1a - load_corpus_nodes: every chunk as a node,<br/>each with its text_hash] --> C
+    B[1b - _hashes_in_chroma: every chunk ID in Chroma,<br/>with the text_hash it was embedded from] --> C
+    C{2 - _compare, chunk by chunk}
     C -- in files, not in Chroma --> E[to embed]
     C -- in both, hash differs<br/>text changed --> D2[to delete, then to embed]
     C -- in both, same hash --> S[skip: already done]
@@ -657,9 +695,42 @@ flowchart TD
     D --> R
     R[3 - Report the counts] --> P{--execute-paid?}
     P -- no --> X[stop: nothing sent, no key needed]
-    P -- yes --> Del[4 - Delete the to-delete IDs from Chroma]
-    Del --> L[4 - For each batch of 128 to-embed chunks:<br/>send texts to Voyage, get 128 vectors,<br/>add those 128 chunks to Chroma at once]
+    P -- yes --> Del[4a - Delete the to-delete IDs from Chroma]
+    Del --> L[4b - For each batch of 128 to-embed chunks:<br/>send texts to Voyage, get 128 vectors,<br/>add those 128 chunks to Chroma at once]
     L --> Done[return counts + tokens billed]
+```
+
+**The same four steps as code.** The main function is only the four steps;
+each step is either a few lines or one helper whose name says what it does.
+The step numbers match the diagram.
+
+**Where every name comes from.** Nothing in `embed_corpus` is new except
+the three small helpers under it:
+
+| Name | Defined in | What it is |
+|---|---|---|
+| `load_corpus_nodes(config)` | `nodes.py` (above) | reads every chunk file and returns one node per chunk. **The text hash is computed here**, inside `chunks_to_nodes`: `metadata["text_hash"] = sha256(text)`. So every node arrives with its hash already on it |
+| `open_chunk_store(config)` | `embed.py` (the section just above) | opens the Chroma database on disk and returns LlamaIndex's `ChromaVectorStore` wrapping our collection |
+| `store.client` | LlamaIndex, `chroma/base.py` lines 366-369 | the raw Chroma collection inside the wrapper; we need it for `get` and `delete`, which the wrapper doesn't offer in the form we need |
+| `store.add(nodes)` | LlamaIndex, `chroma/base.py` lines 284-320 | saves each node's text, metadata (including `text_hash`) and vector |
+| `_hashes_in_chroma(store)` | `embed.py`, below | step 1b: `{chunk_id: text_hash}` for everything already saved |
+| `_compare(nodes, hashes_in_chroma)` | `embed.py`, below | step 2: the two lists, `to_embed` and `to_delete` |
+| `_voyage_embedder(settings)` | `embed.py`, below | step 4b: returns a function that sends texts to Voyage and returns `(vectors, tokens billed)`. Tests pass a fake instead |
+| `count_tokens(text)` | `chunking/chunk.py` | the cl100k counter from Stage 1.3, reused for the estimate |
+
+**The data, on a tiny example.** Say the chunk files now hold three chunks,
+and Chroma holds three from an earlier run:
+
+```text
+chunk files (after load_corpus_nodes)     Chroma (after _hashes_in_chroma)
+  3M:p0:c0  text "A"  hash h(A)             3M:p0:c0  h(A)      same text
+  3M:p0:c1  text "B2" hash h(B2)            3M:p0:c1  h(B)      text changed
+  3M:p0:c2  text "C"  hash h(C)             3M:p0:c9  h(Z)      chunk gone
+
+_compare gives:
+  to_delete = ["3M:p0:c1", "3M:p0:c9"]      changed, and gone
+  to_embed  = [node c1, node c2]            changed, and new
+  (c0 is skipped: same ID, same hash)
 ```
 
 **Worked example: three runs.**
@@ -699,69 +770,86 @@ one. Deleting first makes room.
 
 ```python
 def embed_corpus(config, execute_paid=False, embedder=None):
-    # Step 1: every chunk as a node, and what Chroma already holds.
-    chunks = []
-    for doc_name in select_documents(config):
-        chunks.extend(read_chunks(config, doc_name))
-    nodes = chunks_to_nodes(chunks)
+    # Step 1a: every chunk as a node, each already carrying its text_hash
+    # (computed in nodes.py -> chunks_to_nodes).
+    nodes = load_corpus_nodes(config)
+    # Step 1b: what Chroma already holds, as {chunk_id: text_hash}.
     store = open_chunk_store(config)
-    # Chroma is the cache. collection.get(include=["metadatas"]) returns every
-    # stored ID with its metadata, including the text_hash it was embedded from.
-    # store.client is the raw Chroma collection (chroma/base.py lines 366-369).
-    saved = store.client.get(include=["metadatas"])
-    stored_hash = {}
-    for chunk_id, metadata in zip(saved["ids"], saved["metadatas"]):
-        stored_hash[chunk_id] = metadata["text_hash"]
+    hashes_in_chroma = _hashes_in_chroma(store)
 
-    # Step 2: compare. Delete what is gone or changed; embed what is new or changed.
-    wanted = {node.node_id: node for node in nodes}
-    to_delete = []
-    for chunk_id, text_hash in stored_hash.items():
-        if (
-            chunk_id not in wanted
-            or wanted[chunk_id].metadata["text_hash"] != text_hash
-        ):
-            to_delete.append(chunk_id)
-    to_embed = []
-    for node in nodes:
-        if node.node_id not in stored_hash or node.node_id in to_delete:
-            to_embed.append(node)
+    # Step 2: compare the two, chunk by chunk.
+    to_embed, to_delete = _compare(nodes, hashes_in_chroma)
 
-    # Step 3: report. Without execute_paid this is all that happens: no key, no call.
+    # Step 3: report. Without execute_paid this is all that happens:
+    # no key is read and nothing is sent.
     batch_size = config["embedding"]["batch_size"]
     report = {
         "chunks": len(nodes),
-        "stored": len(stored_hash),
+        "stored": len(hashes_in_chroma),
         "to_embed": len(to_embed),
         "to_delete": len(to_delete),
-        # cl100k count: an estimate, since Voyage counts tokens its own way
+        # count_tokens (chunk.py) is cl100k: an estimate, Voyage counts its own way
         "estimated_tokens": sum(count_tokens(node.text) for node in to_embed),
         "batches": math.ceil(len(to_embed) / batch_size),
     }
     if not execute_paid or (not to_embed and not to_delete):
         return report
 
-    # Step 4: pay. The key is read here, never before (CLAUDE.md: load lazily).
-    if embedder is None:
-        embedder = _voyage_embedder(config["embedding"])
-    # chroma/base.py lines 284-320: add() calls collection.add, which ignores
-    # IDs it already holds, so a changed chunk is deleted before it is re-added.
+    # Step 4a: delete. Chroma's add ignores an ID it already holds
+    # (chroma/base.py lines 284-320), so changed chunks must go first.
     if to_delete:
         store.client.delete(ids=to_delete)
+    # Step 4b: embed and save, one batch at a time. The key is read only
+    # now (CLAUDE.md: load credentials lazily).
+    if embedder is None:
+        embedder = _voyage_embedder(config["embedding"])
     tokens_billed = 0
-    # embeddings.md lines 66-69: at most 1,000 texts and 1M tokens per call;
-    # 128 chunks is ~64k tokens, far inside both.
     for start in range(0, len(to_embed), batch_size):
         batch = to_embed[start : start + batch_size]
+        # One Voyage call: 128 texts in, 128 vectors out.
         vectors, tokens = embedder([node.text for node in batch])
         for node, vector in zip(batch, vectors):
             node.embedding = vector
-        store.add(batch)  # saved now: a crash loses at most this batch
+        # Saved now: a crash loses at most this batch.
+        store.add(batch)
         tokens_billed += tokens
-        print(
-            f"batch {start // batch_size + 1}/{report['batches']}, {tokens_billed:,} tokens"
-        )
+        number = start // batch_size + 1
+        print(f"batch {number}/{report['batches']}, {tokens_billed:,} tokens")
     return report | {"embedded": len(to_embed), "tokens_billed": tokens_billed}
+
+
+def _hashes_in_chroma(store):
+    """Step 1b: {chunk_id: text_hash} for every chunk already saved."""
+    # collection.get(include=["metadatas"]) returns every saved item as two
+    # lists in the same order, saved["ids"] and saved["metadatas"] (Chroma
+    # docs, "get"). The metadata is what store.add saved, so it includes the
+    # text_hash the vector was made from.
+    saved = store.client.get(include=["metadatas"])
+    hashes = {}
+    for chunk_id, metadata in zip(saved["ids"], saved["metadatas"]):
+        hashes[chunk_id] = metadata["text_hash"]
+    return hashes
+
+
+def _compare(nodes, hashes_in_chroma):
+    """Step 2: which chunks to embed, and which saved chunks to delete."""
+    # The current chunks, looked up by ID.
+    node_by_id = {node.node_id: node for node in nodes}
+    to_delete = []
+    for chunk_id, saved_hash in hashes_in_chroma.items():
+        if chunk_id not in node_by_id:
+            # Chunk gone from the files.
+            to_delete.append(chunk_id)
+        elif node_by_id[chunk_id].metadata["text_hash"] != saved_hash:
+            # Text changed: the saved vector is stale.
+            to_delete.append(chunk_id)
+    to_embed = []
+    for node in nodes:
+        if node.node_id not in hashes_in_chroma:
+            to_embed.append(node)  # new chunk
+        elif node.node_id in to_delete:
+            to_embed.append(node)  # changed chunk, deleted in step 4a
+    return to_embed, to_delete
 
 
 def _voyage_embedder(settings):
@@ -822,11 +910,43 @@ Tests:
   the counts
 
 **Run:** `uv run sec-rag index-bm25 --config configs/sec_rag.toml` on all 64
-filings. **Check:** reload, and search `"FY2018 capital expenditure"`
-filtered to `doc_name = 3M_2018_10K`: `3M_2018_10K:p59:c1` (the cash-flow
-table with $1,577m) should be in the top 10.
+filings. **Check (revised 27 Sep 2026, finding 6):** reload, and search
+filtered to `doc_name = 3M_2018_10K`: every scored result is from that
+filing, and the cash-flow table `3M_2018_10K:p59:c1` ranks clearly higher
+for its own wording than before tags were stripped. The original check,
+`p59:c1` in the top 10 for the capex question, moves to Stage 2.2's hybrid
+search: BM25 alone can't bridge "capital expenditure" to "purchases of
+property, plant and equipment".
 
 **Commit:** `Add BM25 keyword index over the chunks`.
+
+#### As built (Slice 1, 27 Sep 2026)
+
+- **Files:** `src/sec_rag/indexing/__init__.py`, `nodes.py`
+  (`METADATA_KEYS`, `load_corpus_nodes`, `chunks_to_nodes`),
+  `bm25_index.py` (`build_bm25_index`, `load_bm25_index`, `words_only`,
+  `_bm25_dir`); `config.py` and `sec_rag.toml` (`indexes_dir`, `[bm25]`);
+  `cli.py` (`index-bm25`); tests in `test_nodes.py` (3),
+  `test_bm25_index.py` (11), `test_sec_rag_config.py` (+2),
+  `test_sec_rag_cli.py` (+2); `conftest.py` gains `chunk_record` and the
+  `index_config` fixture.
+- **Differences from the plan:**
+  - `words_only` (finding 6) is new. `build_bm25_index` applies it to each
+    node with `node.set_content(...)` before indexing.
+  - the replace-directory step is inline in `build_bm25_index` (remove a
+    stale `bm25.partial/`, persist, remove the old `bm25/`, rename), not a
+    separate helper: four lines, used once.
+  - the nodes are copied into a `list[BaseNode]` for `from_defaults`,
+    whose declared type mypy won't match with `list[TextNode]`.
+  - extra tests beyond the plan: `from_persist_dir` really does lose the
+    pattern (pins why our loader exists), results keep their metadata, a
+    rebuild replaces the old index, an unchunked filing stops the build,
+    and three for `words_only`.
+- **Run:** 64 filings, 21,039 chunks, built in ~3 s (not the minute
+  estimated); `indexes/bm25/` is 83 MB.
+- **Check:** 3M 2018 filter: all 261 scored hits for the table's own
+  wording are from 3M 2018; `p59:c1` rank 28 → 17 with tags stripped (159
+  → 83 for FinanceBench's question as written).
 
 ### Slice 2: embeddings in Chroma (report free, embedding paid)
 

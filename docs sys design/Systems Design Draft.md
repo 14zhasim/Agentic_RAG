@@ -384,6 +384,9 @@ Ingest files
     -> stem tokens
     -> split letters from digits ()`FY2018` → `fy` + `2018`)
     -> compare tokens
+    - for chunks only, first remove HTML table tags (`td`, `tr`, `th`, ...): they are 12% of the
+      corpus's words and would make tables look long, which BM25 scores down. Only BM25's copy
+      is stripped; the answer model still sees the tables' HTML (decided 27 Sep 2026)
     - use `bm25s` via LlamaIndex's `BM25Retriever` instead of hand-built maps (same structures, faster)
   - then, store the following
     - map tokens to each chunk id
