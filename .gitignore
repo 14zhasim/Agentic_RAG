@@ -20,3 +20,4 @@ skills-lock.json
 /.ruff_cache/
 HANDOFF.md
 .DS_Store
+/.cursor/
