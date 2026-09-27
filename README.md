@@ -23,9 +23,11 @@ validated against published labels. HiREC/LOFin support remains deferred.
 
 ```text
 configs/financebench.toml          editable dataset, generation and run settings
-configs/sec_rag.toml               parser settings for the system being evaluated
+configs/sec_rag.toml               parser, chunker and index settings for the system being evaluated
 src/sec_rag/                       the system being evaluated
 ├── ingestion/                     Azure parse run, heading list, inspection report
+├── chunking/                      page-bounded chunks and chunk reports
+├── indexing/                      BM25 keyword index and Voyage vectors in Chroma
 └── cli.py                         sec-rag terminal commands
 src/sec_rag_benchmark/
 ├── config.py                      load and validate benchmark settings
@@ -46,7 +48,9 @@ benchmarks/financebench/           read-only original FinanceBench clone
 - Python 3.12;
 - [`uv`](https://docs.astral.sh/uv/getting-started/installation/);
 - Git;
-- an OpenRouter API key only when running paid generation.
+- an OpenRouter API key only when running paid generation;
+- Azure Document Intelligence and Voyage keys only for paid parsing and
+  embedding.
 
 Install `uv` if it is not already available:
 
@@ -173,6 +177,58 @@ uv run sec-rag parse --config configs/sec_rag.toml --execute-paid
 
 Azure parsing and benchmark generation are separate paid operations. The
 benchmark dry runs below neither parse documents nor call a generation model.
+
+## Chunk and index filings
+
+Chunking and the keyword index are free and offline. Chunking reads the saved
+parses and writes `data/financebench/chunks/<doc_name>.jsonl`; leave out
+`--documents` to chunk every parsed filing:
+
+```bash
+uv run sec-rag chunk --config configs/sec_rag.toml
+uv run sec-rag chunk --config configs/sec_rag.toml --documents 3M_2018_10K
+```
+
+Check chunks by eye. `--page` is the page index counted from 0, so a
+question's `evidence_page_num` can be pasted in; without it, the whole filing
+is written to `data/financebench/chunks/<doc_name>.chunks.txt`:
+
+```bash
+uv run sec-rag inspect-chunks --config configs/sec_rag.toml --document 3M_2018_10K --page 59
+uv run sec-rag inspect-chunks --config configs/sec_rag.toml --document 3M_2018_10K
+```
+
+Build the BM25 keyword index over every chunk (a few seconds; always a full
+rebuild) into `data/financebench/indexes/bm25/`:
+
+```bash
+uv run sec-rag index-bm25 --config configs/sec_rag.toml
+```
+
+Embeddings are made by Voyage and stored in Chroma under
+`data/financebench/indexes/chroma/`. Start with the no-spend report, which
+needs no key and prints how many chunks would be embedded, the estimated
+tokens and the number of Voyage calls:
+
+```bash
+uv run sec-rag embed --config configs/sec_rag.toml
+```
+
+The paid run needs `VOYAGE_API_KEY` in `.env`, loaded into the shell as above.
+The Voyage account needs a payment method: without one its limits are 3
+requests and 10,000 tokens a minute, too low for a single batch. The first
+200M tokens are free, and the whole corpus is about 10M.
+
+```bash
+set -a
+source .env
+set +a
+uv run sec-rag embed --config configs/sec_rag.toml --execute-paid
+```
+
+Only new or changed chunks are sent, and each batch is saved as it returns,
+so an interrupted run continues where it stopped when rerun. Afterwards the
+no-spend report should show `To embed: 0`.
 
 ## Run a no-spend preflight
 
