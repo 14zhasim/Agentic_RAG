@@ -44,6 +44,12 @@ overlap_cap_tokens = 100
 token_pattern = '(?u)[^\\W\\d_]+|\\d+'
 stopwords = "en"
 stemmer = "english"
+
+[embedding]
+model = "voyage-4-lite"
+batch_size = 128
+output_dimension = 1024
+output_dtype = "float"
 """,
         encoding="utf-8",
     )
@@ -237,3 +243,37 @@ def test_index_bm25_command_reports_a_filing_not_chunked_yet(
 
     assert exit_code == 1
     assert "Error: example_2024_10K: not chunked yet" in capsys.readouterr().out
+
+
+def test_embed_command_reports_without_spending(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """No --execute-paid: counts only, no key needed, nothing stored."""
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(["embed", "--config", str(config_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Chunks: 1\nAlready stored: 0\nTo embed: 1\nTo delete: 0\n" in output
+    assert "Batches: 1\n" in output
+    assert "Embedded now" not in output
+
+
+def test_embed_command_paid_without_key_is_an_error(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(["embed", "--config", str(config_path), "--execute-paid"])
+
+    assert exit_code == 1
+    assert "Error: VOYAGE_API_KEY is not set" in capsys.readouterr().out

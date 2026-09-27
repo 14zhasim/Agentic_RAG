@@ -21,15 +21,17 @@ def load_config(path: str | Path) -> dict[str, Any]:
     parsing = config.get("parsing")
     chunking = config.get("chunking")
     bm25 = config.get("bm25")
+    embedding = config.get("embedding")
     if (
         not isinstance(corpus, dict)
         or not isinstance(parsing, dict)
         or not isinstance(chunking, dict)
         or not isinstance(bm25, dict)
+        or not isinstance(embedding, dict)
     ):
         raise ValueError(
-            "SEC RAG configuration needs [corpus], [parsing], [chunking] "
-            "and [bm25] sections"
+            "SEC RAG configuration needs [corpus], [parsing], [chunking], "
+            "[bm25] and [embedding] sections"
         )
 
     for key in ("prepared_dir", "parsed_dir", "chunks_dir", "indexes_dir"):
@@ -71,4 +73,23 @@ def load_config(path: str | Path) -> dict[str, Any]:
         value = bm25.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"bm25.{key} must be a non-empty string")
+
+    # Implementation Guide 1.5-1.6 -> Configuration. The limits are Voyage's
+    # (docs/libraries/voyage/embeddings.md lines 66-81): at most 1,000 texts
+    # per call, and the four lengths voyage-4-lite can return. Only floats,
+    # because Chroma stores floats and quantised types would need converting.
+    model = embedding.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("embedding.model must be a non-empty string")
+    batch_size = embedding.get("batch_size")
+    if (
+        not isinstance(batch_size, int)
+        or isinstance(batch_size, bool)
+        or not 1 <= batch_size <= 1000
+    ):
+        raise ValueError("embedding.batch_size must be a whole number from 1 to 1000")
+    if embedding.get("output_dimension") not in (256, 512, 1024, 2048):
+        raise ValueError("embedding.output_dimension must be 256, 512, 1024 or 2048")
+    if embedding.get("output_dtype") != "float":
+        raise ValueError('embedding.output_dtype must be "float"')
     return config

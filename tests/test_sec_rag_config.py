@@ -29,6 +29,12 @@ overlap_cap_tokens = 100
 token_pattern = '(?u)[^\\W\\d_]+|\\d+'
 stopwords = "en"
 stemmer = "english"
+
+[embedding]
+model = "voyage-4-lite"
+batch_size = 128
+output_dimension = 1024
+output_dtype = "float"
 """
 
 
@@ -62,10 +68,16 @@ def test_load_config_resolves_corpus_paths_from_project_root(tmp_path: Path) -> 
         "stopwords": "en",
         "stemmer": "english",
     }
+    assert config["embedding"] == {
+        "model": "voyage-4-lite",
+        "batch_size": 128,
+        "output_dimension": 1024,
+        "output_dtype": "float",
+    }
 
 
 def test_missing_bm25_section_is_refused(tmp_path: Path) -> None:
-    text = VALID_CONFIG.split("[bm25]")[0]
+    text = VALID_CONFIG.replace("[bm25]", "[not_bm25]")
     _, config_path = _write(tmp_path, text)
 
     with pytest.raises(ValueError, match=r"\[bm25\]"):
@@ -77,6 +89,39 @@ def test_empty_bm25_setting_is_refused(tmp_path: Path) -> None:
     _, config_path = _write(tmp_path, text)
 
     with pytest.raises(ValueError, match="bm25.stemmer"):
+        load_config(config_path)
+
+
+def test_missing_embedding_section_is_refused(tmp_path: Path) -> None:
+    text = VALID_CONFIG.replace("[embedding]", "[not_embedding]")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match=r"\[embedding\]"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("setting", "bad_line", "message"),
+    [
+        ('model = "voyage-4-lite"', 'model = ""', "embedding.model"),
+        ("batch_size = 128", "batch_size = 0", "embedding.batch_size"),
+        ("batch_size = 128", "batch_size = 1001", "embedding.batch_size"),
+        ("batch_size = 128", "batch_size = true", "embedding.batch_size"),
+        (
+            "output_dimension = 1024",
+            "output_dimension = 1000",
+            "embedding.output_dimension",
+        ),
+        ('output_dtype = "float"', 'output_dtype = "int8"', "embedding.output_dtype"),
+    ],
+)
+def test_invalid_embedding_setting_is_refused(
+    tmp_path: Path, setting: str, bad_line: str, message: str
+) -> None:
+    """Voyage's limits: 1-1,000 texts per call, four lengths, floats for Chroma."""
+    _, config_path = _write(tmp_path, VALID_CONFIG.replace(setting, bad_line))
+
+    with pytest.raises(ValueError, match=message):
         load_config(config_path)
 
 

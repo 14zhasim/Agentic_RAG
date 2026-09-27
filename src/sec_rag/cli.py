@@ -13,6 +13,7 @@ from .chunking.chunk_files import (
 )
 from .config import load_config
 from .indexing.bm25_index import build_bm25_index
+from .indexing.embed import embed_corpus
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
 
@@ -37,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     inspect_chunks_parser.add_argument("--page", type=int)
     index_bm25_parser = commands.add_parser("index-bm25")
     index_bm25_parser.add_argument("--config", type=Path, required=True)
+    embed_parser = commands.add_parser("embed")
+    embed_parser.add_argument("--config", type=Path, required=True)
+    embed_parser.add_argument("--execute-paid", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -51,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_inspect_chunks(args)
             case "index-bm25":
                 return _run_index_bm25(args)
+            case "embed":
+                return _run_embed(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -124,4 +130,23 @@ def _run_index_bm25(args: argparse.Namespace) -> int:
     summary = build_bm25_index(config)
     print(f"Filings: {summary['filings']}")
     print(f"Chunks indexed: {summary['chunks']}")
+    return 0
+
+
+def _run_embed(args: argparse.Namespace) -> int:
+    """Load settings, compare chunks with Chroma, and print the plan (or embed, if paid).
+
+    Without --execute-paid this only reports what a paid run would send.
+    """
+    config = load_config(args.config)
+    result = embed_corpus(config, execute_paid=args.execute_paid)
+    print(f"Chunks: {result['chunks']}")
+    print(f"Already stored: {result['stored']}")
+    print(f"To embed: {result['to_embed']}")
+    print(f"To delete: {result['to_delete']}")
+    print(f"Estimated tokens: {result['estimated_tokens']:,}")
+    print(f"Batches: {result['batches']}")
+    if "embedded" in result:
+        print(f"Embedded now: {result['embedded']}")
+        print(f"Tokens billed: {result['tokens_billed']:,}")
     return 0

@@ -19,3 +19,9 @@ overlap_cap_tokens = 100   # most text carried across a page break or halving cu
 token_pattern = '(?u)[^\W\d_]+|\d+'  # runs of letters or runs of digits: FY2018 -> fy, 2018
 stopwords = "en"                     # bm25s's English stopword list
 stemmer = "english"                  # PyStemmer's English stemmer
+
+[embedding]
+model = "voyage-4-lite"
+batch_size = 128           # chunks per Voyage call (limits: 1,000 texts, 1M tokens)
+output_dimension = 1024    # Voyage's default; questions are embedded at the same length
+output_dtype = "float"     # Voyage's default, full precision; Chroma stores floats
