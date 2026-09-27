@@ -212,7 +212,7 @@ def test_small_page_is_still_its_own_chunk() -> None:
 
     chunks = _chunk(raw, pages)
 
-    assert [chunk["text"] for chunk in chunks] == [LONG_A, SHORT]
+    assert [_own_text(raw, chunk) for chunk in chunks] == [LONG_A, SHORT]
     assert [chunk["page_index"] for chunk in chunks] == [0, 1]
 
 
@@ -231,6 +231,142 @@ def test_page_of_only_a_table_gives_no_prose_chunk() -> None:
     chunks = _chunk(raw, pages)
 
     assert [chunk["kind"] for chunk in chunks] == ["table"]
+
+
+# --- Slice 2: halving (ceiling 40) and overlap (cap 6) -----------------------
+
+SENTENCES = [LONG_A, LONG_B, LONG_C]
+
+
+def test_prose_over_ceiling_is_halved_at_a_sentence() -> None:
+    """Three ~15-token sentences (~47 tokens) are over the ceiling of 40: two pieces."""
+    raw, pages = _filing([" ".join(SENTENCES)])
+
+    chunks = _chunk(raw, pages)
+
+    assert len(chunks) == 2
+    for chunk in chunks:
+        own = _own_text(raw, chunk)
+        assert count_tokens(own) <= SETTINGS["ceiling_tokens"]
+        assert any(own.startswith(sentence) for sentence in SENTENCES)
+
+
+def test_halving_is_recursive() -> None:
+    """Nine sentences (~140 tokens) end up as at least four pieces, none over the ceiling."""
+    raw, pages = _filing([" ".join(SENTENCES * 3)])
+
+    chunks = _chunk(raw, pages)
+
+    assert len(chunks) >= 4
+    for chunk in chunks:
+        assert count_tokens(_own_text(raw, chunk)) <= SETTINGS["ceiling_tokens"]
+
+
+def test_halving_splits_tokens_as_evenly_as_sentences_allow() -> None:
+    """Four sentences of 15, 16, 15 and 15 tokens: the most even cut is after the second."""
+    fourth = "Management expects similar growth next year if the economy holds up well."
+    raw, pages = _filing([" ".join([*SENTENCES[:2], SENTENCES[2], fourth])])
+
+    first, second = _chunk(raw, pages)
+
+    assert _own_text(raw, first) == f"{LONG_A} {LONG_B}"
+    assert _own_text(raw, second) == f"{LONG_C} {fourth}"
+
+
+def test_halving_falls_back_to_a_line_start_then_a_word_start() -> None:
+    """With no full stops, the cut lands at a line start; with no line breaks either, a word start."""
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
+    lines = "\n".join([words] * 5)  # about 60 tokens, no sentence end
+    one_line = " ".join([words] * 5)  # the same words with no line breaks
+    raw, pages = _filing([lines, one_line])
+
+    chunks = _chunk(raw, pages)
+
+    content = raw["content"]
+    page0 = [chunk for chunk in chunks if chunk["page_index"] == 0]
+    page1 = [chunk for chunk in chunks if chunk["page_index"] == 1]
+    assert len(page0) >= 2 and len(page1) >= 2
+    for chunk in page0[1:]:
+        assert content[chunk["start_offset"] - 1] == "\n"
+    for chunk in page1[1:]:
+        assert content[chunk["start_offset"] - 1] == " "
+
+
+def test_page_break_carries_last_sentence_of_previous_page() -> None:
+    """Page 0 ends mid-sentence; page 1's chunk starts with the broken sentence restored."""
+    raw, pages = _filing([f"{LONG_A} Sales of plan", f"assets rose. {LONG_B}"])
+
+    _, second = _chunk(raw, pages)
+
+    assert second["carried_text"] == "Sales of plan"
+    assert second["text"].startswith("Sales of plan assets rose.")
+    # Text only: the chunk's page and offsets are still page 1's own.
+    assert second["page_index"] == 1
+    assert _own_text(raw, second).startswith("assets rose.")
+
+
+def test_no_carry_when_page_starts_with_a_heading() -> None:
+    raw, pages = _filing(
+        [f"{LONG_A} Short end.", f"## Outlook\n\n{LONG_B}"], headings=("## Outlook",)
+    )
+
+    _, second = _chunk(raw, pages)
+
+    assert second["carried_text"] == ""
+    assert second["text"].startswith("## Outlook")
+
+
+def test_no_carry_at_a_heading_cut() -> None:
+    raw, pages = _filing(
+        [f"{LONG_A}\n\n## Outlook\n\n{LONG_B}"], headings=("## Outlook",)
+    )
+
+    _, second = _chunk(raw, pages)
+
+    assert second["carried_text"] == ""
+
+
+def test_halving_cut_carries_last_sentence_of_previous_piece() -> None:
+    raw, pages = _filing([" ".join(SENTENCES)])
+
+    first, second = _chunk(raw, pages)
+
+    last_sentence_of_first = next(
+        sentence for sentence in SENTENCES if _own_text(raw, first).endswith(sentence)
+    )
+    assert second["carried_text"]
+    assert last_sentence_of_first.endswith(second["carried_text"])
+    assert first["carried_text"] == ""
+
+
+def test_carried_sentence_over_cap_keeps_its_end() -> None:
+    """LONG_A is ~15 tokens, over the cap of 6: words are dropped from its front."""
+    raw, pages = _filing([LONG_A, LONG_B])
+
+    _, second = _chunk(raw, pages)
+
+    carried = second["carried_text"]
+    assert LONG_A.endswith(carried)
+    assert carried.endswith("stayed strong.")
+    assert count_tokens(carried) <= SETTINGS["overlap_cap_tokens"]
+
+
+def test_carry_resets_after_a_page_with_no_prose() -> None:
+    table = "<table><tr><td>1</td></tr></table>"
+    raw, pages = _filing([f"{LONG_A} Tail.", table, LONG_B], tables=(table,))
+
+    chunks = _chunk(raw, pages)
+
+    assert chunks[-1]["page_index"] == 2
+    assert chunks[-1]["carried_text"] == ""
+
+
+def test_first_page_carries_nothing() -> None:
+    raw, pages = _filing([LONG_A])
+
+    [chunk] = _chunk(raw, pages)
+
+    assert chunk["carried_text"] == ""
 
 
 def test_tidy_collapses_blanks() -> None:
