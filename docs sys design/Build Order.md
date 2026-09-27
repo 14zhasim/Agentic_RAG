@@ -192,10 +192,9 @@ These invalidate answers generated at the old settings, so they come before spen
     settings in `configs/financebench.toml`
 - what each tool is for
   - LlamaIndex — orchestration + components: chunking and markdown parsing (heading paths), BM25
-    retrieval (wraps `bm25s`) with metadata filters, semantic retrieval with metadata filters, RRF
-    fusion (`QueryFusionRetriever(mode="reciprocal_rerank")`, `num_queries=1` to stop it inventing
-    extra queries), reranking (Voyage post-processor), and the Exp3 agent loop (`max_iterations` +
-    `early_stopping_method="generate"`)
+    retrieval (wraps `bm25s`) with metadata filters, semantic retrieval with metadata filters, and
+    the Exp3 agent loop (`max_iterations` + `early_stopping_method="generate"`). RRF and the Voyage
+    rerank call are ours (Stage 2.2-2.3)
   - Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll
     save/load. For Exp2, pull the embeddings out and score in numpy
   - Azure Document Intelligence — parsing (PageIndex is the live fallback)
@@ -541,6 +540,15 @@ reports.
     "3M" vs "3M Company" can't mismatch
   - filter chunks BEFORE search
   - if the filter matches no filing, search unfiltered rather than returning nothing
+- DECIDED (27 Sep 2026):
+  - model: GLM-5.3-flash via OpenRouter, reasoning effort `low`, in `configs/sec_rag.toml` — an
+    easy task, and ~224 extra calls; the write-up states `low` here vs `high` for answering
+  - output JSON: `filename` (from the list, or `null`), `keyword_query`, `semantic_query`; the
+    filename already encodes company, year and doc_type
+  - the SAME call in both conditions: single_store gets a one-filename list (the scope), so it
+    just returns it and still writes both queries; shared_store gets all 64
+  - a name not on the list counts as `null`; `null` → search the benchmark's whole scope
+    unfiltered, recorded as a filter miss. The filter narrows within the scope, never widens it
 - the query-enhancement prompt lives in ONE place, called by both Exp1 and Exp3
   - Exp1 calls it once up front; Exp3's agent does the same job through its first two steps
   - otherwise the two experiments quietly diverge
@@ -567,12 +575,24 @@ reports.
     scores
 - RRF, k=60
   - fuse longer lists (e.g. top-50 from each search), then cut to top-k after fusion
+  - DECIDED (27 Sep 2026): keyword query → BM25, semantic query → Chroma (`input_type="query"`);
+    each returns its top 50, filtered at creation; BM25 score-0 results dropped (Stage 1.5
+    finding 3); fused list keeps 50 for the reranker
+  - DECIDED: RRF written by us (~10 lines), not `QueryFusionRetriever`, which sends ONE query to
+    every retriever (and fixes k in code); we send two different ones
+- ablations reuse this function: BM25 only / semantic only skip one list; no reranker returns
+  the fused top 10; no query enhancement sends the raw question with only the benchmark's scope
 - no auto-merge for Exp1: chunks are page-bounded and at most 1,024 tokens, and a typical page's
   prose is ~630 tokens, so a chunk is already most of a page — parent ≈ chunk
 
 ## 2.3 Rerank
 
 - use a reranker on the top-k to retrieve top-n (query-document)
+  - DECIDED (27 Sep 2026), shape A: fused top 50 → `rerank-3-lite` → top 10 to GLM, called with
+    the `voyageai` client directly (no LlamaIndex rerank package). Pre-rerank metrics = fused top
+    10, post-rerank = reranked top 10, both at depth 10
+  - DECIDED: rerank against the ORIGINAL question — what the answer model answers, immune to a
+    poor rewrite, and identical across every ablation
   - FinSage (2025) used BAAI/bge-reranker-v2-gemma via FlagEmbedding — that needs a GPU, so use the
     Voyage reranker API instead (same key/account as embeddings)
   - model: `rerank-3-lite` — $0.02/1M tokens with a 200M free allowance

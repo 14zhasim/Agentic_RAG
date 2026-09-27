@@ -119,17 +119,22 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 **Retrieval** — query enhancement narrows and expands the question, metadata filtering narrows the search pool, BM25 and semantic search run over that pool, and the two ranked lists are fused before reranking.
 
 1. **Query enhancement:** one LLM call returns structured JSON.
-   - Fields: company, year(s), doc_type, a keyword query (financial shorthand expanded out, e.g. PP&E → property, plant and equipment; COGS, DPO, FCF, capex), and a semantic query.
+   - Fields: a filename chosen from the list of searchable filings (or none, if unsure), a keyword query (financial shorthand expanded out, e.g. PP&E → property, plant and equipment; COGS, DPO, FCF, capex), and a semantic query. The filename already encodes company, year and filing type.
+   - Model: GLM-5.3-flash with reasoning effort `low` — choosing from a list and rewriting a question is a light task, and the answer model's `high` setting is unchanged.
+   - The same call runs in both retrieval conditions; only the list differs. In single-store the list holds just the in-scope filing, so the choice is trivial; in shared-store it holds all 64, and the choice is scored as filter accuracy.
    - This same prompt is used by both Experiment 1 (called once, up front) and Experiment 3 (called by the agent through its own first two steps), so the two experiments can't quietly diverge on this piece.
 2. **Metadata filtering:** filenames follow the pattern `COMPANY_YEAR_TYPE.pdf`.
    - The enhancement step chooses a filename directly (parsed from the right, since company names themselves can contain underscores) rather than matching separate metadata table columns.
    - Filtering happens on chunks *before* search.
-   - If the filter matches no filing, the system falls back to searching unfiltered rather than returning nothing.
-3. **BM25 + semantic search:** BM25 keyword search and semantic (embedding cosine-similarity) search run over the (possibly filtered) chunk set, in parallel.
+   - If no valid filename comes back, the system searches the whole scope unfiltered rather than returning nothing, and records a filter miss. The filter only narrows within the scope the benchmark condition supplies.
+3. **BM25 + semantic search:** the keyword query goes to BM25 and the semantic query to the vector store (embedded with `input_type="query"`), each over the (possibly filtered) chunk set, each returning its top 50. BM25 results scoring zero share no word with the query and are dropped.
 4. **RRF fusion:** the two ranked lists are combined with reciprocal rank fusion.
-   - RRF, k=60, via LlamaIndex's `QueryFusionRetriever` in `reciprocal_rerank` mode.
-   - `num_queries=1` so it doesn't invent extra queries.
-5. **Reranking:** the fused top-k (retrieval depth 10) is reranked by the Voyage reranker API (`rerank-3-lite`) to produce the final top-n context.
+   - RRF, k=60: each chunk scores 1/(60 + rank) in each list it appears in, summed, so a chunk both searches rank highly beats one only a single search likes.
+   - Implemented directly (about ten lines) rather than with LlamaIndex's `QueryFusionRetriever`, which sends one query string to every retriever, whereas BM25 and the vector store here receive different queries.
+5. **Reranking:** the fused top 50 is reranked by the Voyage reranker API (`rerank-3-lite`), and its top 10 becomes the final context.
+   - Reranking 50 rather than 10 lets the reranker rescue a relevant chunk that fusion placed 11th-50th.
+   - The reranker scores chunks against the original question rather than the rewritten semantic query, so a poor rewrite cannot mislead it and its input is the same in every ablation.
+   - Page metrics are taken on the fused top 10 (pre-rerank) and the reranked top 10 (post-rerank), so both are scored at the same depth.
    - `rerank-3-lite` over the 2.5 line because the 3 models carry a 200M free-token allowance while 2.5 has none, and Voyage state the newer line is strictly better on quality, context length, latency and throughput.
    - a full 112-question run costs roughly 6M reranking tokens, about 3% of that allowance, so `rerank-3` is equally affordable and one string away if needed.
    - which model to keep is decided on our own pre/post-rerank page metrics, since no trustworthy public reranker leaderboard exists and published comparisons sit within 1-3 NDCG points of each other.
@@ -164,12 +169,12 @@ flowchart TB
     end
 
     subgraph RET["RETRIEVAL"]
-        C1[Query enhancement LLM call<br/>-> company, year, doc_type,<br/>keyword query, semantic query]
-        C2[Metadata filter<br/>select filename by COMPANY_YEAR_TYPE<br/>fallback: unfiltered if no match]
+        C1[Query enhancement LLM call<br/>-> filename from list,<br/>keyword query, semantic query]
+        C2[Metadata filter<br/>chosen COMPANY_YEAR_TYPE filename<br/>fallback: whole scope if none]
         C3[BM25 search]
         C4[Semantic search]
         C5[RRF fusion<br/>k=60]
-        C6[Voyage reranker<br/>top-k -> top-n]
+        C6[Voyage reranker<br/>fused top 50 -> top 10]
         C1 --> C2 --> C3
         C2 --> C4
         C3 --> C5
@@ -200,12 +205,13 @@ flowchart TB
 | Page-bounded chunking (every chunk belongs to exactly one page; a carried-over sentence is text only) | Keeps page-based retrieval metrics (recall, precision, MRR) exact — a chunk can't straddle a page boundary and blur which page it "belongs" to. Enforced with a harness assertion. |
 | Tables and figures as their own chunks | Table structure and the footnote/table relationship is exactly where naive text chunking breaks; giving each table its own chunk preserves it. No table is large enough to need splitting (largest 3,863 tokens against a 32,000-token limit). Figures get the same treatment so a chart's labels and numbers stay together. |
 | Structure-based chunking for prose (cut at headings, ~250-1,024 tokens) | Chunks follow the document's own sections, so each chunk mostly sits under one heading — which also gives Experiment 2 clean heading paths on the same chunks. Cuts use Azure's raw heading positions, so Experiment 1 doesn't wait for the heading-fix pass. A fixed-size baseline is deferred as an ablation. |
-| LlamaIndex for orchestration | Provides chunking, BM25 retrieval (wrapping `bm25s`) with metadata filters, semantic retrieval with metadata filters, RRF fusion, and a Voyage reranker postprocessor as ready components, kept consistent with the same framework across chunking, hybrid retrieval, and later the Experiment 3 agent loop, rather than mixing frameworks (e.g. LangChain for splitting). |
+| LlamaIndex for orchestration | Provides chunking, BM25 retrieval (wrapping `bm25s`) with metadata filters, and semantic retrieval with metadata filters as ready components (fusion and the reranker call are short enough to write directly), kept consistent with the same framework across chunking, hybrid retrieval, and later the Experiment 3 agent loop, rather than mixing frameworks (e.g. LangChain for splitting). |
 | `bm25s` via LlamaIndex's `BM25Retriever` | Faster than a hand-built keyword index using the same underlying data structures; must be checked (pinned to a current version) that its `filters` argument actually filters on this project's data, since that support was only recently added — fallback is building the retriever from an already-filtered node list. |
 | voyage-4-lite for embeddings | Cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard; the 200M free-token allowance covers the full corpus (~10M tokens) even across several re-chunks. |
 | Filter chunks before search, then RRF-fuse BM25 and semantic results | Filtering narrows the candidate set to the right filing(s) before either retrieval method runs, so fusion combines two rankings over the same (correct) pool rather than fusing then filtering. |
 | RRF with k=60 | Standard reciprocal-rank-fusion constant for combining ranked lists from heterogeneous scoring systems (BM25 scores and cosine similarities aren't on the same scale, so rank position rather than raw score is fused). |
-| Retrieval depth (top-k) 10 before reranking | Matches FinCARDS' use of top-10 as the candidate pool size handed to the reranker. |
+| 50 candidates per search and into the reranker; 10 chunks to the answer model | Fusing and reranking longer lists lets a relevant chunk ranked below 10 by either search still reach the context. The final depth of 10 matches FinCARDS' top-10. |
+| Query enhancement at reasoning effort `low` | Choosing a filename from a closed list and rewriting a question is a light task; `low` keeps the extra call per question fast. The answer model's settings are unchanged. |
 | Voyage reranker instead of a GPU reranker (e.g. `BAAI/bge-reranker-v2-gemma`) | Avoids standing up local GPU infrastructure for reranking; used as an API call instead, at the cost of a per-call dependency on Voyage's service. |
 | Filenames (not a metadata table) as the filter target | Filenames already encode `COMPANY_YEAR_TYPE`, so the query-enhancement LLM call can select a filing directly by returning a filename (parsed from the right, since company names can contain underscores), rather than joining against separate metadata columns. |
 | Fall back to unfiltered search when the chosen filter matches no filing | Prevents a wrong or overly narrow filter from silently returning nothing — the system still attempts to answer rather than failing closed. |
@@ -240,7 +246,7 @@ flowchart TB
 - **Ablations on the Experiment 1 pipeline** (each removes or swaps exactly one component so its individual contribution can be measured):
   - BM25 only — drop semantic search and fusion, keep query enhancement and reranking.
   - Semantic only — drop BM25 and fusion, keep query enhancement and reranking.
-  - No reranker — take the RRF-fused top-k straight to generation, skipping the Voyage reranking step.
+  - No reranker — take the RRF-fused top 10 straight to generation, skipping the Voyage reranking step.
   - No query enhancement — search with the raw user question, no metadata filter, no expanded keyword/semantic query pair.
   - DEFERRED, only if time remains: fixed-size chunking — 512-token chunks within each page instead of heading cuts, to measure what structure-based chunking contributes.
 
