@@ -160,10 +160,10 @@ https://developers.llamaindex.ai/python/framework/module_guides/loading/document
 The split follows Stage 1.1's pattern: `structure_report.py` holds the logic
 (JSON in, text out, no files), and `inspect_parse.py` handles the files.
 
-- **Create `src/sec_rag/ingestion/chunk.py`: the chunking rules.** It takes
+- **Create `src/sec_rag/chunking/chunk.py`: the chunking rules.** It takes
   a parse and its pages in memory and returns chunk records. It touches no
   files, so tests can feed it a small hand-made page.
-- **Create `src/sec_rag/ingestion/chunk_files.py`: chunk files on disk.** It
+- **Create `src/sec_rag/chunking/chunk_files.py`: chunk files on disk.** It
   builds the chunk file for each selected filing, reads one back, and
   formats one page's chunks for inspection (Stage 1.4).
 - **Modify `src/sec_rag/config.py`:** validate the new settings (below).
@@ -175,8 +175,12 @@ The split follows Stage 1.1's pattern: `structure_report.py` holds the logic
   extend `tests/test_sec_rag_config.py` and `tests/test_sec_rag_cli.py`.
   The scenarios are listed in Gate 3.
 
-Chunking sits in `ingestion/` because the Draft puts Chunk under "Ingest
-files". A separate `chunking/` package would hold two files.
+Chunking has its own package, `src/sec_rag/chunking/`, beside
+`ingestion/`. Ingestion gets the filings in and readable (parse, pages,
+headings); chunking decides how they're cut, which is the design both
+experiments share. `chunk.py` imports `extract_headings` from
+`ingestion/headings.py`, and `chunk_files.py` imports `load_pages`,
+`read_json`, `json_path` and `select_documents` from `ingestion/`.
 
 ```mermaid
 flowchart TD
@@ -241,7 +245,7 @@ Three details of this record:
   offsets, which is how the Draft's rule "the carried sentence lives in the
   chunk's text only" is kept.
 - **Tidying.** "Blank runs tidied" means: runs of spaces become one space,
-  spaces at a line's end are removed, three or more newlines become two,
+  spaces at a line's start or end are removed, three or more newlines become two,
   and the ends are stripped. Tables keep their HTML (`<table><tr><td>...`),
   exactly as Azure wrote it, because the rows and columns are what the
   answer model reads.
@@ -785,7 +789,7 @@ def _last_sentence(text, cap):
   package, so there's no network call. Counting the tidied text means blank
   gaps don't count as tokens.
 - **`tidy(text)`** squashes the blanks left by page markers and removed
-  tables: runs of spaces become one space, spaces at a line end go, three
+  tables: runs of spaces become one space, spaces at a line's start or end go, three
   or more newlines become two, and the ends are stripped. It's only used on
   text leaving the chunker; positions are always worked out on the
   untidied text.
@@ -886,7 +890,7 @@ reviewing on its own before the size and overlap rules are layered on top.
 
 **Files:**
 
-- Create `src/sec_rag/ingestion/chunk.py`: `chunk_filing`,
+- Create `src/sec_rag/chunking/chunk.py`: `chunk_filing`,
   `_table_and_figure_spans`, `_chunk_page`, `_cut_at_headings`, `_record`,
   `count_tokens`, `tidy`. In this slice `_chunk_page` has no halving and no
   overlap: `carried_text` is always `""`.
@@ -920,7 +924,7 @@ reviewing on its own before the size and overlap rules are layered on top.
 
 - [ ] Write the tests; run `uv run pytest tests/test_chunk.py
   tests/test_sec_rag_config.py -v`. Expected: FAIL, `ModuleNotFoundError:
-  sec_rag.ingestion.chunk`, plus the config tests failing on the missing
+  sec_rag.chunking.chunk`, plus the config tests failing on the missing
   validation.
 - [ ] Implement from the pseudocode above, minus halving and overlap.
 - [ ] Run the focused tests, then the full verification (below).
@@ -934,7 +938,7 @@ reviewing on its own before the size and overlap rules are layered on top.
 sentences, and chunks starting at a page break or a halving cut carry the
 previous sentence.
 
-**Files:** modify `src/sec_rag/ingestion/chunk.py` (add
+**Files:** modify `src/sec_rag/chunking/chunk.py` (add
 `_halve_until_fits`, `_halving_point` and `_last_sentence`, and wire them
 into `_chunk_page`); extend `tests/test_chunk.py`.
 
@@ -976,7 +980,7 @@ into `_chunk_page`); extend `tests/test_chunk.py`.
 **Purpose:** `sec-rag chunk` writes one chunk file per filing and prints
 the summary; then it's run on all 64 filings.
 
-**Files:** create `src/sec_rag/ingestion/chunk_files.py` (`build_chunks`,
+**Files:** create `src/sec_rag/chunking/chunk_files.py` (`build_chunks`,
 `_summary`, `read_chunks`, `chunks_path`); modify `src/sec_rag/cli.py`
 (the `chunk` command); create `tests/test_chunk_files.py`; extend
 `tests/test_sec_rag_cli.py`.
@@ -997,7 +1001,7 @@ the summary; then it's run on all 64 filings.
 **Steps:**
 
 - [ ] Write the tests and watch them fail (`ModuleNotFoundError:
-  sec_rag.ingestion.chunk_files`).
+  sec_rag.chunking.chunk_files`).
 - [ ] Implement, run the focused tests, then the full verification.
 - [ ] Run it for real, free and offline: `uv run sec-rag chunk --config
   configs/sec_rag.toml`. Record the summary in this guide and in the Build
@@ -1014,7 +1018,7 @@ the summary; then it's run on all 64 filings.
 used on the gold pages of three FinanceBench questions: the Build Order's
 "done when" for Stage 1.
 
-**Files:** modify `src/sec_rag/ingestion/chunk_files.py` (add
+**Files:** modify `src/sec_rag/chunking/chunk_files.py` (add
 `format_page_chunks`) and `src/sec_rag/cli.py` (the `inspect-chunks`
 command); extend both test files.
 
@@ -1062,3 +1066,34 @@ changes from this session (the Draft, Build Order and Exp 1-3 edits, plus
 this guide) are a separate documentation commit, made first. The corpus-run
 numbers recorded in Slice 3 are results, so they go in their own
 documentation commit, not with the code.
+
+---
+
+## As built
+
+### Slice 1: tables, figures and heading cuts
+
+- `src/sec_rag/chunking/chunk.py`: `chunk_filing` → `_table_and_figure_spans`,
+  `_chunk_page` → `_cut_at_headings`, `_record`; plus `_blank`,
+  `count_tokens` and `tidy`. `Element` (start, end, kind) holds a table or
+  figure; `Piece` holds a prose stretch and its `starts_at` label.
+- `src/sec_rag/config.py` and `configs/sec_rag.toml`: `chunks_dir` and
+  `[chunking]`, required. Settings must be positive whole numbers (`true`
+  is refused, since Python treats it as 1), and the ceiling must be at
+  least twice the floor.
+- Tests: `tests/test_chunk.py` (13 tests, every chunker test also checking
+  one page per chunk); `tests/test_sec_rag_config.py` (7). The two existing
+  test configs gained `chunks_dir` and `[chunking]`.
+- Checked on the real parse: 3M 2018 page index 12 gives exactly the worked
+  example: `p12:c0` prose at 54,616-56,048 (330 tokens) and `p12:c1` the
+  table at 56,051-58,710 (1,133 tokens).
+- Differences from the plan:
+  - Chunking moved from `ingestion/` into its own `src/sec_rag/chunking/`
+    package at review, so how filings are cut is kept apart from getting
+    them in.
+  - `tidy` also removes spaces at the start of a line, not only at the
+    end. A blanked page marker often sits just before text on the same
+    line, which would otherwise leave a stray leading space.
+  - Elements and prose pieces are merged as simple (start, end, kind, own
+    text) tuples inside `_chunk_page`, rather than a separate structure
+    per kind.

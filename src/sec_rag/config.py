@@ -8,7 +8,7 @@ from typing import Any
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Load and validate parser settings with repository-relative paths resolved.
+    """Load and validate parser and chunker settings with repository-relative paths resolved.
 
     The benchmark and RAG system use separate TOML files because they own
     different result-affecting behaviour. This loader has no credential or data
@@ -19,10 +19,17 @@ def load_config(path: str | Path) -> dict[str, Any]:
     project_root = config_path.resolve().parent.parent
     corpus = config.get("corpus")
     parsing = config.get("parsing")
-    if not isinstance(corpus, dict) or not isinstance(parsing, dict):
-        raise ValueError("SEC RAG configuration needs [corpus] and [parsing] sections")
+    chunking = config.get("chunking")
+    if (
+        not isinstance(corpus, dict)
+        or not isinstance(parsing, dict)
+        or not isinstance(chunking, dict)
+    ):
+        raise ValueError(
+            "SEC RAG configuration needs [corpus], [parsing] and [chunking] sections"
+        )
 
-    for key in ("prepared_dir", "parsed_dir"):
+    for key in ("prepared_dir", "parsed_dir", "chunks_dir"):
         value = corpus.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"corpus.{key} must be a non-empty path")
@@ -42,4 +49,15 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Stage 1.1 requires the prebuilt-layout model")
     if parsing.get("output_content_format") != "markdown":
         raise ValueError("Stage 1.1 requires markdown output")
+
+    for key in ("floor_tokens", "ceiling_tokens", "overlap_cap_tokens"):
+        value = chunking.get(key)
+        # bool is a subclass of int in Python, so `true` would pass isinstance.
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"chunking.{key} must be a positive whole number")
+    # Build Order 1.3: "halving something over 1,024 always leaves both sides
+    # over 512, so the floor cannot be violated" only holds while the ceiling
+    # is at least twice the floor.
+    if chunking["ceiling_tokens"] < 2 * chunking["floor_tokens"]:
+        raise ValueError("chunking.ceiling_tokens must be at least twice floor_tokens")
     return config

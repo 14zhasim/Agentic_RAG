@@ -26,12 +26,18 @@ def _write_config_with_pdf(tmp_path: Path) -> Path:
         """[corpus]
 prepared_dir = "data/financebench"
 parsed_dir = "data/financebench/parsed"
+chunks_dir = "data/financebench/chunks"
 expected_documents = 1
 
 [parsing]
 provider = "azure-document-intelligence"
 model_id = "prebuilt-layout"
 output_content_format = "markdown"
+
+[chunking]
+floor_tokens = 250
+ceiling_tokens = 1024
+overlap_cap_tokens = 100
 """,
         encoding="utf-8",
     )

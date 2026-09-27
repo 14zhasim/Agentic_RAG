@@ -1,9 +1,15 @@
 [corpus]
 prepared_dir = "data/financebench"
 parsed_dir = "data/financebench/parsed"
+chunks_dir = "data/financebench/chunks"
 expected_documents = 64
 
 [parsing]
 provider = "azure-document-intelligence"
 model_id = "prebuilt-layout"
 output_content_format = "markdown"
+
+[chunking]
+floor_tokens = 250         # a heading cut needs both pieces at least this big
+ceiling_tokens = 1024      # prose over this is halved at a sentence
+overlap_cap_tokens = 100   # most text carried across a page break or halving cut
