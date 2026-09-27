@@ -30,6 +30,11 @@ fetch llamaindex/rrf_fusion.md https://developers.llamaindex.ai/python/examples/
 fetch llamaindex/agents.md https://developers.llamaindex.ai/python/framework/module_guides/deploying/agents/index.md
 fetch llamaindex/agent_tutorial.md https://developers.llamaindex.ai/python/framework/understanding/agent/index.md
 fetch llamaindex/node_parsers.md https://developers.llamaindex.ai/python/framework/module_guides/loading/node_parsers/index.md
+fetch llamaindex/node_parser_modules.md https://developers.llamaindex.ai/python/framework/module_guides/loading/node_parsers/modules/index.md
+fetch llamaindex/usage_documents.md https://developers.llamaindex.ai/python/framework/module_guides/loading/documents_and_nodes/usage_documents/index.md
+fetch llamaindex/usage_nodes.md https://developers.llamaindex.ai/python/framework/module_guides/loading/documents_and_nodes/usage_nodes/index.md
+fetch llamaindex/ingestion_pipeline.md https://developers.llamaindex.ai/python/framework/module_guides/loading/ingestion_pipeline/index.md
+fetch llamaindex/settings.md https://developers.llamaindex.ai/python/framework/module_guides/supporting_modules/settings/index.md
 fetch llamaindex/node_postprocessors.md https://developers.llamaindex.ai/python/framework/module_guides/querying/node_postprocessors/index.md
 fetch llamaindex/vector_stores.md https://developers.llamaindex.ai/python/framework/module_guides/storing/vector_stores/index.md
 fetch llamaindex/retrievers.md https://developers.llamaindex.ai/python/framework/module_guides/querying/retriever/index.md
