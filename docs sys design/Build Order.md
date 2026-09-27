@@ -329,7 +329,9 @@ levels.
   (axis labels, legend, numbers) stays together rather than being mixed into the prose
   - measured on all 64 filings: 266 figures in 52 filings, none crosses a page or overlaps a table,
     median 38 tokens, largest 336 — mostly stock-performance graphs
-  - a figure with no text (39 of 266, likely logos) is not a chunk: there is nothing to search
+  - a figure with no text (37 of 266, likely logos, three of them PayPal's holding only a page
+    footer) is not a chunk: there is nothing to search. A captioned figure is always kept — all 72
+    captions sit inside their figure's text
 - after removing tables and figures (headers/footers/page numbers are already blanked —
   `load_pages`, 1.1), **join the page's remaining prose into one stream before cutting**. Cutting a
   table out of the middle leaves disconnected slivers; chunking those separately produced 50% of
@@ -342,16 +344,20 @@ levels.
   - anything still over 1,024 tokens is halved at the nearest sentence boundary to its midpoint,
     recursively. Halving something over 1,024 always leaves both sides over 512, so the floor cannot
     be violated
-  - measured on 3M 2018: 244 text chunks + 119 table chunks, median 512 tokens, 89% between 250 and
-    1,024
+  - measured on all 64 filings with the built chunker (cl100k tokens): 21,039 chunks — 14,369
+    prose, 6,441 table, 229 figure — 9.8M tokens in all. Median prose chunk 429 tokens; 85% of prose
+    chunks between 250 and 1,024; 71 over the ceiling, only through carried text. On 3M 2018: 341
+    chunks, median prose 448 tokens, 86% in range
   - if a heading cut is rejected for being too small, keep the page whole and **merge the heading
     paths: shared ancestors once, distinct tails joined** —
     `PART I > [Item 2. Properties | Item 3. Legal Proceedings]`
     - this needs no change to Exp2: the structure vector is a softmax-weighted average over a SET of
       headings, not a single path, so the weights favour whichever tail matches the chunk
     - the merge happens when `heading_path` is attributed at Stage 3, from the chunk's raw offsets
-  - re-measure on all 64 filings when the chunker is built: the 3M figures above used characters ÷
-    4 as a token proxy
+  - OPEN, found in the corpus run: 2,085 prose chunks are under the floor, 811 of them under 50
+    tokens, and 742 of those sit on a page with a table. Many are a financial statement's title
+    ("3M Company and Subsidiaries Consolidated Balance Sheet") cut off from its table, so the table
+    chunk never says "balance sheet". See Implementation Guide 1.3 → Corpus results
 - **DEFERRED, only if time remains — fixed-size chunking ablation for Exp1:** a 512-token
   recursive/sentence splitter within the page, no heading cuts, compared against structure-based
   chunking
@@ -437,8 +443,8 @@ levels.
   - cheapest embedder above 80% on the RTEB(fin) leaderboard
   - first 200M tokens free, then $0.02/1M
 - embedding decisions
-  - cost: ~10k chunks × ~1k tokens ≈ 10M tokens, inside the free allowance even with several
-    re-chunks
+  - cost: measured at 9.8M tokens over 21,039 chunks (Stage 1.3), inside the free allowance even
+    with several re-chunks
   - label inputs: chunks `input_type="document"`, questions `input_type="query"`
   - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds
     changed chunks

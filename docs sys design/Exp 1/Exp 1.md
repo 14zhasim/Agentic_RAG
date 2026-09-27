@@ -104,7 +104,7 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 **Storage** — two indexes are built over the chunks, each filterable by metadata before search runs.
 
 - **Vector store:** chunk embeddings via `voyage-4-lite`.
-  - Chosen as the cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard segment, with a 200M-token free allowance that comfortably covers the corpus (~10k chunks × ~1k tokens ≈ 10M tokens, even across several re-chunks).
+  - Chosen as the cheapest embedder scoring above 80% on the relevant MTEB/RTEB (finance) leaderboard segment, with a 200M-token free allowance that comfortably covers the corpus (measured at 9.8M tokens over 21,039 chunks, even across several re-chunks).
   - Chunks are embedded with `input_type="document"`, questions with `input_type="query"`.
   - Each embedding is cached, keyed by model name plus a hash of the chunk text, so re-chunking only re-embeds what changed.
 - **Keyword index:** `bm25s`, via LlamaIndex's `BM25Retriever`.

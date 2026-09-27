@@ -326,7 +326,7 @@ Ingest files
   - **2. Tables and figures: each is its own chunk, never split.** Doable because Azure gives every table and figure its own character position (the element boundaries Jimeno Yepes (2024) chunked along: sections, titles, tables, text, figures — so a page can hold several chunks)
     - tables: on 48 filings none of 5,044 tables crosses a page and the largest is 3,863 tokens, far inside Voyage's 32,000-token embed/rerank limit, so no row-splitting is needed
     - figures: cut out like a table, so a chart's labels and numbers stay together instead of mixing into the prose. On all 64 filings: 266 figures, none crosses a page or overlaps a table, median 38 tokens
-    - a figure with no text (39 of 266, likely logos) is not a chunk: there is nothing to search
+    - a figure with no text (37 of 266, likely logos) is not a chunk: there is nothing to search. A captioned figure is always kept, since its caption sits inside its text
   - **3. Prose: join the page, then cut at headings (structure-based chunking).**
     - after removing tables, figures and noise, join the page's remaining prose into one stream before cutting (chunking the slivers between tables separately made 50% of chunks under 100 tokens in the spike)
     - cut at section headings, with a floor of ~250 tokens and a ceiling of 1,024. Accept a heading cut only if the piece before it and the remainder both clear ~250 tokens; otherwise skip that cut. Several headings on one page are tried in order, left to right
@@ -394,7 +394,7 @@ Ingest files
   - embed each heading level separately (each unique heading embedded once, reused across chunks)
   - store heading embeddings separately from chunk embeddings, linked by chunk ID via the chunk's heading path, not in metadata.
   - embedding decisions
-    - cost: ~10k chunks × ~1k tokens ≈ 10M tokens, inside the 200M free allowance even with several re-chunks
+    - cost: measured at 9.8M tokens over 21,039 chunks (Build Order 1.3), inside the 200M free allowance even with several re-chunks
     - label inputs: embed chunks with Voyage `input_type="document"`, questions with `input_type="query"`
     - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds changed chunks
     - HARNESS (build with Exp1): prediction row records embedding + rerank cost too, not just the answer model's

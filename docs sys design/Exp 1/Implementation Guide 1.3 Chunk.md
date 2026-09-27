@@ -380,9 +380,9 @@ Each of these gets a test in Gate 3.
 - **Blank page, or a page of only tables and figures:** no prose chunk. The
   carry resets to nothing, since a sentence can't continue across a page
   with no prose.
-- **Figure with no text** (`<figure>\n</figure>`, 34 of 266 once only
-  the `<figure>` tags are removed; the Draft's 39 used a looser test and
-  is corrected from the Slice 3 run): no chunk, counted in the summary. A
+- **Figure with no text** (37 of 266 in the corpus run: 34 are
+  `<figure>\n</figure>`, and 3 are PayPal logos holding only a page footer,
+  which `load_pages` has already blanked): no chunk, counted in the summary. A
   captioned figure is never skipped, because its caption sits inside its
   text (all 72 captions).
 - **Figure without a `<figure>` tag:** two NIKE cover pages have a "figure"
@@ -528,8 +528,9 @@ What it does:
 2. **Take out the tables and figures.** Each becomes its own chunk, as it
    is (rule 2). Then its characters are blanked in `prose`. A figure is
    skipped, not made a chunk, if nothing is left once its `<figure>` and
-   `</figure>` tags are removed (34 of 266 on all 64 filings, all of them
-   `<figure>\n</figure>`). A caption counts as text: all 72 captions sit
+   `</figure>` tags are removed (37 of 266 on all 64 filings: mostly
+   `<figure>\n</figure>`, plus 3 PayPal logos holding only a blanked page
+   footer). A caption counts as text: all 72 captions sit
    inside their figure's text as `<figcaption>...</figcaption>`, so a
    captioned figure is always kept.
 3. **Cut the prose.** Ask `_cut_at_headings` where to cut, then ask
@@ -1150,3 +1151,38 @@ documentation commit, not with the code.
     one page prints to the terminal, as planned.
   - Page headers give both numbers: "Page index 59 (PDF page 60)", since
     FinanceBench counts from 0 and a PDF viewer from 1.
+
+### Corpus results (27 September 2026)
+
+`uv run sec-rag chunk --config configs/sec_rag.toml`, all 64 filings, 36
+seconds, free:
+
+| Measure | All 64 filings | 3M 2018 |
+|---|---|---|
+| Chunks | 21,039 (14,369 prose, 6,441 table, 229 figure) | 341 (222 prose) |
+| Tokens in all | 9.8M (prose 6.4M, tables 3.4M) | — |
+| Median prose chunk | 429 tokens | 448 tokens |
+| Prose between floor and ceiling | 85.0% | 86% |
+| Prose over the ceiling (carried text only) | 71 | 2 |
+| Prose under the floor | 2,085 | — |
+| Empty figures skipped | 37 | 0 |
+
+- The Build Order's embedding estimate holds: it assumed ~10k chunks of
+  ~1k tokens (~10M tokens). There are twice as many chunks, but smaller,
+  and the total is 9.8M.
+- Gold-page check (Build Order's "done when"), on both FinanceBench
+  questions about 3M 2018:
+  - `financebench_id_03029`, FY2018 capital expenditure, $1,577m, page
+    index 59: the figure is inside `p59:c1`, the whole cash-flow table
+    ("Purchases of property, plant and equipment (PP&E) (1,577)").
+  - `financebench_id_04672`, page index 57: `p57:c1` is the whole balance
+    sheet table.
+- **Open: statement titles are cut off from their tables.** Of the 2,085
+  prose chunks under the floor, 811 are under 50 tokens, and 742 of those
+  sit on a page with a table. Many are a financial statement's title, e.g.
+  `p57:c0` is only "3M Company and Subsidiaries Consolidated Balance Sheet
+  At December 31" plus a one-line note, while the table chunk `p57:c1`
+  never says "balance sheet". Keyword and dense search for "balance sheet"
+  would then find the title, not the numbers. The rules as written produce
+  this (tables are cut out whole, and the page's prose is one piece), so
+  it's a design decision for Stage 1.3, not a bug. Not yet decided.
