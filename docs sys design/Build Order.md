@@ -712,6 +712,10 @@ answers live.
   - no 2d vector store needed: the concatenated score equals (q · H_si) + (q · H_ci), so compute
     the two scores separately and add them
   - chunks with no heading fall back to the chunk score alone
+  - both terms are real cosines computed in numpy from the stored vectors. Do NOT reuse the score
+    LlamaIndex's Chroma query reports: it is `exp(-distance)` = `exp(-(1 − cosine))`
+    (`chroma/base.py` line 472), which ranks the same but can't be added to a cosine. Checked on our
+    index, 27 Sep 2026: printed 0.7634 = cosine 0.7301 (cosine = 1 + ln(score))
   - implementation: subclass LlamaIndex's `BaseRetriever` (~20 lines) — RRF can't express this,
     because it fuses ranked lists rather than scoring chunks
 - softmax divisor (temperature `T`) is a CONFIG SETTING, starting value 0.05; try the theory's
