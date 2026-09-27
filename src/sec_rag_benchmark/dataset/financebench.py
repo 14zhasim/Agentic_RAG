@@ -12,7 +12,7 @@ import pymupdf
 
 QUESTIONS_FILE = "financebench_open_source_10k.jsonl"
 METADATA_FILE = "financebench_document_information_10k.jsonl"
-MANIFEST_FILE = "manifest.json"
+PREPARATION_RECORD_FILE = "dataset-preparation-record.json"
 QUESTION_COLUMNS = {
     "financebench_id",
     "company",
@@ -175,7 +175,7 @@ def _replace_prepared_files(
     return [question_path, metadata_path, *sorted(prepared_pdf_dir.glob("*.pdf"))]
 
 
-def _write_manifest(
+def _write_preparation_record(
     source: Path,
     output: Path,
     config: dict[str, Any],
@@ -184,7 +184,7 @@ def _write_manifest(
     generated_files: list[Path],
 ) -> None:
     """Record how the ignored prepared dataset was produced and hashed."""
-    manifest = {
+    preparation_record = {
         "source_path": str(source),
         "filter": {"doc_type": config["document_type"]},
         "expected": {
@@ -202,34 +202,36 @@ def _write_manifest(
             str(path.relative_to(output)): _hash(path) for path in generated_files
         },
     }
-    (output / MANIFEST_FILE).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    (output / PREPARATION_RECORD_FILE).write_text(
+        json.dumps(preparation_record, indent=2, sort_keys=True) + "\n"
     )
 
 
-def _validate_manifest(
+def _validate_preparation_record(
     output: Path,
     config: dict[str, Any],
     actual_pdf_names: set[str],
 ) -> None:
-    """Check that the manifest still describes the prepared files on disk."""
+    """Check that the preparation record still describes the files on disk."""
     try:
-        manifest = json.loads((output / MANIFEST_FILE).read_text(encoding="utf-8"))
+        preparation_record = json.loads(
+            (output / PREPARATION_RECORD_FILE).read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as error:
-        raise DataError(f"Cannot read prepared manifest: {error}") from error
+        raise DataError(f"Cannot read dataset preparation record: {error}") from error
 
-    if manifest.get("selected_filenames") != sorted(actual_pdf_names):
-        raise DataError("Manifest filenames do not match prepared PDFs")
+    if preparation_record.get("selected_filenames") != sorted(actual_pdf_names):
+        raise DataError("Preparation-record filenames do not match prepared PDFs")
     expected_counts = {
         "questions": config["expected_questions"],
         "documents": config["expected_documents"],
     }
-    if manifest.get("expected") != expected_counts:
-        raise DataError("Manifest counts do not match configuration")
-    for relative_path, expected_hash in manifest.get("sha256", {}).items():
+    if preparation_record.get("expected") != expected_counts:
+        raise DataError("Preparation-record counts do not match configuration")
+    for relative_path, expected_hash in preparation_record.get("sha256", {}).items():
         prepared_file = output / relative_path
         if not prepared_file.is_file() or _hash(prepared_file) != expected_hash:
-            raise DataError(f"Manifest hash does not match {relative_path}")
+            raise DataError(f"Preparation-record hash does not match {relative_path}")
 
 
 def prepare(config: dict[str, Any]) -> dict[str, int]:
@@ -254,7 +256,7 @@ def prepare(config: dict[str, Any]) -> dict[str, int]:
     generated_files = _replace_prepared_files(
         source, output, wanted_questions, wanted_metadata
     )
-    _write_manifest(
+    _write_preparation_record(
         source,
         output,
         config,
@@ -285,7 +287,7 @@ def validate(config: dict[str, Any]) -> dict[str, int]:
     actual_pdfs = {path.name for path in (output / "pdfs").glob("*.pdf")}
     if actual_pdfs != expected_pdfs:
         raise DataError("Prepared PDF set does not match selected metadata")
-    _validate_manifest(output, config, actual_pdfs)
+    _validate_preparation_record(output, config, actual_pdfs)
     return {"questions": len(questions), "documents": len(metadata)}
 
 

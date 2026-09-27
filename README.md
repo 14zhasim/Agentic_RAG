@@ -23,6 +23,10 @@ validated against published labels. HiREC/LOFin support remains deferred.
 
 ```text
 configs/financebench.toml          editable dataset, generation and run settings
+configs/sec_rag.toml               parser settings for the system being evaluated
+src/sec_rag/                       the system being evaluated
+├── ingestion/                     Azure parse run, heading list, inspection report
+└── cli.py                         sec-rag terminal commands
 src/sec_rag_benchmark/
 ├── config.py                      load and validate benchmark settings
 ├── dataset/                       preparation and development subsets
@@ -101,7 +105,74 @@ uv run sec-rag-benchmark validate --config configs/financebench.toml
 
 Preparation filters the original source files to 10-Ks and creates the local
 112-question/64-PDF subset under `data/financebench/`. Validation checks the
-questions, metadata, evidence pages, PDFs and manifest.
+questions, metadata, evidence pages, PDFs and the dataset preparation record.
+
+## Parse and inspect filings
+
+These commands belong to the SEC RAG system, not the benchmark harness. Each
+filing is parsed once and saved as `data/financebench/parsed/<doc_name>.json`;
+a filing already saved is never sent again.
+
+Start with the no-spend plan. It reads local files only and prints how many
+filings are selected, already parsed, missing, and parsed by this run:
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml
+uv run sec-rag parse --config configs/sec_rag.toml --documents PEPSICO_2022_10K JPMORGAN_2022_10K
+```
+
+```text
+Selected: 64
+Done: 1
+Missing: 63
+Parsed now: 0
+```
+
+Paid parsing (~$1.70 and a few minutes per filing) needs the two Azure
+Document Intelligence variables in `.env`, loaded into the shell:
+
+```text
+AZURE_DOCUMENT_INTELLIGENCE_KEY=your-key-here
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+```
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Parse a small named batch first. `--execute-paid` is what makes a command
+spend; without it nothing is sent:
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml \
+  --documents PEPSICO_2022_10K JPMORGAN_2022_10K --execute-paid
+```
+
+Filings are sent one at a time, and the run stops at the first error; anything
+saved before it stays saved, so rerunning the same command continues from
+there. A saved file that fails the page-count check also stops the run, before
+anything is spent.
+
+Inspect the saved results before authorising the rest of the corpus. This is
+free and offline: it writes `data/financebench/parsed/<doc_name>.structure.txt`
+with each filing's headings, each page's heading path, and a figure count.
+Leave out `--documents` to inspect every parsed filing.
+
+```bash
+uv run sec-rag inspect-parse --config configs/sec_rag.toml \
+  --documents 3M_2018_10K PEPSICO_2022_10K JPMORGAN_2022_10K
+```
+
+Only after reviewing the reports, parse the remaining filings (~$104 for 61):
+
+```bash
+uv run sec-rag parse --config configs/sec_rag.toml --execute-paid
+```
+
+Azure parsing and benchmark generation are separate paid operations. The
+benchmark dry runs below neither parse documents nor call a generation model.
 
 ## Run a no-spend preflight
 

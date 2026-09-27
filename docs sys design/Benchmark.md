@@ -98,7 +98,7 @@ Prepare FinanceBench 10-K data:
 - Filter on `doc_type == "10k"` exactly — the value is lowercase, and a separate `10k_annualreport` type exists (6 docs). A `startswith`/case-insensitive match silently admits annual reports and breaks the 112.
 - The metadata file has 361 rows but only 360 unique `doc_name`s: `FOOTLOCKER_2023_annualreport` appears twice with conflicting `doc_period` (2023 vs 2022). A naive `{doc_name: row}` join silently keeps the last row — the join must raise on a conflicting duplicate instead.
 - Make preparation idempotent, so running it repeatedly produces the same prepared dataset without duplicate records.
-- Create a manifest that records:
+- Create `dataset-preparation-record.json`, which records:
   - source;
   - filter (i.e just 10-K filings);
   - expected and observed counts;

@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 
 from .config import load_config
-from .ingestion.azure import ParseStateError, parse_corpus
+from .ingestion.inspect_parse import inspect_parses
+from .ingestion.parse import ParseStateError, parse_corpus
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,12 +18,17 @@ def main(argv: list[str] | None = None) -> int:
     parse_parser.add_argument("--config", type=Path, required=True)
     parse_parser.add_argument("--documents", nargs="+")
     parse_parser.add_argument("--execute-paid", action="store_true")
+    inspect_parser = commands.add_parser("inspect-parse")
+    inspect_parser.add_argument("--config", type=Path, required=True)
+    inspect_parser.add_argument("--documents", nargs="+")
     args = parser.parse_args(argv)
 
     try:
         match args.command:
             case "parse":
                 return _run_parse(args)
+            case "inspect-parse":
+                return _run_inspect_parse(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -31,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_parse(args: argparse.Namespace) -> int:
-    """Load parser settings, run the selected parse action, and print counts."""
+    """Load parser settings, run the parse report (or paid parse), and print counts."""
     config = load_config(args.config)
     names = tuple(args.documents) if args.documents else None
     result = parse_corpus(
@@ -39,10 +45,17 @@ def _run_parse(args: argparse.Namespace) -> int:
         names,
         execute_paid=args.execute_paid,
     )
-    counts = result["counts"]
     print(f"Selected: {result['selected']}")
-    print(f"Complete: {counts['complete']}")
-    print(f"Missing: {counts['missing']}")
-    print(f"Invalid: {counts['invalid']}")
-    print(f"Parsed: {counts['parsed']}")
+    print(f"Done: {len(result['done'])}")
+    print(f"Missing: {len(result['missing'])}")
+    print(f"Parsed now: {len(result['parsed'])}")
+    return 0
+
+
+def _run_inspect_parse(args: argparse.Namespace) -> int:
+    """Load settings, render selected cache reports, and print their count."""
+    config = load_config(args.config)
+    names = tuple(args.documents) if args.documents else None
+    result = inspect_parses(config, names)
+    print(f"Inspected: {result['inspected']}")
     return 0
