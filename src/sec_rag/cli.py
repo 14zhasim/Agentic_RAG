@@ -1,4 +1,4 @@
-"""Translate SEC RAG terminal commands into ingestion and chunking operations."""
+"""Translate SEC RAG terminal commands into ingestion, chunking and indexing operations."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .chunking.chunk_files import (
     write_chunk_report,
 )
 from .config import load_config
+from .indexing.bm25_index import build_bm25_index
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
 
@@ -34,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     inspect_chunks_parser.add_argument("--config", type=Path, required=True)
     inspect_chunks_parser.add_argument("--document", required=True)
     inspect_chunks_parser.add_argument("--page", type=int)
+    index_bm25_parser = commands.add_parser("index-bm25")
+    index_bm25_parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -46,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_chunk(args)
             case "inspect-chunks":
                 return _run_inspect_chunks(args)
+            case "index-bm25":
+                return _run_index_bm25(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -110,4 +115,13 @@ def _run_inspect_chunks(args: argparse.Namespace) -> int:
         print(f"Wrote: {path}")
     else:
         print(format_page_chunks(read_chunks(config, doc_name), args.page))
+    return 0
+
+
+def _run_index_bm25(args: argparse.Namespace) -> int:
+    """Load settings, rebuild the BM25 index over every chunk file, and print counts."""
+    config = load_config(args.config)
+    summary = build_bm25_index(config)
+    print(f"Filings: {summary['filings']}")
+    print(f"Chunks indexed: {summary['chunks']}")
     return 0

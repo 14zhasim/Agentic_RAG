@@ -27,6 +27,7 @@ def _write_config_with_pdf(tmp_path: Path) -> Path:
 prepared_dir = "data/financebench"
 parsed_dir = "data/financebench/parsed"
 chunks_dir = "data/financebench/chunks"
+indexes_dir = "data/financebench/indexes"
 expected_documents = 1
 
 [parsing]
@@ -38,6 +39,11 @@ output_content_format = "markdown"
 floor_tokens = 250
 ceiling_tokens = 1024
 overlap_cap_tokens = 100
+
+[bm25]
+token_pattern = '(?u)[^\\W\\d_]+|\\d+'
+stopwords = "en"
+stemmer = "english"
 """,
         encoding="utf-8",
     )
@@ -204,6 +210,30 @@ def test_inspect_chunks_reports_a_filing_not_chunked_yet(
             "example_2024_10K",
         ]
     )
+
+    assert exit_code == 1
+    assert "Error: example_2024_10K: not chunked yet" in capsys.readouterr().out
+
+
+def test_index_bm25_command_builds_and_prints_counts(tmp_path: Path, capsys) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+    project = _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(["index-bm25", "--config", str(config_path)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "Filings: 1\nChunks indexed: 1\n"
+    assert (project / "data/financebench/indexes/bm25/retriever.json").is_file()
+
+
+def test_index_bm25_command_reports_a_filing_not_chunked_yet(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+
+    exit_code = main(["index-bm25", "--config", str(config_path)])
 
     assert exit_code == 1
     assert "Error: example_2024_10K: not chunked yet" in capsys.readouterr().out

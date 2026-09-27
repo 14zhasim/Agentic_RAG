@@ -8,7 +8,7 @@ from typing import Any
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Load and validate parser and chunker settings with repository-relative paths resolved.
+    """Load and validate parser, chunker and index settings with repository-relative paths resolved.
 
     The benchmark and RAG system use separate TOML files because they own
     different result-affecting behaviour. This loader has no credential or data
@@ -20,16 +20,19 @@ def load_config(path: str | Path) -> dict[str, Any]:
     corpus = config.get("corpus")
     parsing = config.get("parsing")
     chunking = config.get("chunking")
+    bm25 = config.get("bm25")
     if (
         not isinstance(corpus, dict)
         or not isinstance(parsing, dict)
         or not isinstance(chunking, dict)
+        or not isinstance(bm25, dict)
     ):
         raise ValueError(
-            "SEC RAG configuration needs [corpus], [parsing] and [chunking] sections"
+            "SEC RAG configuration needs [corpus], [parsing], [chunking] "
+            "and [bm25] sections"
         )
 
-    for key in ("prepared_dir", "parsed_dir", "chunks_dir"):
+    for key in ("prepared_dir", "parsed_dir", "chunks_dir", "indexes_dir"):
         value = corpus.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"corpus.{key} must be a non-empty path")
@@ -60,4 +63,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
     # is at least twice the floor.
     if chunking["ceiling_tokens"] < 2 * chunking["floor_tokens"]:
         raise ValueError("chunking.ceiling_tokens must be at least twice floor_tokens")
+
+    # Implementation Guide 1.5-1.6 -> Configuration: the word-splitting
+    # pattern, stopword list and stemmer are applied both when the index is
+    # built and whenever it is reloaded, so they live here, not in code.
+    for key in ("token_pattern", "stopwords", "stemmer"):
+        value = bm25.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"bm25.{key} must be a non-empty string")
     return config

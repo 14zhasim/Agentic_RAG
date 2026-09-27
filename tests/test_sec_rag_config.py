@@ -12,6 +12,7 @@ VALID_CONFIG = """[corpus]
 prepared_dir = "data/financebench"
 parsed_dir = "data/financebench/parsed"
 chunks_dir = "data/financebench/chunks"
+indexes_dir = "data/financebench/indexes"
 expected_documents = 64
 
 [parsing]
@@ -23,6 +24,11 @@ output_content_format = "markdown"
 floor_tokens = 250
 ceiling_tokens = 1024
 overlap_cap_tokens = 100
+
+[bm25]
+token_pattern = '(?u)[^\\W\\d_]+|\\d+'
+stopwords = "en"
+stemmer = "english"
 """
 
 
@@ -45,15 +51,37 @@ def test_load_config_resolves_corpus_paths_from_project_root(tmp_path: Path) -> 
     assert config["corpus"]["prepared_dir"] == str(project / "data/financebench")
     assert config["corpus"]["parsed_dir"] == str(project / "data/financebench/parsed")
     assert config["corpus"]["chunks_dir"] == str(project / "data/financebench/chunks")
+    assert config["corpus"]["indexes_dir"] == str(project / "data/financebench/indexes")
     assert config["chunking"] == {
         "floor_tokens": 250,
         "ceiling_tokens": 1024,
         "overlap_cap_tokens": 100,
     }
+    assert config["bm25"] == {
+        "token_pattern": r"(?u)[^\W\d_]+|\d+",
+        "stopwords": "en",
+        "stemmer": "english",
+    }
+
+
+def test_missing_bm25_section_is_refused(tmp_path: Path) -> None:
+    text = VALID_CONFIG.split("[bm25]")[0]
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match=r"\[bm25\]"):
+        load_config(config_path)
+
+
+def test_empty_bm25_setting_is_refused(tmp_path: Path) -> None:
+    text = VALID_CONFIG.replace('stemmer = "english"', 'stemmer = ""')
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match="bm25.stemmer"):
+        load_config(config_path)
 
 
 def test_missing_chunking_section_is_refused(tmp_path: Path) -> None:
-    text = VALID_CONFIG.split("[chunking]")[0]
+    text = VALID_CONFIG.replace("[chunking]", "[not_chunking]")
     _, config_path = _write(tmp_path, text)
 
     with pytest.raises(ValueError, match=r"\[chunking\]"):

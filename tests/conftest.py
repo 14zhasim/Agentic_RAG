@@ -206,3 +206,64 @@ def worked_example_parse() -> dict:
             {"elements": ["/paragraphs/5"]},
         ],
     }
+
+
+def chunk_record(doc_name: str, number: int, text: str, **fields) -> dict:
+    """One chunk record as `chunk_files` writes it, with only the fields indexing reads."""
+    company, year, doc_type = doc_name.split("_")
+    record = {
+        "chunk_id": f"{doc_name}:p0:c{number}",
+        "doc_name": doc_name,
+        "company": company,
+        "year": int(year),
+        "doc_type": doc_type,
+        "page_index": 0,
+        "kind": "prose",
+        "text": text,
+    }
+    record.update(fields)
+    return record
+
+
+@pytest.fixture
+def index_config(tmp_path: Path):
+    """A config for the indexing modules, plus a helper that adds one chunked filing.
+
+    `select_documents` only lists PDF names, so an empty stand-in PDF is
+    enough; the chunk file is written directly, as `build_chunks` would.
+    """
+    (tmp_path / "pdfs").mkdir()
+    (tmp_path / "chunks").mkdir()
+    config = {
+        "corpus": {
+            "prepared_dir": str(tmp_path),
+            "chunks_dir": str(tmp_path / "chunks"),
+            "indexes_dir": str(tmp_path / "indexes"),
+        },
+        "bm25": {
+            "token_pattern": r"(?u)[^\W\d_]+|\d+",
+            "stopwords": "en",
+            "stemmer": "english",
+        },
+        "embedding": {
+            "model": "voyage-4-lite",
+            "batch_size": 2,
+            "output_dimension": 3,
+            "output_dtype": "float",
+        },
+    }
+
+    def add_filing(doc_name: str, texts: list[str] | None, **fields) -> None:
+        """Add a filing's PDF and, unless texts is None, its chunk file."""
+        (tmp_path / "pdfs" / f"{doc_name}.pdf").write_bytes(b"")
+        if texts is None:
+            return
+        lines = [
+            json.dumps(chunk_record(doc_name, number, text, **fields))
+            for number, text in enumerate(texts)
+        ]
+        (tmp_path / "chunks" / f"{doc_name}.jsonl").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )
+
+    return config, add_filing
