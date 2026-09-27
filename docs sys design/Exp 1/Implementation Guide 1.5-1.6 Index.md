@@ -112,16 +112,14 @@ setting. Each was checked by running the installed package (27 Sep 2026):
    planned to expand them to `2022`, but none of the 112 questions uses one
    (checked against `financebench_open_source_10k.jsonl`), and expanding
    would have to assume the 21st century. Nothing is built.
-5. **A filter only works when the retriever is created (found building
-   Slice 1).** `BM25Retriever(filters=...)` turns the filter into a list
-   of which chunks may score, once, in its constructor
-   (`bm25/base.py` lines 128-146). Setting `retriever.filters` afterwards
-   changes nothing, silently: the spot check first returned Boeing and
-   Best Buy chunks for a "3M 2018 only" search that way.
-   - Fix, in Stage 2.2: load the index once with `load_bm25_index`, then
-     for each question create
-     `BM25Retriever(existing_bm25=loaded.bm25, filters=..., token_pattern=..., stemmer=...)`.
-     Creating one takes ~0.01 s, since nothing is re-indexed.
+5. **The filter must be given when the retriever is made, not later.**
+   Each question has its own filter (e.g. "3M 2018 only"), but
+   `BM25Retriever` reads its filter only when it is created
+   (`bm25/base.py` lines 128-146). Changing it afterwards is silently
+   ignored: the spot check did this and got Boeing chunks back.
+   - Fix, in Stage 2.2: load the saved index once, then make a new
+     retriever for each question with that question's filter. This is
+     cheap (~0.01 s): it reuses the loaded index, nothing is rebuilt.
 6. **HTML table tags were counted as words (found building Slice 1).**
    Azure writes tables as HTML, so to BM25 `<td>1,577</td>` is the words
    "td", "1577", "td". In 3M 2018's cash-flow table 432 of 823 words are
@@ -976,6 +974,31 @@ allowance). Then run `embed` again: it must report 0 to embed.
 should be in the top 10.
 
 **Commit:** `Add Voyage embeddings stored in Chroma`.
+
+#### As built (Slice 2, 27 Sep 2026)
+
+- **Files:** `src/sec_rag/indexing/embed.py` (`Embedder`, `embed_corpus`,
+  `open_chunk_store`, `_hashes_in_chroma`, `_compare`, `_voyage_embedder`);
+  `config.py` and `sec_rag.toml` (`[embedding]`); `cli.py` (`embed`,
+  `--execute-paid`); tests in `test_embed.py` (8),
+  `test_sec_rag_config.py` (+7), `test_sec_rag_cli.py` (+2).
+- **Differences from the plan:**
+  - step 4a deletes with the wrapper's public
+    `store.delete_nodes(node_ids=...)` (`chroma/base.py` lines 336-359)
+    instead of `store.client.delete`; reading hashes still uses
+    `store.client.get`, since the wrapper has no metadata-only read.
+  - the collection is created with `embedding_function=None`: otherwise
+    Chroma attaches its own default model and silently embeds any text
+    passed where a vector belongs. A side effect: reading
+    `collection.configuration` warns "legacy embedding function config", so
+    the cosine test reads `collection.configuration_json` instead.
+  - `_voyage_embedder` casts the returned vectors to floats for mypy: the
+    client types them as floats or ints (ints for quantised types), and the
+    config allows only `"float"`.
+  - extra test: an unchunked filing stops the run before anything is sent.
+- **Report run** (free, no key): 21,039 chunks, 0 stored, 21,039 to embed,
+  ~10.1M estimated tokens (cl100k), 165 batches.
+- **Paid run:** not yet — waiting for approval.
 
 ### Verification before a slice is called done
 

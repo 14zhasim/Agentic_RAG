@@ -224,6 +224,7 @@ Progress
 - [x] CHECK FIRST (both can change the plan): does `BM25Retriever`'s `filters` argument actually filter on our data? Build a retriever over ~5 chunks with different `doc_name` metadata, retrieve with a filter, confirm only matching chunks come back. If not, fall back to building the retriever from an already-filtered node list
   - ANSWERED at `llama-index-retrievers-bm25==0.8.0`: yes — the filter becomes a `corpus_weight_mask` applied before scoring, so filter-then-rank holds and the fallback is not needed. Kept as `tests/test_bm25_metadata_filters.py`
   - CAVEAT that changes retrieval code: filtered chunks are not dropped, they are returned with `score == 0.0` as padding when `similarity_top_k` exceeds the surviving count. Retrieval MUST discard zero-score hits, or out-of-scope chunks reach the context block. A filter matching nothing raises `ValueError` rather than returning the whole corpus
+  - SECOND CAVEAT (found building Stage 1.5, 27 Sep 2026): the filter is read only when the retriever is created; changing `retriever.filters` afterwards is silently ignored. Since each question has its own filter, retrieval loads the saved index once and creates a new `BM25Retriever` per search with that search's filter (~0.01 s, nothing is re-indexed)
 - [x] CHECK FIRST: is Azure Document Intelligence's section nesting good enough for Exp2's heading path? Run `prebuilt-layout` on 2-3 10-Ks, open the JSON, and look at `sections` (do sections nest, and do Item headings sit at the top level?) and at `paragraphs` with role `title` / `sectionHeading` (right text, right page?). If nesting is flat or wrong, use PageIndex instead
   - ANSWERED by the spike on 3M 2018: use Azure. It finds the heading text reliably (all 21 Items), but its heading levels can't be used as they come, so they're fixed first — see "Fix the heading list before chunking"
 - Edit the existing file:
@@ -256,6 +257,7 @@ Tech stack
 - Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll save/load. For Exp2, pull the embeddings out and score in numpy
 - `bm25s` (via LlamaIndex) — keyword index. `BM25Retriever.from_defaults(filters=MetadataFilters(...))` filters before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data. Fallback: build the retriever from an already-filtered node list (2 lines)
   - filtering applies to the chunks searched; BM25 word statistics still come from the whole corpus (same as Elasticsearch, so results stay comparable if we switch)
+  - the filter is fixed when a `BM25Retriever` is created, so each search creates its own from the once-loaded index, passing that search's filter (setting it later is silently ignored)
 - Azure Document Intelligence — parsing, including the heading structure (confirmed by the Stage 0 spike on 3M 2018)
 - Voyage API — voyage-4-lite embeddings + `rerank-3-lite` reranker. Same account and same `VOYAGE_API_KEY` for both; two endpoints
   - DECIDED (Stage 0.4): call Voyage **directly** via the `voyageai` client (`vo.embed(...)`, `vo.rerank(query, documents, model, top_k)`), for both embeddings and reranking — not through `llama-index-postprocessor-voyageai-rerank` / `llama-index-embeddings-voyageai`
@@ -458,6 +460,7 @@ Retrieve - Elastic search? can think about tech stack later
   - HARNESS (build with Exp1): record filter accuracy — chosen filename == gold `doc_name`. Splits "wrong document" from "wrong chunk" in the failure tree. Only meaningful in shared_store (single_store already scopes to the question's filing)
   - HARNESS (build with Exp1): make the oracle and retrieval context blocks identical, `[Document | Page]`, so prompt shape can't explain a results gap
   - Exp1 retrieval must be ONE function taking arguments — query, retrieval method (BM25 / semantic / hybrid), metadata filters, top_k — not a hardcoded pipeline. Exp3's search tool is this same function, with the agent choosing those arguments at runtime; Exp1 passes fixed ones. Getting this wrong means writing retrieval twice
+    - inside it, the BM25 side creates a fresh `BM25Retriever` from the once-loaded index on every call, with that call's filters: the retriever only reads its filter when created (Tech stack → `bm25s`)
   - the query-enhancement prompt lives in one place, called by both: Exp1 calls it once up front, Exp3's agent does the same job through steps 1-2. Otherwise the two experiments quietly diverge
 
 Generate answer
