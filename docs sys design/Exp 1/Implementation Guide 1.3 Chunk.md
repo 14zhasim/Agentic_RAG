@@ -1124,28 +1124,15 @@ documentation commit, not with the code.
     planned uneven-sentences case is covered by the "most even"
     four-sentence test, not a separate one.
 
-### Slice 2: halving and overlap
+### Slice 3: chunk files and the `chunk` command
 
-- `chunk.py` gained `_halve_until_fits` → `_halving_point` (with
-  `_imbalance`), `_last_sentence` and `_text_of`. `_chunk_page` now takes
-  the carried sentence and returns `(records, next_carry)`; `_record` takes
-  `carried_text`.
-- Tests: 11 more in `tests/test_chunk.py` (24 in all). The one Slice 1 test
-  with two prose pages now compares each chunk's own text, since page 1
-  carries page 0's last sentence.
-- Checked on 3M 2018 (0.6 seconds): 341 chunks, 222 of them prose, with a
-  median prose chunk of 448 tokens. 86% of prose chunks are between floor
-  and ceiling (the characters ÷ 4 estimate was 89%). 101 prose chunks carry
-  a sentence, and 2 exceed the ceiling, only through carried text. The
-  Draft's page-break example is restored exactly: `p11:c0` begins
-  "...investment losses on plan assets, and relevant legislative...".
+- `src/sec_rag/chunking/chunk_files.py`: `build_chunks` → `_write_chunks`,
+  `_summary`; `read_chunks`; `chunks_path`.
+- `src/sec_rag/cli.py`: `chunk` command, `_run_chunk`.
+- Tests: `tests/test_chunk_files.py` (7); `tests/test_sec_rag_cli.py` (2
+  more).
 - Differences from the plan:
-  - `_halving_point` binary-searches the candidates, not trying every one:
-    tokens before a candidate only grow as it moves right, so the most
-    even split is where "before" first reaches half, or the candidate just
-    before it. It gives the same answer with far fewer token counts when
-    the word-start fallback has thousands of candidates.
-  - The fallback test is named
-    `test_halving_falls_back_to_a_line_start_then_a_word_start`. The
-    planned uneven-sentences case is covered by the "most even"
-    four-sentence test, not a separate one.
+  - The summary reports all prose chunks under the floor, not only those
+    from halving cuts. Records don't keep the `starts_at` label, and adding
+    a field just for this count wasn't worth it; the corpus results below
+    break the small chunks down instead.

@@ -101,3 +101,42 @@ def test_inspect_parse_command_writes_report(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "Inspected: 1" in capsys.readouterr().out
     assert (cache_dir / "example_2024_10K.structure.txt").is_file()
+
+
+def _save_one_page_parse(config_path: Path) -> Path:
+    """Save a one-page parse for example_2024_10K; return the project folder."""
+    project = config_path.parent.parent
+    cache_dir = project / "data" / "financebench" / "parsed"
+    cache_dir.mkdir(parents=True)
+    content = "Revenue grew strongly this year."
+    raw = {
+        "content": content,
+        "pages": [{"pageNumber": 1, "spans": [{"offset": 0, "length": len(content)}]}],
+        "paragraphs": [],
+        "sections": [],
+    }
+    (cache_dir / "example_2024_10K.json").write_text(json.dumps(raw), encoding="utf-8")
+    return project
+
+
+def test_chunk_command_writes_chunks_and_prints_summary(tmp_path: Path, capsys) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+    project = _save_one_page_parse(config_path)
+
+    exit_code = main(["chunk", "--config", str(config_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Filings: 1\n" in output
+    assert "Chunks: 1 (prose 1, table 0, figure 0)" in output
+    assert "Prose under floor: 1" in output
+    assert (project / "data/financebench/chunks/example_2024_10K.jsonl").is_file()
+
+
+def test_chunk_command_reports_an_unparsed_filing(tmp_path: Path, capsys) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+
+    exit_code = main(["chunk", "--config", str(config_path)])
+
+    assert exit_code == 1
+    assert "Error: example_2024_10K: not parsed yet" in capsys.readouterr().out

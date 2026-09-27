@@ -1,10 +1,11 @@
-"""Translate SEC RAG terminal commands into ingestion operations."""
+"""Translate SEC RAG terminal commands into ingestion and chunking operations."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
+from .chunking.chunk_files import build_chunks
 from .config import load_config
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
@@ -21,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser = commands.add_parser("inspect-parse")
     inspect_parser.add_argument("--config", type=Path, required=True)
     inspect_parser.add_argument("--documents", nargs="+")
+    chunk_parser = commands.add_parser("chunk")
+    chunk_parser.add_argument("--config", type=Path, required=True)
+    chunk_parser.add_argument("--documents", nargs="+")
     args = parser.parse_args(argv)
 
     try:
@@ -29,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_parse(args)
             case "inspect-parse":
                 return _run_inspect_parse(args)
+            case "chunk":
+                return _run_chunk(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -58,4 +64,23 @@ def _run_inspect_parse(args: argparse.Namespace) -> int:
     names = tuple(args.documents) if args.documents else None
     result = inspect_parses(config, names)
     print(f"Inspected: {result['inspected']}")
+    return 0
+
+
+def _run_chunk(args: argparse.Namespace) -> int:
+    """Load settings, rebuild the selected chunk files, and print the summary."""
+    config = load_config(args.config)
+    names = tuple(args.documents) if args.documents else None
+    summary = build_chunks(config, names)
+    kinds = summary["kinds"]
+    print(f"Filings: {summary['filings']}")
+    print(
+        f"Chunks: {summary['chunks']} (prose {kinds['prose']}, "
+        f"table {kinds['table']}, figure {kinds['figure']})"
+    )
+    print(f"Median prose tokens: {summary['median_prose_tokens']}")
+    print(f"Prose between floor and ceiling: {summary['prose_in_range_share']:.1%}")
+    print(f"Prose over ceiling (carried text): {summary['prose_over_ceiling']}")
+    print(f"Prose under floor: {summary['prose_under_floor']}")
+    print(f"Empty figures skipped: {summary['empty_figures_skipped']}")
     return 0
