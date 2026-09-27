@@ -29,17 +29,29 @@ experiment arrives.
 
 ## Timeline reality check
 
-Revised 18 Sep 2026 after a two-week extension. The time is **not** two clear weeks — the job takes
-the weekdays, so it is two four-day blocks plus the days between them.
+Revised 27 Sep 2026. The 18 Sep plan (build 18-21 Sep, write 25-27 Sep) slipped: on 27 Sep
+Stages 0-1.3 are done (parsed, chunked) and no experiment has run. **Mon 28 Sep is the last coding
+day**; everything after it is writing.
 
 | Block | Dates | What must be true at the end |
 |---|---|---|
-| Build | Fri 18 – Mon 21 Sep | Stages 0-3 done: Exp1 and Exp2 built, run, and their results written into `Exp 1.md` / `Exp 2.md`. Stage 4 (Exp3) **not expected** |
-| Work | Tue 22 – Thu 24 Sep | Nothing owed. At most, tidy notes taken during the build |
-| Write | Fri 25 – Sun 27 Sep | A complete first draft covering Exp1 and Exp2 end to end, results included |
-| Work | Mon 28 Sep – Thu 1 Oct | Nothing owed |
-| Finish | Fri 2 – Sun 4 Oct | Draft finished. Only then, in this order, if time genuinely remains: (1) debug and improve the existing experiments, (2) Exp3, (3) deferred items |
+| Build Exp1 | Sun 27 Sep | Stages 1.5, 1.6 and 2 done: Exp1 built, run on single-store and shared-store, judged, reported, results in `Exp 1.md` |
+| Build Exp2 | Mon 28 Sep | Stage 3 at its minimum: A vs B runs with pre-rerank page metrics, results in `Exp 2.md`. **Last coding day** |
+| Write | Tue 29 Sep – Sun 4 Oct | Complete draft covering Exp1 and Exp2; weekdays are job days, so most of it falls Fri 2 – Sun 4 Oct. No new build work |
 | Submit | Mon 5 Oct | Final submission — CONFIRM against the formal extension |
+
+What gives if a day runs out, in this order (each becomes a stated limitation):
+
+1. Exp1 ablations (BM25 only, semantic only, no reranker, no query enhancement) — run only after
+   the main Exp1 run is judged and written up
+2. Exp2's heading fix (3.0): use Azure's raw heading levels instead. Costly: on 3M 2018 raw levels
+   leave 106 of 160 pages with no Item-level ancestor, so Exp2 runs on weaker structure and the
+   write-up must say so
+3. Exp2 judged answers: report A vs B on page metrics alone (Stage 3's minimum result)
+4. Exp3: designed, not built — already expected (Stage 4)
+
+Earlier plan, kept for the record: build Fri 18 – Mon 21 Sep (Stages 0-3), write Fri 25 – Sun 27
+Sep, finish Fri 2 – Sun 4 Oct, submit Mon 5 Oct.
 
 Durations in the stages below are rough scope estimates, not measurements: they assume working
 with Claude Code, and they exclude API run time and first-contact debugging of unfamiliar
