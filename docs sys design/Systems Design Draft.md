@@ -310,7 +310,7 @@ Ingest files
       - **The filing's company name, year and filing type**, split from the PDF's filename (`COMPANY_YEAR_TYPE`), not from parsing. Read from the right, because one company name itself contains an underscore: `JOHNSON_JOHNSON_2022_10K` → `JOHNSON_JOHNSON` / `2022` / `10K`. The filename is also what the model picks from when choosing which filing to search, so the chunk metadata and the model's choice use the same name. Checked against FinanceBench's own metadata: the years match for all 64 filings and the company names match apart from punctuation (`COCACOLA` vs "Coca-Cola")
       - **The FinanceBench page number.** FinanceBench's `evidence_page_num` counts from 0; Azure's `pageNumber` counts from 1, so `evidence_page_num = pageNumber - 1`. Never use the page number printed in the footer. Add a test: every page metric depends on this
 
-  - Fix the heading list (built at Build Order Stage 3.0, after Exp1 has results — Exp1 cuts chunks at the raw heading offsets and doesn't need the corrected levels)
+  -**Deferred** Fix the heading list (built at Build Order Stage 3.0, after Exp1 has results — Exp1 cuts chunks at the raw heading offsets and doesn't need the corrected levels)
     - Why: on 3M 2018 Azure found all 21 Items, but put them across four different heading levels. As a result 106 of 160 pages have no Item heading above them, including 75 of the 76 financial-statement pages, so their heading paths would be wrong
     - an LLM pass takes the heading rows (offset, text, level, page) plus the file's metadata and returns the same rows corrected, keyed by offset
       - repairs split-word typos — Busines s., ESTIMA TES, Equit y (16 of 295 headings)

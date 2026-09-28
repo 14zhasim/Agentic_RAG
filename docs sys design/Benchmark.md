@@ -153,7 +153,7 @@ Develop testing set pipeline:
     - grade what the question asks, against the gold answer's conclusion: the answer must reach it directly, without hedging (e.g. "moderately capital-intensive" is not the gold's "No")
     - any figure the conclusion is built on must be true within harmless rounding; a right conclusion built on invented figures is 0 (e.g. closed-book PP&E "grew" from made-up levels)
     - wrong figures outside that basis (another year, a detail the question does not ask for) do not make an answer 0
-    - a figure that differs from the gold only because it uses a different, standard and stated definition is not an error; the model sees only the question, not the annotator's method (e.g. Corning working capital: total current items give $2,278M vs the gold's operating-items $831M, both positive)
+    - a figure that differs from the gold only because it uses a different, standard and stated definition is not an error; the model sees only the question, not the annotator's method (e.g. Corning working capital: total current items give $2,278M vs the gold's operating-items $831M, both positive). However, if the method/calculation is wrong altogether, mark is wrong i.e. 0.
     - commentary the question invites, such as whether a metric is useful, is allowed provided it does not contradict the direct answer
     - limitation to state: FinanceBench's working-capital annotations use inconsistent definitions (Corning's gold uses operating items; American Water Works' gold uses total current items, although its justification lists operating items)
   - use an agreed automated verdict when the judge passes agree, otherwise use the latest manual verdict; leave unreviewed disagreements unresolved and never overwrite `judgments.jsonl`
@@ -220,6 +220,12 @@ from saved results, with detailed sub-types hand-labelled only for a sample):
     the missing gold pages caused the incorrect answer;
   - page recall is one but the answer remains incorrect → gold pages were
     retrieved but the answer failed, requiring manual review.
+- A correct retrieval-condition answer is a success, so diagnosis counts agree
+  with accuracy. If its page recall is zero, it is flagged as correct without
+  gold pages: the answer came from memory or from a page the annotators did
+  not mark. Each row carries the question's closed-book verdict (borrowed with
+  the oracle when the run has none) to tell the two apart; a correct
+  closed-book answer means memory alone could have produced it.
 - Hand-label detailed sub-types such as arithmetic failure, hallucination,
   missed table content, poor chunk boundaries or distracting context only for
   a sample, using the judge's reason and the question's cognitive-skill labels.
