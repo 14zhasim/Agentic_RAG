@@ -1001,6 +1001,22 @@ calling Slices 1-2), then `_choose_filter`, `_to_chunks`, `open_exp1`;
   `--all-filings`, the raw question's top 10 is mixed with Walmart and
   Boeing chunks, which is the case query enhancement's filter exists for.
 
+**Paid check (28 Sep 2026)**, shared-store (all 64 filings in scope),
+`sec-rag retrieve --all-filings --execute-paid`:
+
+| Question | Filing chosen | Gold page: fused rank → reranked rank | Latency |
+|---|---|---|---|
+| 03029, 3M 2018 capex (table) | `3M_2018_10K`, correct | p59: 5 → 1 | 4.7 s |
+| 01328, PepsiCo 2022 restructuring costs (table) | `PEPSICO_2022_10K`, correct | p77: 1 → 4 | 3.3 s |
+| 00464, Boeing 2022 cyclicality (text) | `BOEING_2022_10K`, correct | p7: 1 → 2 | 3.3 s |
+
+All three enhancement replies were valid, and GLM expanded capex into
+"purchases of property plant and equipment". The reranker lifted one gold
+page and lowered two, all still in the top 10: one question each, so no
+finding, but the reason pre-rerank metrics are recorded. Per question:
+about $0.0002 for query enhancement, 16-34 embedding tokens and about
+30,000 rerank tokens.
+
 **Read after implementation (as built):** `exp1.py` — `retrieve_exp1`,
 `_choose_filter`, `_to_chunks`, then `preview_bm25`, `open_exp1`,
 `load_chunk_lookup`; `cli.py` — `_run_retrieve`, `_print_chunks`; then
