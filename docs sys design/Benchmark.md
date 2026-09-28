@@ -149,6 +149,13 @@ Develop testing set pipeline:
   - require at least 27/30 (90%) agreement with the human labels; count a two-pass disagreement as a failed match, report the three label groups separately and manually inspect every mismatch
   - reproduce the validation source by cloning the official FinanceBench repository at commit `cc39aeb4afdf33909ee1412188bf89035950c2eb`, while keeping the clone ignored by this repository
   - manually adjudicate every two-pass disagreement: export the disputed answers to `manual_review.csv`, record `human_accuracy` as 0 or 1 with an optional reason, then import the validated decisions into the separate append-only `manual_reviews.jsonl`
+  - adjudication rule (applied to every disputed answer, in every condition, so human verdicts follow one standard; decided 28 Sep 2026 on the 17 Sep baseline's 16 disagreements):
+    - grade what the question asks, against the gold answer's conclusion: the answer must reach it directly, without hedging (e.g. "moderately capital-intensive" is not the gold's "No")
+    - any figure the conclusion is built on must be true within harmless rounding; a right conclusion built on invented figures is 0 (e.g. closed-book PP&E "grew" from made-up levels)
+    - wrong figures outside that basis (another year, a detail the question does not ask for) do not make an answer 0
+    - a figure that differs from the gold only because it uses a different, standard and stated definition is not an error; the model sees only the question, not the annotator's method (e.g. Corning working capital: total current items give $2,278M vs the gold's operating-items $831M, both positive)
+    - commentary the question invites, such as whether a metric is useful, is allowed provided it does not contradict the direct answer
+    - limitation to state: FinanceBench's working-capital annotations use inconsistent definitions (Corning's gold uses operating items; American Water Works' gold uses total current items, although its justification lists operating items)
   - use an agreed automated verdict when the judge passes agree, otherwise use the latest manual verdict; leave unreviewed disagreements unresolved and never overwrite `judgments.jsonl`
   - the final report presents this resolved accuracy without splitting its headline results by automated versus human source; the source JSONL files retain the audit trail
   - the operational flow is:
