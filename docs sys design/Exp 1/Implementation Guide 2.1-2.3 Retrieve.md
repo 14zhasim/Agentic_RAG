@@ -976,6 +976,37 @@ calling Slices 1-2), then `_choose_filter`, `_to_chunks`, `open_exp1`;
 
 **Commit:** `Add Exp1 retrieval pipeline and retrieve command`
 
+**As built (28 Sep 2026).** `retrieval/exp1.py`, `tests/test_exp1.py`
+(10 tests), four CLI tests; 265 tests pass. Differences from the plan:
+
+- **four more public functions in `exp1.py`**, so the CLI only parses and
+  delegates: `preview_bm25(question, scope, top_k, config)` (the free
+  preview; its filter uses `_choose_filter`'s no-choice rule),
+  `all_filings(config)` (the shared-store scope, for `--all-filings`;
+  it lists the PDFs in the prepared folder at run time via
+  `select_documents`, nothing hardcoded, so adding a filing, then parsing,
+  chunking and indexing it, widens the scope with no code change; only
+  `expected_documents` in `configs/sec_rag.toml`, the parse step's
+  completeness check, would need bumping. Benchmark runs take their scope
+  from the dataset via `conditions.py` instead),
+  `load_chunk_lookup(config)` (the chunk lookup, built from
+  `load_corpus_nodes` so every ID search returns is in it) and
+  `voyage_client()` (reads `VOYAGE_API_KEY`, `max_retries=3` as in
+  `embed.py`). The last two are what `open_exp1` calls.
+- **`--top-k` flag** (default 10), so the preview and paid check can show
+  more than the benchmark's depth.
+- **free preview on the real indexes**, 3M 2018 capex question: about 2.5 s
+  including loading. With `--scope 3M_2018_10K`, BM25's top 10 is all 3M
+  but misses gold page 59 (it ranks 14th, finding from Slice 1). With
+  `--all-filings`, the raw question's top 10 is mixed with Walmart and
+  Boeing chunks, which is the case query enhancement's filter exists for.
+
+**Read after implementation (as built):** `exp1.py` — `retrieve_exp1`,
+`_choose_filter`, `_to_chunks`, then `preview_bm25`, `open_exp1`,
+`load_chunk_lookup`; `cli.py` — `_run_retrieve`, `_print_chunks`; then
+`tests/test_exp1.py` and the `retrieve` tests at the end of
+`tests/test_sec_rag_cli.py`.
+
 ### Verification, every slice
 
 `uv run ruff format --check . && uv run ruff check . && uv run mypy src &&
