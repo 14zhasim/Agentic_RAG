@@ -53,10 +53,12 @@ def dry_run(
             )
 
         maximum_prompt_tokens[condition_name] = max(prompt_token_counts, default=0)
+        # Token space the prompt cannot use: max_output_tokens is reserved for
+        # GLM's output, and the safety margin is a buffer for counting error.
         reserved_tokens = (
             config["generation"]["max_output_tokens"]
             + config["generation"]["token_safety_margin"]
-        ) # token space that prompt cannot take up: maxx_output_token is for GLM output, safety margin is the buffer 
+        )
         oversized_jobs += sum(
             token_count + reserved_tokens
             > config["generation"]["context_window_tokens"]
