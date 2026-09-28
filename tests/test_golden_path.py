@@ -949,3 +949,272 @@ def test_cli_prepare_validate_and_no_spend_dry_run(
     output = capsys.readouterr().out
     assert "Planned jobs: 6" in output
     assert "API requests sent: 0" in output
+
+
+GENERATION_SNAPSHOT = (
+    "[generation]\nmodel='z-ai/glm-5.3-flash'\nreasoning_effort='high'\n"
+)
+
+
+def _write_report_run(
+    run_dir: Path,
+    conditions: list[str],
+    predictions: list[dict],
+    *,
+    judgments: list[dict] | None = None,
+    manual_reviews: list[dict] | None = None,
+    generation: str = GENERATION_SNAPSHOT,
+) -> Path:
+    """Write a minimal run folder that write_report can read."""
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.toml").write_text(
+        "[run]\nretrieval_depth=10\n"
+        f"[selection]\nconditions={conditions!r}\nlimit=1\n" + generation
+    )
+    for name, rows in (
+        ("predictions.jsonl", predictions),
+        ("judgments.jsonl", judgments or []),
+        ("manual_reviews.jsonl", manual_reviews or []),
+    ):
+        (run_dir / name).write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return run_dir
+
+
+def _report_row(job_id: str, condition: str, **fields) -> dict:
+    """One saved prediction row, with Exp1's retrieval fields when given."""
+    return {
+        "job_id": job_id,
+        "financebench_id": job_id.split(":")[1],
+        "status": "success",
+        "eval_mode": condition,
+        "question_type": "metrics-generated",
+        "cognitive_skills": ["information_extraction"],
+        "gold_pages": [["target.pdf", 2]],
+        "retrieved_chunks": [{"doc_name": "target.pdf", "pages": [2], "rank": 1}],
+        "page_recall": 1.0,
+        "page_precision": 0.1,
+        "page_mrr": 1.0,
+        **fields,
+    }
+
+
+def _verdict(job_id: str, accuracy: int | None) -> dict:
+    return {"job_id": job_id, "accuracy": accuracy, "passes": []}
+
+
+def test_report_averages_pre_rerank_and_filter_accuracy(tmp_path):
+    """Build Order 2.5: pre-rerank metrics, filter accuracy, invalid replies."""
+    exp1 = {"pre_rerank_page_recall": 1.0, "pre_rerank_page_precision": 0.1}
+    rows = [
+        _report_row(
+            "x:q1:shared_store",
+            "shared_store",
+            **exp1,
+            pre_rerank_page_mrr=1.0,
+            filter_correct=True,
+            enhancement_status="ok",
+        ),
+        _report_row(
+            "x:q2:shared_store",
+            "shared_store",
+            **exp1,
+            pre_rerank_page_mrr=0.5,
+            filter_correct=False,
+            enhancement_status="invalid_reply",
+        ),
+        _report_row(
+            "x:q1:single_store",
+            "single_store",
+            **exp1,
+            pre_rerank_page_mrr=0.25,
+            filter_correct=None,
+            enhancement_status="ok",
+        ),
+    ]
+    run_dir = _write_report_run(tmp_path / "x", ["single_store", "shared_store"], rows)
+
+    report = write_report(run_dir)
+
+    by_condition = {
+        row["eval_mode"]: row for row in report["retrieval_metrics"]["by_condition"]
+    }
+    shared = by_condition["shared_store"]
+    assert shared["filter_accuracy"] == 0.5
+    assert shared["filter_accuracy_sample_size"] == 2
+    assert shared["pre_rerank_page_mrr"] == 0.75
+    assert shared["pre_rerank_page_mrr_sample_size"] == 2
+    assert shared["invalid_reply_count"] == 1
+    single = by_condition["single_store"]
+    assert single["filter_accuracy"] is None
+    assert single["filter_accuracy_sample_size"] == 0
+    assert single["invalid_reply_count"] == 0
+
+    with ZipFile(run_dir / "summary.xlsx") as workbook:
+        shared_strings = workbook.read("xl/sharedStrings.xml").decode()
+    for label in ("Pre-rerank page MRR", "Filter accuracy", "Retrieval cost (USD)"):
+        assert label in shared_strings
+
+
+def test_report_adds_retrieval_cost(tmp_path):
+    rows = [
+        _report_row(
+            "x:q1:shared_store",
+            "shared_store",
+            retrieval_cost_usd=0.0002,
+            retrieval_latency_seconds=4.0,
+        ),
+        _report_row(
+            "x:q2:shared_store",
+            "shared_store",
+            retrieval_cost_usd=None,
+            retrieval_latency_seconds=2.0,
+        ),
+    ]
+    run_dir = _write_report_run(tmp_path / "x", ["shared_store"], rows)
+
+    overall = write_report(run_dir)["generation_performance"]["overall"]
+
+    assert overall["total_retrieval_cost_usd"] == 0.0002
+    assert overall["retrieval_cost_sample_size"] == 1
+    assert overall["average_retrieval_cost_per_answer_usd"] == 0.0002
+    assert overall["average_retrieval_latency_seconds"] == 3.0
+
+
+def test_report_reads_old_rows_without_new_fields(tmp_path):
+    run_dir = _write_report_run(
+        tmp_path / "old",
+        ["shared_store"],
+        [_report_row("old:q1:shared_store", "shared_store")],
+    )
+
+    report = write_report(run_dir)
+
+    [shared] = report["retrieval_metrics"]["by_condition"]
+    assert shared["pre_rerank_page_mrr"] is None
+    assert shared["pre_rerank_page_mrr_sample_size"] == 0
+    assert shared["filter_accuracy"] is None
+    assert shared["filter_accuracy_sample_size"] == 0
+    overall = report["generation_performance"]["overall"]
+    assert overall["total_retrieval_cost_usd"] is None
+    assert overall["retrieval_cost_sample_size"] == 0
+    assert report["failure_analysis"]["oracle_source"] is None
+
+
+def _wrong_filing_run(tmp_path: Path) -> Path:
+    """An Exp1 run whose shared-store answer was wrong: filter chose a.pdf."""
+    wrong = _report_row(
+        "x:q1:shared_store",
+        "shared_store",
+        retrieved_chunks=[{"doc_name": "a.pdf", "pages": [2], "rank": 1}],
+        enhancement_status="ok",
+        filter_status="chosen",
+        filter_doc_name="a.pdf",
+    )
+    return _write_report_run(
+        tmp_path / "x",
+        ["shared_store"],
+        [wrong],
+        judgments=[_verdict("x:q1:shared_store", 0)],
+    )
+
+
+def test_report_borrows_oracle_for_failure_diagnosis(tmp_path):
+    """Build Order 2.6: failure diagnosis compares against the baseline oracle."""
+    run_dir = _wrong_filing_run(tmp_path)
+    baseline = _write_report_run(
+        tmp_path / "baseline",
+        ["oracle"],
+        [_report_row("b:q1:oracle", "oracle")],
+        judgments=[_verdict("b:q1:oracle", 1)],
+    )
+
+    without = write_report(run_dir)
+    unborrowed = json.loads((run_dir / "failure_analysis.jsonl").read_text())
+    assert unborrowed["failure_subtype"] == "missing_oracle"
+    assert without["failure_analysis"]["oracle_source"] is None
+
+    report = write_report(run_dir, baseline)
+
+    [row] = [
+        json.loads(line)
+        for line in (run_dir / "failure_analysis.jsonl").read_text().splitlines()
+    ]
+    assert row["failure_subtype"] == "wrong_document_wrong_filing"
+    assert row["oracle_job_id"] == "b:q1:oracle"
+    assert report["failure_analysis"]["oracle_source"] == "baseline"
+    # Borrowed answers are compared against, never counted as this run's.
+    assert {row["eval_mode"] for row in report["answer_accuracy"]["by_condition"]} == {
+        "shared_store"
+    }
+
+
+def test_report_borrowed_oracle_uses_its_manual_review(tmp_path):
+    run_dir = _wrong_filing_run(tmp_path)
+    baseline = _write_report_run(
+        tmp_path / "baseline",
+        ["oracle"],
+        [_report_row("b:q1:oracle", "oracle")],
+        judgments=[_verdict("b:q1:oracle", None)],
+        manual_reviews=[{"job_id": "b:q1:oracle", "human_accuracy": 1}],
+    )
+
+    write_report(run_dir, baseline)
+
+    row = json.loads((run_dir / "failure_analysis.jsonl").read_text())
+    assert row["failure_subtype"] == "wrong_document_wrong_filing"
+
+
+def test_report_refuses_borrow_on_own_oracle_or_generation_mismatch(tmp_path):
+    baseline = _write_report_run(
+        tmp_path / "baseline",
+        ["oracle"],
+        [_report_row("b:q1:oracle", "oracle")],
+    )
+    with_oracle = _write_report_run(
+        tmp_path / "own",
+        ["shared_store", "oracle"],
+        [
+            _report_row("x:q1:shared_store", "shared_store"),
+            _report_row("x:q1:oracle", "oracle"),
+        ],
+    )
+    with pytest.raises(ValueError, match="its own oracle"):
+        write_report(with_oracle, baseline)
+    assert not (with_oracle / "summary.json").exists()
+
+    low_effort = _write_report_run(
+        tmp_path / "low",
+        ["oracle"],
+        [_report_row("l:q1:oracle", "oracle")],
+        generation=GENERATION_SNAPSHOT.replace("high", "low"),
+    )
+    run_dir = _wrong_filing_run(tmp_path)
+    with pytest.raises(ValueError, match="different generation settings"):
+        write_report(run_dir, low_effort)
+    assert not (run_dir / "summary.json").exists()
+
+
+def test_cli_report_passes_oracle_run_dir(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_write_report(run_dir, oracle_run_dir=None):
+        calls.append((run_dir, oracle_run_dir))
+        return {"run_status": {"successful": 0}}
+
+    monkeypatch.setattr("sec_rag_benchmark.cli.write_report", fake_write_report)
+
+    assert main(["report", "--run-dir", str(tmp_path / "x")]) == 0
+    assert (
+        main(
+            [
+                "report",
+                "--run-dir",
+                str(tmp_path / "x"),
+                "--oracle-run-dir",
+                str(tmp_path / "b"),
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [(tmp_path / "x", None), (tmp_path / "x", tmp_path / "b")]

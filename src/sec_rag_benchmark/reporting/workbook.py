@@ -27,6 +27,15 @@ RETRIEVAL_COLUMNS = [
     "page_precision_sample_size",
     "page_mrr",
     "page_mrr_sample_size",
+    "pre_rerank_page_recall",
+    "pre_rerank_page_recall_sample_size",
+    "pre_rerank_page_precision",
+    "pre_rerank_page_precision_sample_size",
+    "pre_rerank_page_mrr",
+    "pre_rerank_page_mrr_sample_size",
+    "filter_accuracy",
+    "filter_accuracy_sample_size",
+    "invalid_reply_count",
 ]
 
 STATUS_COLUMNS = [
@@ -44,6 +53,9 @@ PERFORMANCE_CONDITION_COLUMNS = [
     "total_cost_usd",
     "average_cost_per_answer_usd",
     "average_latency_per_answer_seconds",
+    "total_retrieval_cost_usd",
+    "average_retrieval_cost_per_answer_usd",
+    "average_retrieval_latency_seconds",
 ]
 
 FAILURE_DETAIL_COLUMNS = [
@@ -57,6 +69,8 @@ FAILURE_DETAIL_COLUMNS = [
     "page_recall",
     "failure_category",
     "failure_subtype",
+    "filter_status",
+    "filter_doc_name",
     "manual_review",
     "classification_rule",
     "condition_judge_reasons",
@@ -82,6 +96,15 @@ LABELS = {
     "page_precision_sample_size": "Precision sample size",
     "page_mrr": "Page MRR",
     "page_mrr_sample_size": "MRR sample size",
+    "pre_rerank_page_recall": "Pre-rerank page recall",
+    "pre_rerank_page_recall_sample_size": "Pre-rerank recall sample size",
+    "pre_rerank_page_precision": "Pre-rerank page precision",
+    "pre_rerank_page_precision_sample_size": "Pre-rerank precision sample size",
+    "pre_rerank_page_mrr": "Pre-rerank page MRR",
+    "pre_rerank_page_mrr_sample_size": "Pre-rerank MRR sample size",
+    "filter_accuracy": "Filter accuracy",
+    "filter_accuracy_sample_size": "Filter accuracy sample size",
+    "invalid_reply_count": "Invalid enhancement replies",
     "planned": "Planned",
     "successful": "Successful",
     "failed": "Failed",
@@ -95,6 +118,12 @@ LABELS = {
     "average_cost_per_question_usd": "Average cost per question (USD)",
     "latency_sample_size": "Answers with latency data",
     "average_latency_per_answer_seconds": "Average latency per answer (s)",
+    "retrieval_cost_sample_size": "Answers with retrieval cost data",
+    "total_retrieval_cost_usd": "Retrieval cost (USD)",
+    "average_retrieval_cost_per_answer_usd": "Average retrieval cost per answer (USD)",
+    "average_retrieval_latency_seconds": "Average retrieval latency (s)",
+    "filter_status": "Filter status",
+    "filter_doc_name": "Filter filing",
     "financebench_id": "FinanceBench ID",
     "analysis_status": "Analysis status",
     "oracle_accuracy": "Oracle accuracy",
@@ -115,15 +144,24 @@ PERCENT_COLUMNS = {
     "page_recall",
     "page_precision",
     "page_mrr",
+    "pre_rerank_page_recall",
+    "pre_rerank_page_precision",
+    "pre_rerank_page_mrr",
+    "filter_accuracy",
 }
 
 CURRENCY_COLUMNS = {
     "total_cost_usd",
     "average_cost_per_answer_usd",
     "average_cost_per_question_usd",
+    "total_retrieval_cost_usd",
+    "average_retrieval_cost_per_answer_usd",
 }
 
-SECONDS_COLUMNS = {"average_latency_per_answer_seconds"}
+SECONDS_COLUMNS = {
+    "average_latency_per_answer_seconds",
+    "average_retrieval_latency_seconds",
+}
 
 TEXT_COLUMNS = {"eval_mode", "question_type", "cognitive_skill"}
 
@@ -412,8 +450,8 @@ def _write_failure_analysis_sheet(
     worksheet.freeze_panes(header_row + 1, 0)
     worksheet.set_column(0, 4, 20)
     worksheet.set_column(5, 6, 28)
-    worksheet.set_column(7, 10, 22)
-    worksheet.set_column(11, 13, 48)
+    worksheet.set_column(7, 12, 22)
+    worksheet.set_column(13, 15, 48)
 
 
 def write_report_workbook(

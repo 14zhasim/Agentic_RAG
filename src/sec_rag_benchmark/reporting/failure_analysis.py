@@ -22,6 +22,21 @@ METHODOLOGY = {
     ),
     "no_chunks_retrieved": "The retriever returned no chunks.",
     "wrong_document": ("Chunks were returned, but none came from a target filing."),
+    "wrong_document_invalid_reply": (
+        "No chunk came from a target filing; query enhancement's reply was "
+        "unusable, so all filings were searched."
+    ),
+    "wrong_document_declined": (
+        "No chunk came from a target filing; query enhancement chose no listed "
+        "filing, so all filings were searched."
+    ),
+    "wrong_document_wrong_filing": (
+        "No chunk came from a target filing; query enhancement chose a different "
+        "filing."
+    ),
+    "wrong_document_filter_bug": (
+        "The gold filing was chosen as the filter, yet no chunk came from it."
+    ),
     "wrong_section_or_chunk": (
         "A target filing was retrieved, but no retrieved page was a gold page."
     ),
@@ -81,6 +96,40 @@ def _mark(
         classification_rule=rule,
     )
     return row
+
+
+def _wrong_document_cause(
+    prediction: dict[str, Any], target_documents: list[str]
+) -> tuple[str, str]:
+    """Say why no retrieved chunk came from the target filing.
+
+    Build Order 2.5 splits Exp1's wrong-document failures by where the filing
+    was lost. The checks run in order, so each failure gets its earliest
+    cause: an unusable reply also produces a fallback, and a fallback has no
+    chosen filing that could be wrong. Rows written before Exp1 carry no
+    `filter_status` and keep the plain subtype.
+    """
+    if "filter_status" not in prediction:
+        return "wrong_document", "No retrieved chunk came from a target filing."
+    if prediction.get("enhancement_status") == "invalid_reply":
+        return (
+            "wrong_document_invalid_reply",
+            "Query enhancement's reply was unusable; all filings were searched.",
+        )
+    if prediction["filter_status"] == "fallback":
+        return (
+            "wrong_document_declined",
+            "Query enhancement chose no listed filing; all filings were searched.",
+        )
+    if prediction.get("filter_doc_name") not in target_documents:
+        return (
+            "wrong_document_wrong_filing",
+            "Query enhancement chose a different filing.",
+        )
+    return (
+        "wrong_document_filter_bug",
+        "The gold filing was chosen, yet no chunk came from it.",
+    )
 
 
 def build_failure_analysis(
@@ -164,6 +213,11 @@ def build_failure_analysis(
             "page_recall": calculated_page_recall,
             "page_precision": prediction.get("page_precision"),
             "page_mrr": prediction.get("page_mrr"),
+            # Exp1's filter choice, shown beside the diagnosis so a
+            # wrong-document row can be checked by eye; None for older rows.
+            "enhancement_status": prediction.get("enhancement_status"),
+            "filter_status": prediction.get("filter_status"),
+            "filter_doc_name": prediction.get("filter_doc_name"),
             "condition_judge_reasons": _judge_reasons(condition_judgment),
             "oracle_judge_reasons": _judge_reasons(oracle_judgment),
         }
@@ -287,13 +341,14 @@ def build_failure_analysis(
                 )
             )
         elif not retrieved_target_document:
+            subtype, rule = _wrong_document_cause(prediction, target_documents)
             analysis_rows.append(
                 _mark(
                     row,
                     analysis_status="classified",
                     category="retrieval_context_failure",
-                    subtype="wrong_document",
-                    rule="No retrieved chunk came from a target filing.",
+                    subtype=subtype,
+                    rule=rule,
                 )
             )
         elif calculated_page_recall == 0:

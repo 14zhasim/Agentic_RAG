@@ -299,6 +299,70 @@ def test_summarizes_failure_rows_by_condition_and_outcome():
     }
 
 
+@pytest.mark.parametrize(
+    ("exp1_fields", "expected_subtype"),
+    [
+        # Rule order: a broken reply also falls back, so it wins; a fallback
+        # has no chosen filing to be wrong, so it beats wrong filing.
+        (
+            {
+                "enhancement_status": "invalid_reply",
+                "filter_status": "fallback",
+                "filter_doc_name": None,
+            },
+            "wrong_document_invalid_reply",
+        ),
+        (
+            {
+                "enhancement_status": "ok",
+                "filter_status": "fallback",
+                "filter_doc_name": None,
+            },
+            "wrong_document_declined",
+        ),
+        (
+            {
+                "enhancement_status": "ok",
+                "filter_status": "chosen",
+                "filter_doc_name": "other.pdf",
+            },
+            "wrong_document_wrong_filing",
+        ),
+        (
+            {
+                "enhancement_status": "ok",
+                "filter_status": "chosen",
+                "filter_doc_name": "target.pdf",
+            },
+            "wrong_document_filter_bug",
+        ),
+        ({}, "wrong_document"),
+    ],
+)
+def test_wrong_document_failure_is_split_by_cause(exp1_fields, expected_subtype):
+    """Build Order 2.5: an Exp1 wrong-document failure records its cause."""
+    oracle = _prediction("oracle", page_recall=None)
+    retrieval = {
+        **_prediction(
+            "shared_store",
+            chunks=[{"doc_name": "other.pdf", "pages": [2], "rank": 1}],
+        ),
+        **exp1_fields,
+    }
+    judgments = {
+        oracle["job_id"]: _judgment(oracle["job_id"], 1),
+        retrieval["job_id"]: _judgment(retrieval["job_id"], 0),
+    }
+
+    [result] = build_failure_analysis([oracle, retrieval], judgments)
+
+    assert result["failure_category"] == "retrieval_context_failure"
+    assert result["failure_subtype"] == expected_subtype
+    assert expected_subtype in METHODOLOGY
+    assert result["filter_status"] == exp1_fields.get("filter_status")
+    assert result["filter_doc_name"] == exp1_fields.get("filter_doc_name")
+
+
 def test_methodology_explains_every_emitted_failure_value():
     expected_values = {
         "retrieval_context_failure",

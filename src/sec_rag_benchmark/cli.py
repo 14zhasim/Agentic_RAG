@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report_parser = commands.add_parser("report")
     report_parser.add_argument("--run-dir", type=Path, required=True)
+    report_parser.add_argument("--oracle-run-dir", type=Path)
     judge_parser = commands.add_parser("judge")
     judge_parser.add_argument("--config", type=Path, required=True)
     judge_parser.add_argument("--run-dir", type=Path, required=True)
@@ -100,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Run {result['run_dir']}: {counts}")
 
             case "report":
-                summary = write_report(args.run_dir)
+                summary = write_report(args.run_dir, args.oracle_run_dir)
                 print(f"Reported {summary['run_status']['successful']} successful jobs")
 
             case "judge":

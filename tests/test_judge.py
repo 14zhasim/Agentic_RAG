@@ -284,6 +284,13 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
         "by_cognitive_skill": [],
         "cross_tab": [],
     }
+    # Oracle rows have no retrieval spend, so its four fields are empty.
+    no_retrieval_cost = {
+        "retrieval_cost_sample_size": 0,
+        "total_retrieval_cost_usd": None,
+        "average_retrieval_cost_per_answer_usd": None,
+        "average_retrieval_latency_seconds": None,
+    }
     assert summary["generation_performance"] == {
         "overall": {
             "successful_answers": 4,
@@ -294,6 +301,7 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
             "average_cost_per_question_usd": 0.25,
             "latency_sample_size": 4,
             "average_latency_per_answer_seconds": 1.5,
+            **no_retrieval_cost,
         },
         "by_condition": [
             {
@@ -306,6 +314,7 @@ def test_accuracy_reporting_counts_agreement_disagreement_and_did_not_fit(tmp_pa
                 "average_cost_per_question_usd": 0.25,
                 "latency_sample_size": 4,
                 "average_latency_per_answer_seconds": 1.5,
+                **no_retrieval_cost,
             }
         ],
     }
