@@ -35,6 +35,11 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+
+[retrieval]
+candidates_per_search = 50
+rrf_k = 60
+rerank_candidates = 50
 """
 
 
@@ -150,4 +155,23 @@ def test_ceiling_under_twice_the_floor_is_refused(tmp_path: Path) -> None:
     _, config_path = _write(tmp_path, text)
 
     with pytest.raises(ValueError, match="at least twice"):
+        load_config(config_path)
+
+
+def test_missing_retrieval_section_is_refused(tmp_path: Path) -> None:
+    text = VALID_CONFIG.replace("[retrieval]", "[not_retrieval]")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match=r"\[retrieval\]"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1", "true", '"60"'])
+def test_retrieval_settings_must_be_positive_whole_numbers(
+    tmp_path: Path, bad_value: str
+) -> None:
+    text = VALID_CONFIG.replace("rrf_k = 60", f"rrf_k = {bad_value}")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match="retrieval.rrf_k"):
         load_config(config_path)

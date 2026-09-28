@@ -25,3 +25,9 @@ model = "voyage-4-lite"
 batch_size = 128           # chunks per Voyage call (limits: 1,000 texts, 1M tokens)
 output_dimension = 1024    # Voyage's default; questions are embedded at the same length
 output_dtype = "float"     # Voyage's default, full precision; Chroma stores floats
+
+[retrieval]
+candidates_per_search = 50 # BM25 and Chroma each return this many
+rrf_k = 60                 # reciprocal rank fusion constant (Cormack et al., 2009)
+rerank_candidates = 50     # fused chunks handed to the reranker; the final 10 is
+                           # the benchmark's retrieval_depth

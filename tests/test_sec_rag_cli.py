@@ -50,6 +50,11 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+
+[retrieval]
+candidates_per_search = 50
+rrf_k = 60
+rerank_candidates = 50
 """,
         encoding="utf-8",
     )
