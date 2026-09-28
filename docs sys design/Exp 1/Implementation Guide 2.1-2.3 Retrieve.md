@@ -304,10 +304,10 @@ as `top_k`, so the chunks GLM sees and the depth metrics use can't disagree.
     "call": {
         "requested_model": "z-ai/glm-5.3-flash",
         "returned_model": "...",
-        "provider": "Z.AI",
         "usage": {...},
         "cost": 0.0004,
         "latency_seconds": 3.1,
+        "reply_text": '{"filename": "3M_2018_10K", "keyword_query": ...}',
     },
 }
 ```
@@ -468,15 +468,15 @@ Reply with this JSON object:
  "keyword_query": keywords for a keyword (BM25) search,
  "semantic_query": one full sentence for a meaning-based search}
 
-keyword_query: keep the question's company, years and financial terms, and
-add the wording a 10-K would use for any shorthand, keeping the shorthand
-too. For example: PP&E or PPNE -> property, plant and equipment; COGS -> cost
-of goods sold; DPO -> days payable outstanding; FCF -> free cash flow; capex
--> capital expenditure, purchases of property, plant and equipment; FY2018 ->
-fiscal year 2018.
+keyword_query: keep the question's company, years and financial terms, and add the wording a 10-K would use for any shorthand, keeping the shorthand too. For example:
+- PP&E or PPNE -> property, plant and equipment
+- COGS -> cost of goods sold
+- DPO -> days payable outstanding
+- FCF -> free cash flow
+- capex -> capital expenditure, purchases of property, plant and equipment
+- FY2018 -> fiscal year 2018
 
-semantic_query: restate the question as one plain sentence, with shorthand
-written out.
+semantic_query: restate the question as one plain sentence, with shorthand written out.
 
 <question>
 {question}
@@ -873,6 +873,28 @@ build the parts; Slice 3 connects them.
 then `build_enhancement_messages`, `_read_plan`, `openrouter_client`;
 `rerank.py` — `rerank`; then `tests/test_query_enhancement.py`,
 `tests/test_rerank.py`.
+
+**As built (28 Sep 2026):** `src/sec_rag/retrieval/query_enhancement.py`
+(`enhance_query`, `build_enhancement_messages`, `_read_plan`,
+`openrouter_client`; the prompt as `SYSTEM_PROMPT` and `USER_PROMPT`) and
+`src/sec_rag/retrieval/rerank.py` (`rerank`); `[query_enhancement]` and
+`[rerank]` in `configs/sec_rag.toml`, validated in `config.py`. Plan/code
+differences:
+- **prompt layout:** the shorthand examples are one per line. Wrapped as
+  first drafted, "cost of goods sold" was split across a line break, which
+  `test_prompt_asks_for_shorthand_to_be_expanded` caught. The guide's copy
+  of the prompt is updated to match.
+- **no `provider` in the call record:** the provider is pinned with no
+  fallbacks, so it is always Z.AI.
+- **`reply_text` added to the call record** (agreed 28 Sep 2026): GLM's
+  exact reply, since `_read_plan` turns a made-up filename into `None` and a
+  broken reply into the raw question. Failure diagnosis can then tell "said
+  null" from "invented a filing" and see what a broken reply looked like.
+- clients are typed `Any` so tests can pass fakes with the same methods.
+
+Tests: 11 in `test_query_enhancement.py` (18 cases with parameters), 2 in
+`test_rerank.py`, 3 more config tests (9 cases), including one that loads the
+repository's own `configs/sec_rag.toml`. Full suite 250 passed.
 
 **Commit:** `Add query enhancement and Voyage rerank calls`
 
