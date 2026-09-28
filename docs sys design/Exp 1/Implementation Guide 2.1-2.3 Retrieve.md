@@ -158,7 +158,7 @@ weight's behaviour (Exp2); retries (Exp3); filters wider than one filing.
 
 ## Gate 2 — Files, data and interfaces
 
-*Status: awaiting approval.*
+*Status: approved 28 Sep 2026.*
 
 ### Files
 
@@ -300,9 +300,15 @@ as `top_k`, so the chunks GLM sees and the depth metrics use can't disagree.
     "filename": "3M_2018_10K",
     "keyword_query": "3M 2018 capex capital expenditure purchases of property plant and equipment PP&E cash flow statement",
     "semantic_query": "How much did 3M spend on purchases of property, plant and equipment in fiscal year 2018, according to its cash flow statement?",
-    "enhancement_status": "ok",        # or "invalid_reply"
-    "call": {"requested_model": "z-ai/glm-5.3-flash", "returned_model": "...",
-             "provider": "Z.AI", "usage": {...}, "cost": 0.0004, "latency_seconds": 3.1},
+    "enhancement_status": "ok",  # or "invalid_reply"
+    "call": {
+        "requested_model": "z-ai/glm-5.3-flash",
+        "returned_model": "...",
+        "provider": "Z.AI",
+        "usage": {...},
+        "cost": 0.0004,
+        "latency_seconds": 3.1,
+    },
 }
 ```
 
@@ -310,8 +316,14 @@ as `top_k`, so the chunks GLM sees and the depth metrics use can't disagree.
 `page_metrics`):
 
 ```python
-{"chunk_id": "3M_2018_10K:p59:c1", "doc_name": "3M_2018_10K", "pages": [59],
- "rank": 1, "score": 0.91, "text": "<original chunk text, HTML kept>"}
+{
+    "chunk_id": "3M_2018_10K:p59:c1",
+    "doc_name": "3M_2018_10K",
+    "pages": [59],
+    "rank": 1,
+    "score": 0.91,
+    "text": "<original chunk text, HTML kept>",
+}
 ```
 
 **Bundle** (from `retrieve_exp1`):
@@ -563,9 +575,16 @@ Each item in `ranked` is a pair `(chunk_id, score)`, best first. With
 **Pseudocode:**
 
 ```python
-def search(keyword_query: str, semantic_query: str, *, method: str,
-           doc_name: str | None, top_k: int, indexes: SearchIndexes,
-           structure_weight: float = 0.0) -> dict:
+def search(
+    keyword_query: str,
+    semantic_query: str,
+    *,
+    method: str,
+    doc_name: str | None,
+    top_k: int,
+    indexes: SearchIndexes,
+    structure_weight: float = 0.0,
+) -> dict:
     """Rank chunks for one query pair; Build Order 2.2's ONE function."""
     if structure_weight != 0.0:
         raise NotImplementedError("structure weight is Exp2 (Build Order 3.3)")
@@ -573,7 +592,7 @@ def search(keyword_query: str, semantic_query: str, *, method: str,
         raise ValueError(f"unknown method: {method}")
 
     embedding_tokens = 0
-    rankings: list[list[tuple[str, float]]] = []   # one list per search that ran
+    rankings: list[list[tuple[str, float]]] = []  # one list per search that ran
 
     # BM25 runs for "bm25" and "hybrid".
     if method in ("bm25", "hybrid"):
@@ -581,20 +600,25 @@ def search(keyword_query: str, semantic_query: str, *, method: str,
 
     # Chroma runs for "semantic" and "hybrid".
     if method in ("semantic", "hybrid"):
-        vector_ranking, embedding_tokens = _vector_ranking(indexes, semantic_query, doc_name)
+        vector_ranking, embedding_tokens = _vector_ranking(
+            indexes, semantic_query, doc_name
+        )
         rankings.append(vector_ranking)
 
     # Only "hybrid" has two lists to merge; otherwise return the one list.
     if method == "hybrid":
         id_lists = [[chunk_id for chunk_id, _score in ranking] for ranking in rankings]
-        ranked = reciprocal_rank_fusion(id_lists, k=indexes.config["retrieval"]["rrf_k"])
+        ranked = reciprocal_rank_fusion(
+            id_lists, k=indexes.config["retrieval"]["rrf_k"]
+        )
     else:
         ranked = rankings[0]
     return {"ranked": ranked[:top_k], "embedding_tokens": embedding_tokens}
 
 
-def _bm25_ranking(indexes: SearchIndexes, query: str,
-                  doc_name: str | None) -> list[tuple[str, float]]:
+def _bm25_ranking(
+    indexes: SearchIndexes, query: str, doc_name: str | None
+) -> list[tuple[str, float]]:
     """BM25's best 50 chunks for the keyword query, inside the filter.
 
     Returns [(chunk_id, bm25_score), ...], best first, at most 50, every
@@ -602,12 +626,17 @@ def _bm25_ranking(indexes: SearchIndexes, query: str,
     Sorted because bm25s's retrieve defaults to sorted=True (bm25s/__init__.py
     line 681) and the wrapper keeps that order; test_search.py pins it.
     """
-    filters = _doc_filter(doc_name)   # MetadataFilters for doc_name, or None
+    filters = _doc_filter(doc_name)  # MetadataFilters for doc_name, or None
     # Step 1 — build a retriever for THIS filter. Stage 1.5 finding 5: the
     # retriever reads its filter only when created, so make one per search
     # from the already-loaded index (~0.01 s). No query yet.
-    retriever = BM25Retriever(existing_bm25=indexes.bm25, filters=filters,
-                              similarity_top_k=50, token_pattern=..., stemmer=...)
+    retriever = BM25Retriever(
+        existing_bm25=indexes.bm25,
+        filters=filters,
+        similarity_top_k=50,
+        token_pattern=...,
+        stemmer=...,
+    )
     # Step 2 — search: THIS is where the keyword query is used.
     # retriever.retrieve(query) splits it into words, scores every chunk, and
     # returns NodeWithScore objects best first (.node.node_id is the chunk ID,
@@ -624,8 +653,9 @@ def _bm25_ranking(indexes: SearchIndexes, query: str,
     return ranking
 
 
-def _vector_ranking(indexes: SearchIndexes, query: str,
-                    doc_name: str | None) -> tuple[list[tuple[str, float]], int]:
+def _vector_ranking(
+    indexes: SearchIndexes, query: str, doc_name: str | None
+) -> tuple[list[tuple[str, float]], int]:
     """Chroma's 50 nearest chunks to the semantic query, inside the filter.
 
     Returns two things:
@@ -643,13 +673,22 @@ def _vector_ranking(indexes: SearchIndexes, query: str,
     # Step 1 — turn the semantic query into a vector (one paid Voyage call).
     # input_type="query" pairs with the chunks' "document" embeddings
     # (docs/libraries/voyage/embeddings.md).
-    embedded = indexes.voyage.embed([query], model="voyage-4-lite", input_type="query",
-                                    truncation=False, output_dimension=1024,
-                                    output_dtype="float")
+    embedded = indexes.voyage.embed(
+        [query],
+        model="voyage-4-lite",
+        input_type="query",
+        truncation=False,
+        output_dimension=1024,
+        output_dtype="float",
+    )
     # Step 2 — ask Chroma for the 50 nearest chunk vectors, inside the filter.
-    found = indexes.store.query(VectorStoreQuery(query_embedding=embedded.embeddings[0],
-                                                 similarity_top_k=50,
-                                                 filters=_doc_filter(doc_name)))
+    found = indexes.store.query(
+        VectorStoreQuery(
+            query_embedding=embedded.embeddings[0],
+            similarity_top_k=50,
+            filters=_doc_filter(doc_name),
+        )
+    )
     ranking = list(zip(found.ids, found.similarities))
     return ranking, embedded.total_tokens
 
@@ -673,11 +712,16 @@ def _doc_filter(doc_name: str | None) -> MetadataFilters | None:
     """
     if doc_name is None:
         return None
-    return MetadataFilters(filters=[
-        MetadataFilter(key="doc_name", operator=FilterOperator.EQ, value=doc_name)])
+    return MetadataFilters(
+        filters=[
+            MetadataFilter(key="doc_name", operator=FilterOperator.EQ, value=doc_name)
+        ]
+    )
 
 
-def reciprocal_rank_fusion(rankings: list[list[str]], k: int) -> list[tuple[str, float]]:
+def reciprocal_rank_fusion(
+    rankings: list[list[str]], k: int
+) -> list[tuple[str, float]]:
     """Merge ranked ID lists: each chunk scores the sum of 1/(k + rank) over lists.
 
     Takes IDs only (best first), because RRF uses positions, not scores.
@@ -714,6 +758,25 @@ def reciprocal_rank_fusion(rankings: list[list[str]], k: int) -> list[tuple[str,
 - `structure_weight=0.5` raises `NotImplementedError`; `method="x"` raises
   `ValueError`.
 - config: `[retrieval]` values must be positive whole numbers.
+
+**As built (28 Sep 2026):** as planned, in `src/sec_rag/retrieval/search.py`
+(`search`, `_bm25_ranking`, `_vector_ranking`, `_doc_filter`,
+`reciprocal_rank_fusion`, `open_search_indexes`, `SearchIndexes`). Plan/code
+differences:
+- the 50s come from `[retrieval] candidates_per_search`, and model, length
+  and dtype from `[embedding]`, rather than written in code;
+- `_vector_ranking` refuses a `SearchIndexes` with no Voyage client, so the
+  free spot check (opened with `voyage=None`) can only run BM25 — pinned by
+  `test_semantic_without_a_voyage_client_is_refused`.
+
+Tests: 10 in `tests/test_search.py`, plus 5 config tests. All passed first
+run; full suite 224 passed.
+
+Free check on the real index (3M capex keyword query, BM25 only): opening
+takes 0.2 s, a filtered search 0.02 s. Filtered to `3M_2018_10K`, all 50
+results are 3M 2018 and the gold cash-flow table `p59:c1` ranks **14th** —
+outside a top 10, inside the 50 the reranker sees, which is what shape A is
+for. Unfiltered, it is not in the top 50 (Coca-Cola chunks rank first).
 
 **Commit:** `Add hybrid search with reciprocal rank fusion`
 
