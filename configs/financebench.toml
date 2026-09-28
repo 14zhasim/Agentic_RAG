@@ -44,8 +44,13 @@ smoke_size = 10
 pattern_size = 50
 
 [run]
-experiment = "financebench"
-variant = "baseline-context-conditions-v1"
-conditions = ["closed_book", "oracle", "long_context"]
+# Exp1, the complete system. Ablations change only `variant` (bm25-only,
+# semantic-only, no-rerank, no-query-enhancement: Build Order 2.2). The
+# baseline run (closed_book, oracle, long_context) keeps its own snapshot in
+# results/20260917-012959--financebench--baseline-context-conditions-v1.
+experiment = "exp1"
+variant = "full"
+conditions = ["single_store", "shared_store"]
 retrieval_depth = 10
 results_dir = "results"
+sec_rag_config = "configs/sec_rag.toml"   # read only when a retrieval condition runs

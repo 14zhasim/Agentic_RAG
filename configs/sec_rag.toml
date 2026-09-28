@@ -25,6 +25,8 @@ model = "voyage-4-lite"
 batch_size = 128           # chunks per Voyage call (limits: 1,000 texts, 1M tokens)
 output_dimension = 1024    # Voyage's default; questions are embedded at the same length
 output_dtype = "float"     # Voyage's default, full precision; Chroma stores floats
+usd_per_million_tokens = 0.02  # list price, docs.voyageai.com/docs/pricing (28 Sep 2026);
+                               # our usage is inside the 200M free allowance
 
 [retrieval]
 candidates_per_search = 50 # BM25 and Chroma each return this many
@@ -45,3 +47,4 @@ prompt_version = "exp1-query-enhancement-v1"   # bump when the prompt changes
 
 [rerank]
 model = "rerank-3-lite"      # 200M free tokens; the 2.5 line has none
+usd_per_million_tokens = 0.02  # list price, same page; recorded, not billed
