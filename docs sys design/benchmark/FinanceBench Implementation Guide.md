@@ -347,6 +347,16 @@ Records info model should receive
 }
 ```
 
+Every row also has `pre_rerank_page_recall`, `pre_rerank_page_precision`
+and `pre_rerank_page_mrr` (`None` outside retrieval conditions). Retrieval
+rows add the Exp1 fields from `job._retrieval_fields()`: `pre_rerank_chunks`,
+`search_plan`, `enhancement_status`, `filter_doc_name`, `filter_status`,
+`filter_correct` (shared-store only, else `None`), `retrieval_usage`,
+`query_enhancement_cost`, `retrieval_cost_usd` and
+`retrieval_latency_seconds` (`Exp 1/Implementation Guide 2.4-2.6 Run.md` →
+Records). The existing `page_*` fields are the post-rerank metrics and `cost`
+remains the answer call's alone.
+
 No answer-accuracy field is written during generation. The judge reads this
 saved row, which already contains all reference inputs it needs, and persists
 its decision separately. `cost` is retained from OpenRouter's usage metadata
@@ -966,13 +976,23 @@ flowchart TD
 The retriever public shape is:
 
 ```python
-Retriever = Callable[[str, tuple[str, ...], int], list[dict[str, Any]]]
+Retriever = Callable[[str, tuple[str, ...], int], dict[str, Any]]
 ```
 
-That means `retriever(question_text, document_scope, top_k)` returns ranked chunk
-dictionaries. `_build_retrieval_context()` sorts that output by rank and keeps
-only the first `top_k` chunks before constructing the model context, page list
-and saved provenance. A missing retriever raises `RetrieverUnavailable`.
+That means `retriever(question_text, document_scope, top_k)` returns Exp1's
+**bundle** (`Exp 1/Implementation Guide 2.1-2.3 Retrieve.md` → Records): the
+reranked chunks under `"chunks"`, plus `pre_rerank_chunks`, `search_plan`,
+`filter_doc_name`, `filter_status`, `usage` and `latency_seconds`.
+`_build_retrieval_context()` sorts `bundle["chunks"]` by rank and keeps the
+first `top_k` before constructing the model context, page list and saved
+provenance. Each chunk is labelled by `_page_block()`, exactly as oracle and
+long-context pages are (`[Document: 3M_2018_10K | Page index: 59]`), and must
+cover exactly one page (`ValueError` otherwise). The rest of the bundle is
+returned under `"retrieval"` for `job.py`'s metrics; the three non-retrieval
+builders return `"retrieval": None`. A missing retriever raises
+`RetrieverUnavailable`. In a real run the retriever is built by
+`runner._open_exp1_retriever()` (section 10); see
+`Exp 1/Implementation Guide 2.4-2.6 Run.md`.
 
 ## 8. Generation flow
 
@@ -1412,8 +1432,17 @@ FOR each question and condition:
 RETURN run directory and generated/did-not-fit/skipped/failed counts
 ```
 
-`_create_or_resume_run()` writes or verifies the effective `config.toml`,
-including the subset name and selected question IDs, and derives the run key. A new directory is named
+When a retrieval condition is selected, `run_benchmark()` also reads
+`[run] sec_rag_config` (refusing the run if it is missing and no retriever was
+passed in), takes shared-store's scope from every prepared question's
+`doc_name` (all 64 filings, whatever `--subset` or `--limit` selected), and
+builds the retriever once with `_open_exp1_retriever()` — the paid path,
+which reads both API keys. `_create_or_resume_run()` writes or verifies the
+effective `config.toml`,
+including the subset name and selected question IDs, and derives the run key.
+With a retrieval condition it also copies `sec_rag.toml` into the run and
+hashes both files' bytes into the key; resuming with either file changed is
+refused. A new directory is named
 `<timestamp>--<experiment>--<variant>`; resumption still uses the exact path
 passed through `--run-dir`. `_completed_jobs()` reads both successful and
 `did_not_fit` IDs from `predictions.jsonl`. `_did_not_fit_prediction()` builds

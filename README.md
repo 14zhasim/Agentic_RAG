@@ -15,8 +15,8 @@ The harness currently supports:
 - page recall, page precision and page MRR;
 - reports segmented by condition, question type and cognitive skill.
 
-`single_store` and `shared_store` are defined, and Exp1's retriever is built
-(`sec-rag retrieve`), but it is not yet wired into benchmark runs.
+- `single_store` and `shared_store`: Exp1's hybrid retriever
+  (`sec-rag retrieve`) over the filing itself or all 64 filings.
 The Azure DeepSeek binary answer judge is implemented, paid-smoke tested and
 validated against published labels. HiREC/LOFin support remains deferred.
 
@@ -265,12 +265,17 @@ uv run sec-rag retrieve --config configs/sec_rag.toml \
 
 ## Run a no-spend preflight
 
-Test the three currently executable conditions without creating an API client
-or spending credit:
+Plan a run without creating an API client or spending credit. The default
+`[run]` in `configs/financebench.toml` is Exp1 (`experiment = "exp1"`,
+`variant = "full"`, conditions `single_store` and `shared_store`, retrieval
+settings from `configs/sec_rag.toml`):
 
 ```bash
 uv run sec-rag-benchmark run --config configs/financebench.toml --dry-run
 ```
+
+The retrieval conditions' prompt sizes show as `requires retriever`, because
+the chunks are unknown until the paid search runs.
 
 For a quick five-question check:
 
@@ -306,7 +311,10 @@ Create an ignored `.env` file in the repository root:
 
 ```text
 OPENROUTER_API_KEY=your-key-here
+VOYAGE_API_KEY=your-key-here
 ```
+
+(`VOYAGE_API_KEY` is needed only for `single_store` and `shared_store`.)
 
 Load the file into the current terminal shell:
 
@@ -316,7 +324,15 @@ source .env
 set +a
 ```
 
-The following command **sends paid OpenRouter requests**:
+The following commands **send paid OpenRouter and Voyage requests**. They run
+Exp1 on the 10-question smoke subset, then on all 112 questions:
+
+```bash
+uv run sec-rag-benchmark run --config configs/financebench.toml --subset smoke
+uv run sec-rag-benchmark run --config configs/financebench.toml
+```
+
+The three baseline conditions (paid OpenRouter only) are run by naming them:
 
 ```bash
 uv run sec-rag-benchmark run \
@@ -325,7 +341,8 @@ uv run sec-rag-benchmark run \
 ```
 
 The CLI creates a labelled directory such as
-`results/20260913-143052--financebench--baseline-context-conditions-v1/` and
+`results/20260928-143052--exp1--full/` (`--experiment--variant` from
+`[run]`) and
 prints its path. Keep the path if you need to resume or report the run.
 
 ## Resume and report a run
@@ -345,6 +362,19 @@ Create or refresh the reports without calling a model:
 ```bash
 uv run sec-rag-benchmark report \
   --run-dir results/20260913-143052--financebench--baseline-context-conditions-v1
+```
+
+An Exp1 run holds only `single_store` and `shared_store`, so its failure
+diagnosis borrows the oracle answers and judgments from the 17 Sep baseline
+run. `--oracle-run-dir` names that folder; it is only read, never written.
+Without it, every incorrect retrieval answer is reported as `missing_oracle`.
+(Not built yet: it lands with
+`docs sys design/Exp 1/Implementation Guide 2.4-2.6 Run.md`.)
+
+```bash
+uv run sec-rag-benchmark report \
+  --run-dir results/<exp1-run-id> \
+  --oracle-run-dir results/20260917-012959--financebench--baseline-context-conditions-v1
 ```
 
 If the two judge passes disagree, follow the manual-adjudication workflow in
