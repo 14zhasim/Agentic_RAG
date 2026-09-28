@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from sec_rag_benchmark.evaluation.retrieval_metrics import (
     cognitive_skills,
     page_metrics,
 )
+from sec_rag_benchmark.execution.job import execute_job
 from sec_rag_benchmark.execution.preflight import dry_run
 from sec_rag_benchmark.execution.runner import run_benchmark
 from sec_rag_benchmark.pipeline.conditions import (
@@ -32,8 +34,11 @@ from sec_rag_benchmark.pipeline.generation import (
 from sec_rag_benchmark.reporting.report import write_report
 
 
-def _write_config(path: Path, sample) -> None:
-    """Write the small fixture configuration used by CLI and runner tests."""
+def _write_config(path: Path, sample, *, extra_run: str = "") -> None:
+    """Write the small fixture configuration used by CLI and runner tests.
+
+    `extra_run` adds lines to [run], e.g. a sec_rag_config path.
+    """
     dataset, generation, run_config = (
         sample["dataset"],
         sample["generation"],
@@ -85,7 +90,59 @@ variant = "{run_config["variant"]}"
 conditions = ["closed_book", "oracle", "long_context"]
 retrieval_depth = {run_config["retrieval_depth"]}
 results_dir = "{run_config["results_dir"]}"
-''')
+{extra_run}''')
+
+
+def _chunk(doc_name, page, *, rank, chunk_id=None, text="chunk text"):
+    """One retrieved chunk in the shape retrieve_exp1 returns."""
+    return {
+        "chunk_id": chunk_id or f"{doc_name}:p{page}:c0",
+        "doc_name": doc_name,
+        "pages": [page],
+        "rank": rank,
+        "score": 1.0 / rank,
+        "text": text,
+    }
+
+
+def _bundle(chunks, *, pre_rerank=None):
+    """A fake Exp1 bundle (Implementation Guide 2.1-2.3 -> Records).
+
+    search_plan mimics enhance_query's real shape; job.py reads only
+    enhancement_status and call.cost from it, and saves the rest as-is.
+    """
+    return {
+        "chunks": chunks,
+        "pre_rerank_chunks": pre_rerank if pre_rerank is not None else chunks,
+        "search_plan": {
+            "filename": "b.pdf",
+            "enhancement_status": "ok",
+            "call": {"cost": 0.0002, "latency_seconds": 1.0},
+        },
+        "filter_doc_name": "b.pdf",
+        "filter_status": "chosen",
+        "usage": {
+            "embedding_tokens": 30,
+            "rerank_tokens": 1000,
+            "embedding_cost_usd": 6e-07,
+            "rerank_cost_usd": 2e-05,
+        },
+        "latency_seconds": 2.5,
+    }
+
+
+def _fake_generator(messages, config):
+    """Stands in for generate(): no OpenRouter call."""
+    return {
+        "answer": "42",
+        "requested_model": config["model"],
+        "request_id": "r",
+        "returned_model": "glm",
+        "provider": "Z.AI",
+        "usage": {},
+        "cost": None,
+        "latency_seconds": 0.1,
+    }
 
 
 def test_prepare_validate_and_load_preserve_source_rows(sample):
@@ -164,16 +221,7 @@ def test_all_conditions_and_retrieval_scopes(sample):
 
     def retrieve(query, scope, top_k):
         calls.append(scope)
-        return [
-            {
-                "chunk_id": "c",
-                "text": "x",
-                "doc_name": "b.pdf",
-                "pages": [1],
-                "score": 0.9,
-                "rank": 1,
-            }
-        ]
+        return _bundle([_chunk("b.pdf", 1, rank=1)])
 
     build_condition(
         question, "single_store", pdf_dir, ("a.pdf", "b.pdf"), retriever=retrieve
@@ -192,29 +240,13 @@ def test_retrieval_condition_sorts_and_limits_chunks_before_building_context(sam
     pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
 
     def retrieve(query, scope, top_k):
-        return [
-            {
-                "chunk_id": "rank-3",
-                "text": "must not reach the model",
-                "doc_name": "b.pdf",
-                "pages": [3],
-                "rank": 3,
-            },
-            {
-                "chunk_id": "rank-1",
-                "text": "first",
-                "doc_name": "b.pdf",
-                "pages": [1],
-                "rank": 1,
-            },
-            {
-                "chunk_id": "rank-2",
-                "text": "second",
-                "doc_name": "b.pdf",
-                "pages": [2],
-                "rank": 2,
-            },
-        ]
+        return _bundle(
+            [
+                _chunk("b.pdf", 3, rank=3, chunk_id="rank-3", text="must not reach"),
+                _chunk("b.pdf", 1, rank=1, chunk_id="rank-1", text="first"),
+                _chunk("b.pdf", 2, rank=2, chunk_id="rank-2", text="second"),
+            ]
+        )
 
     condition = build_condition(
         question,
@@ -231,7 +263,117 @@ def test_retrieval_condition_sorts_and_limits_chunks_before_building_context(sam
     ]
     assert condition["context_pages"] == [("b.pdf", 1), ("b.pdf", 2)]
     assert condition["context"].index("first") < condition["context"].index("second")
-    assert "must not reach the model" not in condition["context"]
+    assert "must not reach" not in condition["context"]
+
+
+def test_retrieval_context_uses_page_label_and_keeps_bundle(sample):
+    """Build Order 2.4: chunks carry the oracle's [Document | Page] label."""
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]
+    pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
+    bundle = _bundle([_chunk("b.pdf", 3, rank=1, text="Capex was 9.")])
+
+    condition = build_condition(
+        question,
+        "shared_store",
+        pdf_dir,
+        ("a.pdf", "b.pdf"),
+        retriever=lambda query, scope, top_k: bundle,
+    )
+
+    assert condition["context"] == "[Document: b.pdf | Page index: 3]\nCapex was 9."
+    assert condition["retrieved_chunks"] == bundle["chunks"]
+    assert condition["retrieval"] == {
+        key: value for key, value in bundle.items() if key != "chunks"
+    }
+    oracle = build_condition(question, "oracle", pdf_dir, ("a.pdf", "b.pdf"))
+    assert oracle["retrieval"] is None
+
+
+def test_retrieval_context_rejects_multi_page_chunk(sample):
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]
+    pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
+    two_pages = _chunk("b.pdf", 3, rank=1)
+    two_pages["pages"] = [3, 4]
+
+    with pytest.raises(ValueError, match="exactly one page"):
+        build_condition(
+            question,
+            "single_store",
+            pdf_dir,
+            ("a.pdf", "b.pdf"),
+            retriever=lambda query, scope, top_k: _bundle([two_pages]),
+        )
+
+
+def test_job_records_pre_rerank_metrics_filter_and_costs(sample):
+    """Build Order 2.5: two page_metrics() calls, filter accuracy, costs."""
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]  # gold b.pdf p0, p1
+    pdf_dir = Path(sample["dataset"]["output_dir"]) / "pdfs"
+
+    def run(condition_name, **bundle_changes):
+        bundle = _bundle(
+            [_chunk("b.pdf", 0, rank=1), _chunk("b.pdf", 7, rank=2)],
+            pre_rerank=[_chunk("b.pdf", 7, rank=1), _chunk("b.pdf", 0, rank=2)],
+        )
+        bundle.update(bundle_changes)
+        return execute_job(
+            question,
+            condition_name,
+            f"key:q2:{condition_name}",
+            pdf_dir=pdf_dir,
+            all_doc_names=("a.pdf", "b.pdf"),
+            generation_config=sample["generation"],
+            retrieval_depth=10,
+            retriever=lambda query, scope, top_k: bundle,
+            generator=_fake_generator,
+        )
+
+    row = run("shared_store")
+    assert row["page_mrr"] == 1.0  # post-rerank: gold p0 at rank 1
+    assert row["pre_rerank_page_mrr"] == 0.5  # pre-rerank: gold p0 at rank 2
+    assert row["pre_rerank_page_recall"] == 0.5
+    assert [chunk["rank"] for chunk in row["pre_rerank_chunks"]] == [1, 2]
+    assert row["filter_correct"] is True
+    assert row["filter_status"] == "chosen"
+    assert row["enhancement_status"] == "ok"
+    assert row["search_plan"]["filename"] == "b.pdf"
+    assert row["query_enhancement_cost"] == 0.0002
+    assert row["retrieval_cost_usd"] == pytest.approx(0.0002 + 6e-07 + 2e-05)
+    assert row["retrieval_usage"]["rerank_tokens"] == 1000
+    assert row["retrieval_latency_seconds"] == 2.5
+
+    assert run("shared_store", filter_doc_name="a.pdf")["filter_correct"] is False
+    fallback = run("shared_store", filter_doc_name=None, filter_status="fallback")
+    assert fallback["filter_correct"] is False
+    assert run("single_store")["filter_correct"] is None
+
+    no_cost_plan = {"filename": "b.pdf", "enhancement_status": "ok", "call": {}}
+    assert run("shared_store", search_plan=no_cost_plan)["retrieval_cost_usd"] is None
+
+
+def test_non_retrieval_rows_have_null_pre_rerank_metrics(sample):
+    prepare(sample["dataset"])
+    question = load_questions(sample["dataset"]["output_dir"])[1]
+
+    row = execute_job(
+        question,
+        "oracle",
+        "key:q2:oracle",
+        pdf_dir=Path(sample["dataset"]["output_dir"]) / "pdfs",
+        all_doc_names=("a.pdf", "b.pdf"),
+        generation_config=sample["generation"],
+        retrieval_depth=10,
+        generator=_fake_generator,
+    )
+
+    for name in ("page_recall", "page_precision", "page_mrr"):
+        assert row[name] is None
+        assert row[f"pre_rerank_{name}"] is None
+    assert "filter_correct" not in row
+    assert "retrieval_cost_usd" not in row
 
 
 def test_metrics_use_document_aware_unique_pages_and_chunk_rank():
@@ -693,6 +835,103 @@ def test_runner_resume_skips_did_not_fit(sample):
     report = write_report(run_dir)
     assert report["run_status"]["did_not_fit"] == 1
     assert report["run_status"]["complete"] is True
+
+
+def test_runner_shared_store_scope_is_every_prepared_filing(sample):
+    """Build Order 2.0, decision B: --limit does not shrink shared-store's scope."""
+    prepare(sample["dataset"])
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+    scopes = []
+
+    def retrieve(query, scope, top_k):
+        scopes.append(scope)
+        return _bundle([_chunk("a.pdf", 0, rank=1)])
+
+    run_benchmark(
+        config,
+        config_path,
+        conditions=["shared_store"],
+        limit=1,
+        retriever=retrieve,
+        generator=_fake_generator,
+    )
+
+    assert scopes == [("a.pdf", "b.pdf")]
+
+
+def test_runner_snapshots_sec_rag_config_into_run_key(sample, tmp_path):
+    """Build Order 2.5, decision D: retrieval settings are part of the run."""
+    prepare(sample["dataset"])
+    sec_rag_path = tmp_path / "sec_rag.toml"
+    sec_rag_path.write_text("[rrf]\nk = 60\n", encoding="utf-8")
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample, extra_run=f'sec_rag_config = "{sec_rag_path}"\n')
+    config = load_config(config_path)
+    run_dir = Path(sample["run"]["results_dir"]) / "exp1-run"
+    kwargs = {
+        "conditions": ["single_store"],
+        "limit": 1,
+        "requested_run_dir": run_dir,
+        "retriever": lambda query, scope, top_k: _bundle([_chunk("a.pdf", 0, rank=1)]),
+        "generator": _fake_generator,
+    }
+
+    run_benchmark(config, config_path, **kwargs)
+
+    assert (run_dir / "sec_rag.toml").read_bytes() == sec_rag_path.read_bytes()
+    job_id = json.loads((run_dir / "predictions.jsonl").read_text())["job_id"]
+    expected_key = hashlib.sha256(
+        (run_dir / "config.toml").read_bytes() + sec_rag_path.read_bytes()
+    ).hexdigest()[:12]
+    assert job_id.startswith(f"{expected_key}:")
+
+    sec_rag_path.write_text("[rrf]\nk = 10\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="different configuration"):
+        run_benchmark(config, config_path, **kwargs)
+
+    baseline_dir = Path(sample["run"]["results_dir"]) / "baseline-run"
+    run_benchmark(
+        config,
+        config_path,
+        conditions=["closed_book"],
+        limit=1,
+        requested_run_dir=baseline_dir,
+        generator=_fake_generator,
+    )
+    assert not (baseline_dir / "sec_rag.toml").exists()
+    baseline_job = json.loads((baseline_dir / "predictions.jsonl").read_text())
+    baseline_key = hashlib.sha256(
+        (baseline_dir / "config.toml").read_bytes()
+    ).hexdigest()[:12]
+    assert baseline_job["job_id"].startswith(f"{baseline_key}:")
+
+
+def test_runner_requires_sec_rag_config_for_retrieval(sample):
+    prepare(sample["dataset"])
+    config_path = Path(sample["run"]["results_dir"]).parent / "financebench.toml"
+    _write_config(config_path, sample)
+    config = load_config(config_path)
+
+    with pytest.raises(ValueError, match="sec_rag_config"):
+        run_benchmark(
+            config, config_path, conditions=["shared_store"], generator=_fake_generator
+        )
+
+    assert not Path(sample["run"]["results_dir"]).exists()
+
+
+def test_load_config_resolves_sec_rag_config(sample, tmp_path):
+    config_path = tmp_path / "configs" / "financebench.toml"
+    config_path.parent.mkdir()
+    _write_config(
+        config_path, sample, extra_run='sec_rag_config = "configs/sec_rag.toml"\n'
+    )
+
+    config = load_config(config_path)
+
+    assert config["run"]["sec_rag_config"] == str(tmp_path / "configs" / "sec_rag.toml")
 
 
 def test_cli_prepare_validate_and_no_spend_dry_run(

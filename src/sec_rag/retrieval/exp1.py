@@ -92,6 +92,17 @@ def retrieve_exp1(
     for new_rank, (position, relevance) in enumerate(order, start=1):
         reranked.append({**fused[position], "rank": new_rank, "score": relevance})
 
+    # Build Order 2.5: Voyage cost at list price. Our usage sits inside the
+    # free allowance, so this is what the run would cost, not what was billed.
+    embedding_cost_usd = (
+        found["embedding_tokens"]
+        * config["embedding"]["usd_per_million_tokens"]
+        / 1_000_000
+    )
+    rerank_cost_usd = (
+        rerank_tokens * config["rerank"]["usd_per_million_tokens"] / 1_000_000
+    )
+
     return {
         "chunks": reranked,
         "pre_rerank_chunks": fused[:top_k],
@@ -101,6 +112,8 @@ def retrieve_exp1(
         "usage": {
             "embedding_tokens": found["embedding_tokens"],
             "rerank_tokens": rerank_tokens,
+            "embedding_cost_usd": embedding_cost_usd,
+            "rerank_cost_usd": rerank_cost_usd,
         },
         "latency_seconds": time.perf_counter() - started,
     }

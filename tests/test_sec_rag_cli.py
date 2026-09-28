@@ -51,6 +51,7 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+usd_per_million_tokens = 0.02
 
 [retrieval]
 candidates_per_search = 50
@@ -70,6 +71,7 @@ prompt_version = "exp1-query-enhancement-v1"
 
 [rerank]
 model = "rerank-3-lite"
+usd_per_million_tokens = 0.02
 """,
         encoding="utf-8",
     )

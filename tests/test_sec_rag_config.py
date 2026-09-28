@@ -35,6 +35,7 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+usd_per_million_tokens = 0.02
 
 [retrieval]
 candidates_per_search = 50
@@ -54,6 +55,7 @@ prompt_version = "exp1-query-enhancement-v1"
 
 [rerank]
 model = "rerank-3-lite"
+usd_per_million_tokens = 0.02
 """
 
 
@@ -92,6 +94,7 @@ def test_load_config_resolves_corpus_paths_from_project_root(tmp_path: Path) -> 
         "batch_size": 128,
         "output_dimension": 1024,
         "output_dtype": "float",
+        "usd_per_million_tokens": 0.02,
     }
 
 
@@ -218,6 +221,23 @@ def test_invalid_query_enhancement_or_rerank_setting_is_refused(
     _, config_path = _write(tmp_path, VALID_CONFIG.replace(setting, bad_line))
 
     with pytest.raises(ValueError, match=message):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("section", ["embedding", "rerank"])
+@pytest.mark.parametrize(
+    "bad_line",
+    ["usd_per_million_tokens = -0.01", "usd_per_million_tokens = true", ""],
+)
+def test_voyage_list_price_must_be_a_number_of_at_least_zero(
+    tmp_path: Path, section: str, bad_line: str
+) -> None:
+    """Build Order 2.5: Voyage cost = tokens x list price, so the price must exist."""
+    head, _, tail = VALID_CONFIG.partition(f"[{section}]")
+    tail = tail.replace("usd_per_million_tokens = 0.02", bad_line, 1)
+    _, config_path = _write(tmp_path, head + f"[{section}]" + tail)
+
+    with pytest.raises(ValueError, match=f"{section}.usd_per_million_tokens"):
         load_config(config_path)
 
 

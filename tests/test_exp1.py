@@ -111,7 +111,8 @@ def make_resources(index_config):
         "temperature": 0.0,
         "max_output_tokens": 4096,
     }
-    config["rerank"] = {"model": "rerank-3-lite"}
+    config["rerank"] = {"model": "rerank-3-lite", "usd_per_million_tokens": 0.02}
+    config["embedding"]["usd_per_million_tokens"] = 0.02
     add_filing("AAA_2020_10K", AAA_TEXTS)
     add_filing("BBB_2020_10K", BBB_TEXTS)
     build_bm25_index(config)
@@ -149,8 +150,19 @@ def test_retrieve_exp1_returns_the_bundle_in_the_benchmarks_shape(
     assert bundle["filter_doc_name"] == "AAA_2020_10K"
     assert bundle["filter_status"] == "chosen"
     assert bundle["search_plan"]["enhancement_status"] == "ok"
-    assert bundle["usage"] == {"embedding_tokens": 7, "rerank_tokens": 321}
+    assert bundle["usage"]["embedding_tokens"] == 7
+    assert bundle["usage"]["rerank_tokens"] == 321
     assert bundle["latency_seconds"] >= 0
+
+
+def test_retrieve_exp1_usage_has_list_price_usd(make_resources) -> None:
+    """Build Order 2.5: Voyage cost as tokens x list price ($0.02/1M here)."""
+    resources, _voyage = make_resources(_reply("AAA_2020_10K"))
+
+    usage = retrieve_exp1(QUESTION, BOTH, 3, resources)["usage"]
+
+    assert usage["embedding_cost_usd"] == pytest.approx(7 * 0.02 / 1_000_000)
+    assert usage["rerank_cost_usd"] == pytest.approx(321 * 0.02 / 1_000_000)
 
 
 def test_the_filter_keeps_every_chunk_inside_the_chosen_filing(

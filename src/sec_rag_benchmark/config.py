@@ -27,6 +27,13 @@ def load_config(path: str | Path) -> dict[str, Any]:
         if not configured_path.is_absolute():
             configured_path = project_root / configured_path
         config[section][key] = str(configured_path)
+    # Optional: the RAG system's own settings, needed only when a retrieval
+    # condition runs (Build Order 2.0, minimal plug; execution/runner.py).
+    if "sec_rag_config" in config["run"]:
+        sec_rag_path = Path(config["run"]["sec_rag_config"])
+        if not sec_rag_path.is_absolute():
+            sec_rag_path = project_root / sec_rag_path
+        config["run"]["sec_rag_config"] = str(sec_rag_path)
 
     configured_conditions = config["run"]["conditions"]
     if not configured_conditions or set(configured_conditions) - CONDITIONS:

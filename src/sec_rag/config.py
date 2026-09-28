@@ -131,4 +131,14 @@ def load_config(path: str | Path) -> dict[str, Any]:
     rerank_model = rerank.get("model")
     if not isinstance(rerank_model, str) or not rerank_model:
         raise ValueError("rerank.model must be a non-empty string")
+
+    # Build Order 2.5: Voyage cost is recorded as tokens x list price
+    # (docs.voyageai.com/docs/pricing, checked 28 Sep 2026), so each Voyage
+    # section carries its price; retrieve_exp1 multiplies by it.
+    for section_name, section in (("embedding", embedding), ("rerank", rerank)):
+        price = section.get("usd_per_million_tokens")
+        if not isinstance(price, int | float) or isinstance(price, bool) or price < 0:
+            raise ValueError(
+                f"{section_name}.usd_per_million_tokens must be a number of at least 0"
+            )
     return config

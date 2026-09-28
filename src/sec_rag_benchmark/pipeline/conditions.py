@@ -9,7 +9,9 @@ from typing import Any
 import pymupdf
 
 CONDITIONS = {"closed_book", "oracle", "long_context", "single_store", "shared_store"}
-Retriever = Callable[[str, tuple[str, ...], int], list[dict[str, Any]]]
+# retriever(question, scope, top_k) -> the bundle: the final chunks under
+# "chunks" plus what the metrics need (Implementation Guide 2.1-2.3 -> Records).
+Retriever = Callable[[str, tuple[str, ...], int], dict[str, Any]]
 
 
 class RetrieverUnavailable(RuntimeError):
@@ -41,7 +43,12 @@ def _page_block(doc: str, page: int, text: str) -> str:
 
 def _build_closed_book() -> dict[str, Any]:
     """Supply no filing context."""
-    return {"context": "", "context_pages": [], "retrieved_chunks": []}
+    return {
+        "context": "",
+        "context_pages": [],
+        "retrieved_chunks": [],
+        "retrieval": None,
+    }
 
 
 def _build_oracle(question: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +67,7 @@ def _build_oracle(question: dict[str, Any]) -> dict[str, Any]:
         "context": "\n\n".join(page_blocks),
         "context_pages": context_pages,
         "retrieved_chunks": [],
+        "retrieval": None,
     }
 
 
@@ -75,6 +83,7 @@ def _build_long_context(question: dict[str, Any], pdf_dir: Path) -> dict[str, An
         "context": "\n\n".join(page_blocks),
         "context_pages": context_pages,
         "retrieved_chunks": [],
+        "retrieval": None,
     }
 
 
@@ -84,30 +93,38 @@ def _build_retrieval_context(
     retriever: Retriever | None,
     top_k: int,
 ) -> dict[str, Any]:
-    """Retrieve ranked chunks and convert them into context plus provenance."""
+    """Ask the retriever for its bundle; label its chunks as oracle pages are labelled.
+
+    In a real run the retriever is Exp1's retrieve_exp1, bound to its loaded
+    indexes and clients (execution/runner.py). The model reads only
+    bundle["chunks"], the reranked top_k. Everything else in the bundle
+    (pre-rerank chunks, search plan, filter, usage) is passed on unchanged as
+    "retrieval" for job.py's metrics (Build Order 2.5).
+    """
     if retriever is None:
         raise RetrieverUnavailable("Retrieval condition needs a retriever")
 
-    retrieved_chunks = sorted(
-        retriever(question["question"], scope, top_k),
-        key=lambda item: item["rank"],
-    )[:top_k]
+    bundle = retriever(question["question"], scope, top_k)
+    retrieved_chunks = sorted(bundle["chunks"], key=lambda item: item["rank"])[:top_k]
     context_blocks: list[str] = []
     context_pages: list[tuple[str, int]] = []
     for chunk in retrieved_chunks:
-        context_blocks.append(
-            f"[Chunk: {chunk['chunk_id']} | Document: {chunk['doc_name']} | "
-            f"Pages: {','.join(map(str, chunk['pages']))} | Rank: {chunk['rank']}]\n"
-            f"{chunk['text']}"
-        )
-        for page_index in chunk["pages"]:
-            page = (chunk["doc_name"], page_index)
-            if page not in context_pages:
-                context_pages.append(page)
+        # Build Order 1.3: no chunk crosses a page, so each has one page index.
+        if len(chunk["pages"]) != 1:
+            raise ValueError(f"Chunk {chunk['chunk_id']} must cover exactly one page")
+        page = (chunk["doc_name"], chunk["pages"][0])
+        # Build Order 2.4: the same [Document | Page] label the oracle's gold
+        # pages carry, so prompt shape cannot explain an Exp1-vs-oracle gap.
+        # Chunk ID and rank stay on the saved row, not in the prompt.
+        context_blocks.append(_page_block(page[0], page[1], chunk["text"]))
+        if page not in context_pages:
+            context_pages.append(page)
+    retrieval = {key: value for key, value in bundle.items() if key != "chunks"}
     return {
         "context": "\n\n".join(context_blocks),
         "context_pages": context_pages,
         "retrieved_chunks": retrieved_chunks,
+        "retrieval": retrieval,
     }
 
 

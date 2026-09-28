@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,10 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from ..dataset.financebench import load_run_questions
+from sec_rag.config import load_config as load_sec_rag_config
+from sec_rag.retrieval.exp1 import open_exp1, retrieve_exp1
+
+from ..dataset.financebench import load_questions, load_run_questions
 from ..dataset.subsets import select_development_subset
 from ..evaluation.retrieval_metrics import cognitive_skills
 from ..pipeline.conditions import (
@@ -26,7 +30,7 @@ from ..pipeline.conditions import (
     gold_pages,
 )
 from ..pipeline.generation import ContextLimitError, generate
-from .job import Generator, execute_job
+from .job import RETRIEVAL_CONDITIONS, Generator, execute_job
 
 
 def _append(path: Path, row: dict[str, Any]) -> None:
@@ -93,8 +97,17 @@ def _create_or_resume_run(
     selected_questions: list[dict[str, Any]],
     subset: str | None,
     requested_run_dir: Path | None,
+    sec_rag_config_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Create or verify the run directory, snapshot and stable run key."""
+    """Create or verify the run directory, snapshots and stable run key.
+
+    When a retrieval condition runs, `sec_rag_config_path` names the RAG
+    system's settings (RRF k, candidate counts, models, prompt version). They
+    affect results as much as financebench.toml does, so they are copied into
+    the run as `sec_rag.toml` and hashed into the run key (Build Order 2.5,
+    decision D). Without one, the key is config.toml's hash alone, as before,
+    so baseline runs keep their existing keys.
+    """
     run_dir = requested_run_dir or (
         Path(config["run"]["results_dir"])
         / (
@@ -119,11 +132,36 @@ def _create_or_resume_run(
     snapshot = run_dir / "config.toml"
     if snapshot.exists() and snapshot.read_bytes() != config_bytes:
         raise ValueError("Run directory contains a different configuration")
+
+    sec_rag_bytes = b""
+    sec_rag_snapshot = run_dir / "sec_rag.toml"
+    if sec_rag_config_path is not None:
+        sec_rag_bytes = sec_rag_config_path.read_bytes()
+        if sec_rag_snapshot.exists() and sec_rag_snapshot.read_bytes() != sec_rag_bytes:
+            raise ValueError("Run directory contains a different configuration")
+
+    # Both checks pass before either file is written, so a refused resume
+    # leaves the run folder exactly as it was.
     snapshot.write_bytes(config_bytes)
+    if sec_rag_config_path is not None:
+        sec_rag_snapshot.write_bytes(sec_rag_bytes)
     return {
         "run_dir": run_dir,
-        "run_key": hashlib.sha256(config_bytes).hexdigest()[:12],
+        "run_key": hashlib.sha256(config_bytes + sec_rag_bytes).hexdigest()[:12],
     }
+
+
+def _open_exp1_retriever(sec_rag_config_path: Path) -> Retriever:
+    """Load Exp1 once and return it as the benchmark's retriever(question, scope, top_k).
+
+    open_exp1 loads the BM25 index, Chroma store, chunk lookup and both paid
+    clients once, so 224 jobs don't reload them; partial binds them, leaving
+    the three arguments conditions.py passes (Build Order 2.0, minimal plug).
+    This is the paid path: open_exp1 reads OPENROUTER_API_KEY and
+    VOYAGE_API_KEY and raises RuntimeError if either is missing.
+    """
+    resources = open_exp1(load_sec_rag_config(sec_rag_config_path))
+    return partial(retrieve_exp1, resources=resources)
 
 
 def _should_stop_run(error: Exception) -> bool:
@@ -164,6 +202,16 @@ def run_benchmark(
     if not selected_conditions or set(selected_conditions) - CONDITIONS:
         raise ValueError("Unknown condition")
 
+    retrieval_selected = bool(set(selected_conditions) & RETRIEVAL_CONDITIONS)
+    sec_rag_config_path: Path | None = None
+    if retrieval_selected:
+        configured = config["run"].get("sec_rag_config")
+        # Checked before the run folder exists, so a refused run leaves nothing.
+        if configured is None and retriever is None:
+            raise ValueError("Retrieval conditions need [run] sec_rag_config")
+        if configured is not None:
+            sec_rag_config_path = Path(configured)
+
     run_identity = _create_or_resume_run(
         config,
         Path(config_path),
@@ -171,12 +219,21 @@ def run_benchmark(
         questions,
         subset,
         Path(requested_run_dir) if requested_run_dir is not None else None,
+        sec_rag_config_path,
     )
     run_dir = run_identity["run_dir"]
     predictions_path = run_dir / "predictions.jsonl"
     errors_path = run_dir / "errors.jsonl"
     completed_job_ids = _completed_jobs(predictions_path)
-    all_doc_names = tuple(dict.fromkeys(row["doc_name"] for row in questions))
+    # Build Order 2.0, decision B: shared-store searches every prepared filing
+    # (all 64), whatever --subset or --limit selected, so a smoke run tests
+    # the real choice and retrieve_exp1's "every filing" check holds.
+    # load_run_questions above already validated the prepared dataset, so
+    # read it again without repeating that check.
+    every_question = load_questions(config["dataset"]["output_dir"])
+    all_doc_names = tuple(dict.fromkeys(row["doc_name"] for row in every_question))
+    if retrieval_selected and retriever is None and sec_rag_config_path is not None:
+        retriever = _open_exp1_retriever(sec_rag_config_path)
     pdf_dir = Path(config["dataset"]["output_dir"]) / "pdfs"
     counts = {"generated": 0, "did_not_fit": 0, "skipped": 0, "failed": 0}
 
