@@ -31,3 +31,17 @@ candidates_per_search = 50 # BM25 and Chroma each return this many
 rrf_k = 60                 # reciprocal rank fusion constant (Cormack et al., 2009)
 rerank_candidates = 50     # fused chunks handed to the reranker; the final 10 is
                            # the benchmark's retrieval_depth
+
+[query_enhancement]
+model = "z-ai/glm-5.3-flash"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"   # same host as the answer model; no fallbacks
+reasoning_effort = "low"     # an easy task; answering stays at "high"
+temperature = 0.0
+max_output_tokens = 4096     # reasoning tokens count as output
+timeout_seconds = 120.0
+max_retries = 5
+prompt_version = "exp1-query-enhancement-v1"   # bump when the prompt changes
+
+[rerank]
+model = "rerank-3-lite"      # 200M free tokens; the 2.5 line has none

@@ -55,6 +55,20 @@ output_dtype = "float"
 candidates_per_search = 50
 rrf_k = 60
 rerank_candidates = 50
+
+[query_enhancement]
+model = "z-ai/glm-5.3-flash"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"
+reasoning_effort = "low"
+temperature = 0.0
+max_output_tokens = 4096
+timeout_seconds = 120.0
+max_retries = 5
+prompt_version = "exp1-query-enhancement-v1"
+
+[rerank]
+model = "rerank-3-lite"
 """,
         encoding="utf-8",
     )
