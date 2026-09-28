@@ -160,8 +160,11 @@ These invalidate answers generated at the old settings, so they come before spen
 - fix `metrics.cognitive_skills()`
   - it substring-matches and returns "unspecified" instead of the rule in `Benchmark.md`, so
     segment counts (57/36/21/14) won't reproduce
-- label each run with its experiment + ablation variant (e.g. `exp2-B-heading-path`,
-  `exp3-A-single-pass`)
+- label each run with its experiment + ablation variant (e.g. experiment `exp1`, variant `full`;
+  `exp2` + `b-heading-path`; `exp3` + `a-single-pass`; lowercase letters, digits and hyphens only,
+  as `config.py` enforces). Variants are named after the experiment's ablation list: `full` for
+  the complete system, then one per thing switched off (Exp1: `bm25-only`, `semantic-only`,
+  `no-rerank`, `no-query-enhancement`)
   - set in config, snapshotted into the run's `config.toml`, carried into `summary.json` /
     `summary.csv`, so every results row says which system produced it
   - both Exp2 and Exp3 have A/B/C ladders to compare, and retrofitting labels onto finished runs is
@@ -492,6 +495,21 @@ reports.
 
 ## 2.0 Harness plug FIRST (moved up from Exp3 — see the rule at the top)
 
+- DECIDED (28 Sep 2026): **minimal plug only.** Exp3 is designed, not built, so the full refactor
+  below would buy nothing before submission. What is built instead:
+  - `conditions.py` keeps its `retriever(question, scope, top_k)` slot; it now returns Exp1's
+    bundle (`src/sec_rag/retrieval/exp1.py`), and the benchmark uses `bundle["chunks"]` where it
+    used the list, saving the rest (pre-rerank chunks, search plan, filter, usage) for metrics
+  - the adapter is `functools.partial(retrieve_exp1, resources=open_exp1(sec_rag_config))`,
+    built by the benchmark's `run` command from a `[run] sec_rag_config` path in
+    `configs/financebench.toml`; a run without retrieval conditions never builds it, so needs no
+    Voyage key
+  - the shared-store scope is always all 64 prepared filings, even under `--subset`/`--limit`
+    (previously it was the selected questions' filings only, so a smoke run searched ~10)
+  - the context formatter, answer prompt and generation stay in `sec_rag_benchmark`; moving them
+    into `sec_rag` is a stated deviation from the boundary below, and changes no model input
+  - the full refactor below is kept as the design for when Exp3 is built (future work)
+- Full refactor (deferred with Exp3):
 - `execution/job.py` currently runs a fixed sequence: build context → one model call → save
 - change it now so it hands the question to a pipeline that returns answer + final chunks + trace +
   usage
@@ -618,6 +636,12 @@ reports.
     also showed it to the answer model, Exp2 would change both ranking and what the model reads, and
     a gain couldn't be attributed. It also keeps the heading fix off Exp1's critical path, and
     matches the label the finished baseline runs already used (`conditions.py`)
+  - DECIDED (28 Sep 2026): each retrieved chunk is labelled with the oracle's own formatter,
+    `[Document: X | Page index: N]` (`_page_block` in `conditions.py`), replacing the old
+    `[Chunk | Document | Pages | Rank]` label. Chunks stay in reranked order
+  - known remaining difference, stated in the write-up: chunk text is Azure's markdown (tables as
+    HTML), while oracle and long-context pages are PyMuPDF plain text. Same label, different text
+    extraction
 
 ## 2.5 Metrics built here
 
@@ -627,6 +651,24 @@ reports.
   - splits "wrong document" from "wrong chunk" in the failure tree
   - only meaningful in shared_store (single_store already scopes to the question's filing)
 - HARNESS: the prediction row records embedding + rerank cost too, not just the answer model's
+- DECIDED (28 Sep 2026), what the prediction row gains for retrieval conditions:
+  - post-rerank page metrics: the existing `page_recall` / `page_precision` / `page_mrr`, scored
+    on the reranked top 10 (the chunks GLM read)
+  - pre-rerank page metrics: `pre_rerank_chunks` and `pre_rerank_page_recall` / `_precision` /
+    `_mrr`, scored on the fused top 10; the gap between the two sets is the reranker's effect
+  - `filter_doc_name`, `filter_status`, `enhancement_status`, and `filter_correct`
+    (shared-store only: chosen filing == gold `doc_name`; a fallback counts as wrong; `null` in
+    single-store)
+  - query enhancement's OpenRouter cost and latency, embedding and rerank tokens, and their USD at
+    Voyage's list price ($0.02/1M each, in `configs/sec_rag.toml`). Our usage sits inside the free
+    allowance, so this is list-price cost, not the amount billed
+- DECIDED: the report averages the pre-rerank metrics and `filter_correct` like the existing page
+  metrics (each with its own sample size), counts `invalid_reply` per condition, and adds
+  retrieval cost to the cost view
+- DECIDED: failure diagnosis splits `wrong_document` by cause (Benchmark.md → failure diagnosis):
+  invalid reply, declined (fallback), wrong filing chosen, filter bug
+- DECIDED: `sec_rag.toml` is copied into the run folder and its bytes join the run key, so resuming
+  a run with changed retrieval settings is refused, as `financebench.toml` already is
 
 ## 2.6 Run and report
 
@@ -639,6 +681,16 @@ reports.
   settings
 - judge the saved answers, then report
 - record a benchmark run for every pipeline change
+- DECIDED (28 Sep 2026), for the last coding day:
+  - the three baselines are NOT re-run: the 17 Sep run
+    (`results/20260917-012959--financebench--baseline-context-conditions-v1`) already used the
+    new settings (reasoning `high`, 8,192 output tokens, depth 10), the same answer prompt and
+    the same judge prompt (`financebench-binary-judge-v2`)
+  - failure diagnosis reads that run's oracle answers and judgments through
+    `report --oracle-run-dir`, instead of re-running oracle inside the Exp1 run
+  - the 50-question pattern check is CUT: smoke (10, both retrieval conditions) → full 112 ×
+    single-store + shared-store → judge → report → `Exp 1.md`
+  - the Exp2 decision is taken after Exp1 is judged and reported
 
 **Done when:** a segmented report exists for all five conditions, with answer accuracy and
 retrieval metrics.

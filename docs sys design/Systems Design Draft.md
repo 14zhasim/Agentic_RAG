@@ -411,6 +411,7 @@ Ingest files
     - label inputs: embed chunks with Voyage `input_type="document"`, questions with `input_type="query"`
     - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds changed chunks
     - HARNESS (build with Exp1): prediction row records embedding + rerank cost too, not just the answer model's
+      - DECIDED (28 Sep 2026): token counts plus USD at Voyage's list price ($0.02/1M for both `voyage-4-lite` and `rerank-3-lite`; source: Voyage pricing page, <https://docs.voyageai.com/docs/pricing>, Text Embeddings and Rerankers tables, checked 28 Sep 2026; the embedding price is also in the offline `docs/libraries/voyage/pricing.md` line 19, the rerank price only on the live page), set in `configs/sec_rag.toml`. Our usage is inside the free allowance, so this is list-price cost, not the amount billed
 
 
 Retrieve - Elastic search? can think about tech stack later
@@ -466,7 +467,7 @@ Retrieve - Elastic search? can think about tech stack later
   - DECIDED (27 Sep 2026), shape A: fuse → keep the fused top 50 → `rerank-3-lite` → top 10 to GLM. Reranking only a top 10 into a top 10 could reorder but never rescue a chunk ranked 11th-50th
     - called with the `voyageai` client directly, like embeddings — so no LlamaIndex Voyage rerank package (approved only "if Voyage goes through LlamaIndex", and it doesn't)
     - DECIDED: the reranker scores chunks against the ORIGINAL question, not the semantic query — it's what the answer model answers, a poor rewrite can't mislead it, and it's identical across every ablation (including no query enhancement)
-  - Use Voyage reranker API instead. reranker model: `rerank-3-lite` ($0.02/1M tokens, 200M free). NOT the 2.5 line — `rerank-2.5` and `rerank-2.5-lite` have ZERO free allowance; the 3 line is newer and Voyage state it is strictly better on quality, context length, latency and throughput
+  - Use Voyage reranker API instead. reranker model: `rerank-3-lite` ($0.02/1M tokens, 200M free; source: Voyage pricing page, <https://docs.voyageai.com/docs/pricing>)
     - usage is tiny: reranking bills (query tokens × number of docs) + all doc tokens ≈ 6M tokens for a full 112-question run at ~50 candidates × ~1k tokens, i.e. ~3% of the free allowance
     - `rerank-3` (the full model) is also free at our volume — move up only if the dev-subset pre/post-rerank metrics say reranking is the bottleneck. One string change
     - no reliable public reranker leaderboard exists (unlike RTEB for embedders); published comparisons put the leading rerankers within 1-3 NDCG points, and the loudest claims are vendor self-citations. So decide it on OUR pre/post-rerank page metrics, not a leaderboard
@@ -495,13 +496,13 @@ Generate answer
     - `sec_rag` receives supplied context or document scope, never FinanceBench condition names
     - one shared formatter produces `[Document | Page]` blocks for supplied pages and
       retrieved chunks, then one shared prompt/generator answers
-- HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings):
+- HARNESS config changes — do these BEFORE the next paid run (they invalidate answers generated at the old settings). DONE (checked 28 Sep 2026): all five are in `configs/financebench.toml` and the code on `exp1-retrieve`, and the 17 Sep baseline run already used them, so it is reused rather than re-run (Build Order 2.6)
   - `reasoning_effort` low → high (GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`)
   - `retrieval_depth` 5 → 10
   - `max_output_tokens` 2048 → 8192: reasoning tokens count as output, and an agent spends them every turn. Headroom is fine (largest prompt 535,722 of 1,048,576)
   - merge the judge branch (`feature/azure-ragas-judge`: judge, `did_not_fit`, accuracy reporting) — not on `main` yet
   - fix `metrics.cognitive_skills()`: it substring-matches and returns "unspecified" instead of the rule in Benchmark.md, so segment counts (57/36/21/14) won't reproduce
-  - label each run with its experiment + ablation variant (e.g. `exp2-B-heading-path`, `exp3-A-single-pass`): set in config, snapshotted into the run's `config.toml`, and carried into `summary.json` / `summary.csv` so every results row says which system produced it. Both Exp2 and Exp3 have A/B/C ladders to compare, and retrofitting labels onto finished runs is painful
+  - label each run with its experiment + ablation variant (e.g. experiment `exp3`, variant `a-single-pass`): set in config, snapshotted into the run's `config.toml`, and carried into `summary.json` / `summary.csv`
 
 Experiment 3 - Agents: LLMs autonomously using tools in a loop
 https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
