@@ -15,7 +15,8 @@ The harness currently supports:
 - page recall, page precision and page MRR;
 - reports segmented by condition, question type and cognitive skill.
 
-`single_store` and `shared_store` are defined but require the future retriever.
+`single_store` and `shared_store` are defined, and Exp1's retriever is built
+(`sec-rag retrieve`), but it is not yet wired into benchmark runs.
 The Azure DeepSeek binary answer judge is implemented, paid-smoke tested and
 validated against published labels. HiREC/LOFin support remains deferred.
 
@@ -237,11 +238,17 @@ Check retrieval for one question before a benchmark run. `--scope` names the
 filing(s) the question may search (single-store: its own filing);
 `--all-filings` searches the whole corpus (shared-store). Without
 `--execute-paid`, only BM25 runs over the raw question: no key, no spend.
+`--top-k` sets how many chunks are shown (default 10, the benchmark's
+retrieval depth). Page numbers are 0-based, as in FinanceBench's evidence.
 
 ```bash
 uv run sec-rag retrieve --config configs/sec_rag.toml \
   --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
   --all-filings
+
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --scope 3M_2018_10K --top-k 20
 ```
 
 `--execute-paid` runs Exp1's whole path: GLM's query enhancement
@@ -347,6 +354,9 @@ Export the review CSV once:
 ```bash
 uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
 ```
+
+It refuses to replace an existing `manual_review.csv`, so typed decisions
+are never lost by accident. Add `--overwrite` only to start the CSV again.
 
 Open `results/<run-id>/manual_review.csv`, enter `1` for a correct answer or
 `0` for an incorrect answer in `human_accuracy`, and leave `review_reason`
