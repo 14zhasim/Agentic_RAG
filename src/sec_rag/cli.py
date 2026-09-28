@@ -1,9 +1,10 @@
-"""Translate SEC RAG terminal commands into ingestion, chunking and indexing operations."""
+"""Translate SEC RAG terminal commands into ingestion, indexing and retrieval operations."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from .chunking.chunk_files import (
     build_chunks,
@@ -16,6 +17,7 @@ from .indexing.bm25_index import build_bm25_index
 from .indexing.embed import embed_corpus
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
+from .retrieval.exp1 import all_filings, open_exp1, preview_bm25, retrieve_exp1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +43,14 @@ def main(argv: list[str] | None = None) -> int:
     embed_parser = commands.add_parser("embed")
     embed_parser.add_argument("--config", type=Path, required=True)
     embed_parser.add_argument("--execute-paid", action="store_true")
+    retrieve_parser = commands.add_parser("retrieve")
+    retrieve_parser.add_argument("--config", type=Path, required=True)
+    retrieve_parser.add_argument("--question", required=True)
+    scope_group = retrieve_parser.add_mutually_exclusive_group(required=True)
+    scope_group.add_argument("--scope", nargs="+")
+    scope_group.add_argument("--all-filings", action="store_true")
+    retrieve_parser.add_argument("--top-k", type=int, default=10)
+    retrieve_parser.add_argument("--execute-paid", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -57,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_index_bm25(args)
             case "embed":
                 return _run_embed(args)
+            case "retrieve":
+                return _run_retrieve(args)
             case _:
                 raise ValueError(f"Unknown SEC RAG command: {args.command}")
     except (OSError, RuntimeError, ValueError, ParseStateError) as error:
@@ -150,3 +162,48 @@ def _run_embed(args: argparse.Namespace) -> int:
         print(f"Embedded now: {result['embedded']}")
         print(f"Tokens billed: {result['tokens_billed']:,}")
     return 0
+
+
+def _run_retrieve(args: argparse.Namespace) -> int:
+    """Retrieve for one question: a free BM25 preview, or Exp1's paid path.
+
+    `--scope` names the filings the question may search (single-store: one);
+    `--all-filings` is the shared-store scope. Without --execute-paid only
+    BM25 runs over the raw question, so no key is read and nothing is spent.
+    """
+    config = load_config(args.config)
+    if args.all_filings:
+        scope = all_filings(config)
+    else:
+        scope = tuple(name.removesuffix(".pdf") for name in args.scope)
+
+    if not args.execute_paid:
+        print("BM25 preview over the raw question (no paid calls):")
+        _print_chunks(preview_bm25(args.question, scope, args.top_k, config))
+        return 0
+
+    bundle = retrieve_exp1(args.question, scope, args.top_k, open_exp1(config))
+    plan = bundle["search_plan"]
+    print(f"Enhancement: {plan['enhancement_status']}")
+    print(f"Filter: {bundle['filter_doc_name']} ({bundle['filter_status']})")
+    print(f"Keyword query: {plan['keyword_query']}")
+    print(f"Semantic query: {plan['semantic_query']}")
+    print("Fused, before rerank:")
+    _print_chunks(bundle["pre_rerank_chunks"])
+    print("Reranked:")
+    _print_chunks(bundle["chunks"])
+    usage = bundle["usage"]
+    print(f"Embedding tokens: {usage['embedding_tokens']:,}")
+    print(f"Rerank tokens: {usage['rerank_tokens']:,}")
+    print(f"Query-enhancement cost: {plan['call']['cost']}")
+    print(f"Latency: {bundle['latency_seconds']:.1f}s")
+    return 0
+
+
+def _print_chunks(chunks: list[dict[str, Any]]) -> None:
+    """One line per chunk: rank, filing, page index (0-based) and score."""
+    for chunk in chunks:
+        print(
+            f"  {chunk['rank']:>2}. {chunk['doc_name']} page {chunk['pages'][0]}"
+            f"  score {chunk['score']:.4f}  {chunk['chunk_id']}"
+        )

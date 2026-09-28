@@ -22,16 +22,23 @@ def load_config(path: str | Path) -> dict[str, Any]:
     chunking = config.get("chunking")
     bm25 = config.get("bm25")
     embedding = config.get("embedding")
+    retrieval = config.get("retrieval")
+    query_enhancement = config.get("query_enhancement")
+    rerank = config.get("rerank")
     if (
         not isinstance(corpus, dict)
         or not isinstance(parsing, dict)
         or not isinstance(chunking, dict)
         or not isinstance(bm25, dict)
         or not isinstance(embedding, dict)
+        or not isinstance(retrieval, dict)
+        or not isinstance(query_enhancement, dict)
+        or not isinstance(rerank, dict)
     ):
         raise ValueError(
             "SEC RAG configuration needs [corpus], [parsing], [chunking], "
-            "[bm25] and [embedding] sections"
+            "[bm25], [embedding], [retrieval], [query_enhancement] and "
+            "[rerank] sections"
         )
 
     for key in ("prepared_dir", "parsed_dir", "chunks_dir", "indexes_dir"):
@@ -92,4 +99,36 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("embedding.output_dimension must be 256, 512, 1024 or 2048")
     if embedding.get("output_dtype") != "float":
         raise ValueError('embedding.output_dtype must be "float"')
+
+    # Implementation Guide 2.1-2.3 -> Configuration: how many chunks each
+    # search returns, the RRF constant, and how many fused chunks reach the
+    # reranker. The final 10 is the benchmark's retrieval_depth, not here.
+    for key in ("candidates_per_search", "rrf_k", "rerank_candidates"):
+        value = retrieval.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"retrieval.{key} must be a positive whole number")
+
+    # Implementation Guide 2.1-2.3 -> Configuration. GLM-5.3-Flash offers
+    # only low, high and max reasoning (CLAUDE.md -> Invariants).
+    for key in ("model", "base_url", "upstream_provider", "prompt_version"):
+        value = query_enhancement.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"query_enhancement.{key} must be a non-empty string")
+    if query_enhancement.get("reasoning_effort") not in ("low", "high", "max"):
+        raise ValueError(
+            'query_enhancement.reasoning_effort must be "low", "high" or "max"'
+        )
+    for key in ("temperature", "timeout_seconds"):
+        value = query_enhancement.get(key)
+        if not isinstance(value, int | float) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"query_enhancement.{key} must be a number of at least 0")
+    for key in ("max_output_tokens", "max_retries"):
+        value = query_enhancement.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(
+                f"query_enhancement.{key} must be a whole number of at least 0"
+            )
+    rerank_model = rerank.get("model")
+    if not isinstance(rerank_model, str) or not rerank_model:
+        raise ValueError("rerank.model must be a non-empty string")
     return config

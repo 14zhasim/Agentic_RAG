@@ -250,8 +250,8 @@ Try record benchmark results for each change. LlamaIndex to orchestrate pipeline
 
 Tech stack
 
-- LlamaIndex — orchestration + components: chunking and markdown parsing (heading paths), BM25 retrieval (wraps `bm25s`) with metadata filters, semantic retrieval with metadata filters, RRF fusion (`QueryFusionRetriever(mode="reciprocal_rerank")`, `num_queries=1` to stop it inventing extra queries), reranking (Voyage post-processor), and the Exp3 agent loop (`max_iterations` + `early_stopping_method="generate"`, so a capped run still answers instead of erroring)
-- we write ourselves: Exp2's scorer (~20-line `BaseRetriever` subclass — a weighted sum of two similarity scores per chunk, which RRF can't express because it fuses ranked lists), the Exp3 tool functions, trace logging, and the glue into the benchmark harness
+- LlamaIndex — orchestration + components: chunking and markdown parsing (heading paths), BM25 retrieval (wraps `bm25s`) with metadata filters, semantic retrieval with metadata filters, and the Exp3 agent loop (`max_iterations` + `early_stopping_method="generate"`, so a capped run still answers instead of erroring)
+- we write ourselves: RRF fusion (~10 lines — `QueryFusionRetriever` sends one query string to every retriever, and Exp1 sends BM25 and Chroma different ones; see Retrieve → rrf), the Voyage rerank call (direct `voyageai` client, as for embeddings), Exp2's scorer (~20-line `BaseRetriever` subclass — a weighted sum of two similarity scores per chunk, which RRF can't express because it fuses ranked lists), the Exp3 tool functions, trace logging, and the glue into the benchmark harness
   - trace logging is ours, NOT LlamaIndex's event system: each tool appends what it did + what it returned to a per-question list (~3 lines per tool, and it doesn't break when the framework changes its events)
   - remaining glue for Exp3: turn the framework's "cap reached" signal into our fourth outcome
 - Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll save/load. For Exp2, pull the embeddings out and score in numpy
@@ -418,6 +418,13 @@ Retrieve - Elastic search? can think about tech stack later
 - LLM query enhancement - to what extent? check lesson 7 + claude link on prompting: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview
   - ONE LLM call returning structured JSON: company, year(s), doc_type, keyword query (rephrase shorthand expanded - PPNE → property, plant and equipment; COGS, DPO, FCF, capex), semantic query.
   - Metadata filtering: filenames are `COMPANY_YEAR_TYPE.pdf`, so the LLM supplies all three and we select the filing by filename (not from metadata table columns). Parse from the RIGHT — `JOHNSON_JOHNSON_2022_10K` has an underscore in the company name. Simplest: give it the filename list and have it return a filename. Filter chunks BEFORE search. Let it know whether its desired file exists + was retrieved. Like Claude Code, maybe naively give prompt all available metadata / files they can search from.
+  - DECIDED (27 Sep 2026): model GLM-5.3-flash via OpenRouter, reasoning effort `low`, set in `configs/sec_rag.toml`. Picking a filename from a list and rewriting a question is an easy task; `low` keeps ~224 extra calls (two conditions × 112) fast and cheap. Write-up: query enhancement runs at `low`, answering at `high` — the answer-model invariant is untouched
+  - DECIDED: output JSON is `filename` (one name from the list, or `null` if unsure), `keyword_query`, `semantic_query`. The filename already encodes company, year and doc_type, and a closed list means "3M" vs "3M Company" can't mismatch, so separate company/year/doc_type fields add nothing
+  - DECIDED: the SAME call in both retrieval conditions; only the list it's given differs
+    - single_store: the list is the one in-scope filing, so the model just returns it; it still writes both queries
+    - shared_store: the list is all 64 filenames — this is where the choice is real, and where filter accuracy is scored
+    - a name not on the list counts as `null`; `null` → search the whole benchmark scope unfiltered, recorded as a filter miss. The filter only ever narrows within the scope the benchmark hands over, never widens it
+  - Exp1 has no retry: a closed list means the chosen file always exists, and retrying on "your file wasn't retrieved" is Exp3's loop
 
 - Hybrid search
   - BM25 (keyword search) - like FinCARDS (2026), use k1-1.5, b=0.75
@@ -447,16 +454,25 @@ Retrieve - Elastic search? can think about tech stack later
         - build order: (A) Exp1 → (B) heading path, no virtual node → (C) path + virtual node (deferred). A vs B alone is a complete Exp2 result
         - report page metrics before reranking too: the reranker only sees chunk text and could wash out a structural gain
   - rrf (say k=60?). issue is are we doing BM25 for chunks too? usually for docs - but need score for individual chunks now, hopefully not too complicated
+    - DECIDED (27 Sep 2026): BM25 scores chunks (each chunk is a "document" to `bm25s`), so every chunk gets its own score
+    - DECIDED: keyword query → BM25, semantic query → Chroma (query embedded with `input_type="query"`). Each search is filtered at creation and returns its top 50; BM25 results scoring 0 are dropped (padding — chunks sharing no word with the query, Stage 1.5 finding 3)
+    - DECIDED: RRF, k=60 (Cormack et al., 2009), over positions only — each chunk scores `1/(60 + rank)` per list it appears in, summed. Example: rank 1 in BM25 + rank 5 in Chroma = 1/61 + 1/65 = 0.0318, beating rank 2 in BM25 alone = 1/62 = 0.0161. Positions, because BM25 scores (~14) and cosines (~0.7) aren't on one scale
+    - DECIDED: RRF is ~10 lines we write, NOT LlamaIndex's `QueryFusionRetriever`: that class sends ONE query string to every retriever, and we send two different ones; its k=60 is also fixed in code rather than set by us (`docs/libraries/llamaindex/` → fusion retriever page; search "QueryFusionRetriever reciprocal_rerank")
   - Like Hi-Chunk, shall i use their rule for retriving parent chunk i.e. auto-merge?
+    - DECIDED: no auto-merge for Exp1 — chunks are page-bounded and ≤ 1,024 tokens, a typical page's prose is ~630 tokens, so a chunk is already most of a page: parent ≈ chunk
   -  top-k: FinCARDS uses top-10.  Align `retrieval_depth` in config (currently 5)
+    - DONE: `retrieval_depth = 10` in `configs/financebench.toml` — the number of chunks GLM sees, and the depth both page-metric sets are scored at
 - use reranker on topk-k to retrieve top-n (query-document)
-  - BAAI/bge-reranker-v2-gemma via the FlagEmbedding library's FlagLLMReranker: FinSage (2025). Use Voyage reranker API instead
-  - reranker model: `rerank-3-lite` ($0.02/1M tokens, 200M free). NOT the 2.5 line — `rerank-2.5` and `rerank-2.5-lite` have ZERO free allowance; the 3 line is newer and Voyage state it is strictly better on quality, context length, latency and throughput
+  - DECIDED (27 Sep 2026), shape A: fuse → keep the fused top 50 → `rerank-3-lite` → top 10 to GLM. Reranking only a top 10 into a top 10 could reorder but never rescue a chunk ranked 11th-50th
+    - called with the `voyageai` client directly, like embeddings — so no LlamaIndex Voyage rerank package (approved only "if Voyage goes through LlamaIndex", and it doesn't)
+    - DECIDED: the reranker scores chunks against the ORIGINAL question, not the semantic query — it's what the answer model answers, a poor rewrite can't mislead it, and it's identical across every ablation (including no query enhancement)
+  - Use Voyage reranker API instead. reranker model: `rerank-3-lite` ($0.02/1M tokens, 200M free). NOT the 2.5 line — `rerank-2.5` and `rerank-2.5-lite` have ZERO free allowance; the 3 line is newer and Voyage state it is strictly better on quality, context length, latency and throughput
     - usage is tiny: reranking bills (query tokens × number of docs) + all doc tokens ≈ 6M tokens for a full 112-question run at ~50 candidates × ~1k tokens, i.e. ~3% of the free allowance
     - `rerank-3` (the full model) is also free at our volume — move up only if the dev-subset pre/post-rerank metrics say reranking is the bottleneck. One string change
     - no reliable public reranker leaderboard exists (unlike RTEB for embedders); published comparisons put the leading rerankers within 1-3 NDCG points, and the loudest claims are vendor self-citations. So decide it on OUR pre/post-rerank page metrics, not a leaderboard
     - write-up: FinSage used bge-reranker-v2-gemma; it needs GPU inference, so a hosted reranker of comparable class was substituted
   - HARNESS (build with Exp1): compute page metrics both before and after reranking (call `page_metrics()` twice, two sets of fields on the prediction row), so the reranker's effect is visible
+    - DECIDED: pre-rerank = the fused top 10 (what GLM would get with no reranker); post-rerank = the reranker's top 10 (what GLM gets). Both at depth 10, so they compare fairly, and every main run also yields the no-reranker ablation's retrieval numbers for free
 - feed LLM top-n results, labelled with document and page. DECIDED: no section/heading label in any experiment — Exp2's heading path feeds only the scorer, so Exp2 changes ranking alone rather than ranking plus what the answer model reads
 - retrieval decisions (from review; confirm or strike)
   - if the filter matches no filing, search unfiltered rather than returning nothing
@@ -464,6 +480,7 @@ Retrieve - Elastic search? can think about tech stack later
   - HARNESS (build with Exp1): make the oracle and retrieval context blocks identical, `[Document | Page]`, so prompt shape can't explain a results gap
   - Exp1 retrieval must be ONE function taking arguments — query, retrieval method (BM25 / semantic / hybrid), metadata filters, top_k — not a hardcoded pipeline. Exp3's search tool is this same function, with the agent choosing those arguments at runtime; Exp1 passes fixed ones. Getting this wrong means writing retrieval twice
     - inside it, the BM25 side creates a fresh `BM25Retriever` from the once-loaded index on every call, with that call's filters: the retriever only reads its filter when created (Tech stack → `bm25s`)
+    - DECIDED: the Exp1 ablations are this same function with different arguments — BM25 only / semantic only skip one list (and RRF); no reranker returns the fused top 10; no query enhancement sends the raw question to both searches with only the benchmark's scope as the filter. Ablations stay first on the cut list
   - the query-enhancement prompt lives in one place, called by both: Exp1 calls it once up front, Exp3's agent does the same job through steps 1-2. Otherwise the two experiments quietly diverge
 
 Generate answer

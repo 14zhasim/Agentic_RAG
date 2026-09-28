@@ -193,6 +193,19 @@ from saved results, with detailed sub-types hand-labelled only for a sample):
   incorrect, classify it as a retrieval-context failure:
   - no chunks are retrieved → no chunks retrieved;
   - chunks are retrieved, but none comes from the target filing → wrong document;
+    shared-store splits it by the saved query-enhancement outcome, so a wrong
+    document can be traced to its cause:
+    - `enhancement_status = "invalid_reply"` → the model's reply was not valid
+      JSON or lacked a field (a formatting failure, not a choice);
+    - `filter_status = "fallback"` with a valid reply → the model declined to
+      choose (returned `null` or a name not on the list), so the whole corpus
+      was searched;
+    - a valid filename that is not the gold filing → wrong filing chosen;
+    - the gold filing chosen, yet no chunk from it retrieved → cannot happen
+      while the filter holds, so it flags a filter bug;
+    - `invalid_reply` counts are also reported per condition on their own, since
+      in single-store they cannot cause a wrong document but do replace both
+      search queries with the raw question;
   - at least one chunk comes from the target filing, but page recall is zero →
     wrong section or chunk;
   - page recall is greater than zero but less than one → partial gold-page

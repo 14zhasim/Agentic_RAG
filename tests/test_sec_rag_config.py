@@ -35,6 +35,25 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+
+[retrieval]
+candidates_per_search = 50
+rrf_k = 60
+rerank_candidates = 50
+
+[query_enhancement]
+model = "z-ai/glm-5.3-flash"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"
+reasoning_effort = "low"
+temperature = 0.0
+max_output_tokens = 4096
+timeout_seconds = 120.0
+max_retries = 5
+prompt_version = "exp1-query-enhancement-v1"
+
+[rerank]
+model = "rerank-3-lite"
 """
 
 
@@ -151,3 +170,61 @@ def test_ceiling_under_twice_the_floor_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="at least twice"):
         load_config(config_path)
+
+
+def test_missing_retrieval_section_is_refused(tmp_path: Path) -> None:
+    text = VALID_CONFIG.replace("[retrieval]", "[not_retrieval]")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match=r"\[retrieval\]"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1", "true", '"60"'])
+def test_retrieval_settings_must_be_positive_whole_numbers(
+    tmp_path: Path, bad_value: str
+) -> None:
+    text = VALID_CONFIG.replace("rrf_k = 60", f"rrf_k = {bad_value}")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match="retrieval.rrf_k"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize("section", ["[query_enhancement]", "[rerank]"])
+def test_missing_query_enhancement_or_rerank_section_is_refused(
+    tmp_path: Path, section: str
+) -> None:
+    text = VALID_CONFIG.replace(section, "[something_else]")
+    _, config_path = _write(tmp_path, text)
+
+    with pytest.raises(ValueError, match="sections"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("setting", "bad_line", "message"),
+    [
+        ('reasoning_effort = "low"', 'reasoning_effort = "medium"', "reasoning_effort"),
+        ('model = "z-ai/glm-5.3-flash"', 'model = ""', "query_enhancement.model"),
+        ("max_output_tokens = 4096", "max_output_tokens = -1", "max_output_tokens"),
+        ("temperature = 0.0", "temperature = true", "temperature"),
+        ('model = "rerank-3-lite"', 'model = ""', "rerank.model"),
+    ],
+)
+def test_invalid_query_enhancement_or_rerank_setting_is_refused(
+    tmp_path: Path, setting: str, bad_line: str, message: str
+) -> None:
+    _, config_path = _write(tmp_path, VALID_CONFIG.replace(setting, bad_line))
+
+    with pytest.raises(ValueError, match=message):
+        load_config(config_path)
+
+
+def test_the_repository_config_loads() -> None:
+    """configs/sec_rag.toml itself passes validation."""
+    config = load_config(Path(__file__).parent.parent / "configs" / "sec_rag.toml")
+
+    assert config["query_enhancement"]["reasoning_effort"] == "low"
+    assert config["rerank"]["model"] == "rerank-3-lite"
+    assert config["retrieval"]["rerank_candidates"] == 50

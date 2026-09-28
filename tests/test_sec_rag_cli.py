@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 from sec_rag.cli import main
 
@@ -50,6 +51,25 @@ model = "voyage-4-lite"
 batch_size = 128
 output_dimension = 1024
 output_dtype = "float"
+
+[retrieval]
+candidates_per_search = 50
+rrf_k = 60
+rerank_candidates = 50
+
+[query_enhancement]
+model = "z-ai/glm-5.3-flash"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"
+reasoning_effort = "low"
+temperature = 0.0
+max_output_tokens = 4096
+timeout_seconds = 120.0
+max_retries = 5
+prompt_version = "exp1-query-enhancement-v1"
+
+[rerank]
+model = "rerank-3-lite"
 """,
         encoding="utf-8",
     )
@@ -274,6 +294,108 @@ def test_embed_command_paid_without_key_is_an_error(
     capsys.readouterr()
 
     exit_code = main(["embed", "--config", str(config_path), "--execute-paid"])
+
+    assert exit_code == 1
+    assert "Error: VOYAGE_API_KEY is not set" in capsys.readouterr().out
+
+
+def _index_one_filing(config_path: Path) -> None:
+    """Parse, chunk and BM25-index the one-page example filing."""
+    _save_one_page_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    main(["index-bm25", "--config", str(config_path)])
+
+
+def test_retrieve_command_previews_bm25_without_spending(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """No --execute-paid: BM25 over the raw question, no key read."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _index_one_filing(config_path)
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "retrieve",
+            "--config",
+            str(config_path),
+            "--question",
+            "How did revenue grow?",
+            "--scope",
+            "example_2024_10K.pdf",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "BM25 preview over the raw question (no paid calls):" in output
+    assert "1. example_2024_10K page 0" in output
+    assert "example_2024_10K:p0:c0" in output
+
+
+def test_retrieve_command_previews_the_shared_store_scope(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+    _index_one_filing(config_path)
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "retrieve",
+            "--config",
+            str(config_path),
+            "--question",
+            "revenue",
+            "--all-filings",
+        ]
+    )
+
+    assert exit_code == 0
+    assert "1. example_2024_10K page 0" in capsys.readouterr().out
+
+
+def test_retrieve_command_refuses_scope_and_all_filings_together(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config_with_pdf(tmp_path)
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "retrieve",
+                "--config",
+                str(config_path),
+                "--question",
+                "revenue",
+                "--scope",
+                "example_2024_10K",
+                "--all-filings",
+            ]
+        )
+
+
+def test_retrieve_command_paid_without_keys_is_an_error(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _index_one_filing(config_path)
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "retrieve",
+            "--config",
+            str(config_path),
+            "--question",
+            "revenue",
+            "--all-filings",
+            "--execute-paid",
+        ]
+    )
 
     assert exit_code == 1
     assert "Error: VOYAGE_API_KEY is not set" in capsys.readouterr().out

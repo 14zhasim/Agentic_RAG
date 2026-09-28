@@ -15,7 +15,8 @@ The harness currently supports:
 - page recall, page precision and page MRR;
 - reports segmented by condition, question type and cognitive skill.
 
-`single_store` and `shared_store` are defined but require the future retriever.
+`single_store` and `shared_store` are defined, and Exp1's retriever is built
+(`sec-rag retrieve`), but it is not yet wired into benchmark runs.
 The Azure DeepSeek binary answer judge is implemented, paid-smoke tested and
 validated against published labels. HiREC/LOFin support remains deferred.
 
@@ -28,6 +29,7 @@ src/sec_rag/                       the system being evaluated
 ├── ingestion/                     Azure parse run, heading list, inspection report
 ├── chunking/                      page-bounded chunks and chunk reports
 ├── indexing/                      BM25 keyword index and Voyage vectors in Chroma
+├── retrieval/                     query enhancement, hybrid search with RRF, rerank, Exp1 path
 └── cli.py                         sec-rag terminal commands
 src/sec_rag_benchmark/
 ├── config.py                      load and validate benchmark settings
@@ -230,6 +232,37 @@ Only new or changed chunks are sent, and each batch is saved as it returns,
 so an interrupted run continues where it stopped when rerun. Afterwards the
 no-spend report should show `To embed: 0`.
 
+## Retrieve for one question (Exp1)
+
+Check retrieval for one question before a benchmark run. `--scope` names the
+filing(s) the question may search (single-store: its own filing);
+`--all-filings` searches the whole corpus (shared-store). Without
+`--execute-paid`, only BM25 runs over the raw question: no key, no spend.
+`--top-k` sets how many chunks are shown (default 10, the benchmark's
+retrieval depth). Page numbers are 0-based, as in FinanceBench's evidence.
+
+```bash
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --all-filings
+
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --scope 3M_2018_10K --top-k 20
+```
+
+`--execute-paid` runs Exp1's whole path: GLM's query enhancement
+(OpenRouter), the hybrid search (one Voyage query embedding) and the Voyage
+reranker, a fraction of a penny per question. It prints the chosen filing,
+both queries, the fused and reranked top 10 and the token counts, and needs
+`OPENROUTER_API_KEY` and `VOYAGE_API_KEY` loaded from `.env` as above.
+
+```bash
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --all-filings --execute-paid
+```
+
 ## Run a no-spend preflight
 
 Test the three currently executable conditions without creating an API client
@@ -321,6 +354,9 @@ Export the review CSV once:
 ```bash
 uv run sec-rag-benchmark export-manual-review --run-dir results/<run-id>
 ```
+
+It refuses to replace an existing `manual_review.csv`, so typed decisions
+are never lost by accident. Add `--overwrite` only to start the CSV again.
 
 Open `results/<run-id>/manual_review.csv`, enter `1` for a correct answer or
 `0` for an incorrect answer in `human_accuracy`, and leave `review_reason`
