@@ -1500,6 +1500,26 @@ This section describes the implemented nested JSON, workbook and
 failure-analysis reports. The previous flat `summary.json` and wide
 `summary.csv` have been replaced.
 
+**Exp1 additions** (`Exp 1/Implementation Guide 2.4-2.6 Run.md`, Slice 2):
+
+- `write_report(run_dir, oracle_run_dir=None)`. With `oracle_run_dir`,
+  `_borrowed_oracle()` reads that run's oracle rows and its manual-review-
+  resolved judgments, and adds them to failure diagnosis only; accuracy,
+  retrieval and cost views remain this run's own. It refuses with
+  `ValueError`, before writing anything, if this run has its own oracle rows
+  or the two `[generation]` snapshots differ. `failure_analysis.oracle_source`
+  records the borrowed folder's name, or `None`.
+- Each `retrieval_metrics` row adds `pre_rerank_page_recall`, `_precision`
+  and `_mrr` (each with `_sample_size`), `filter_accuracy` with its sample
+  size (shared-store rows only), and `invalid_reply_count`. A column absent
+  from every row, as in runs written before Exp1, reports `None` with sample
+  size 0.
+- Each `generation_performance` row adds `retrieval_cost_sample_size`,
+  `total_retrieval_cost_usd`, `average_retrieval_cost_per_answer_usd` and
+  `average_retrieval_latency_seconds`, kept apart from the answer call's cost.
+- Failure rows copy `enhancement_status`, `filter_status` and
+  `filter_doc_name`, and the wrong-document subtype is split by cause (below).
+
 Read `src/sec_rag_benchmark/reporting/report.py` first. Its public
 `write_report()` calculates report data and writes `summary.json`. Then read
 `src/sec_rag_benchmark/reporting/workbook.py`, whose public workbook writer will
@@ -1973,7 +1993,12 @@ zero retrieved chunks
 → no_chunks_retrieved
 
 one or more chunks, but none belongs to the target filing
-→ wrong_document
+→ wrong_document, split for Exp1 rows by _wrong_document_cause(), in order:
+   enhancement_status == "invalid_reply"     → wrong_document_invalid_reply
+   filter_status == "fallback"               → wrong_document_declined
+   filter_doc_name not a target filing       → wrong_document_wrong_filing
+   otherwise (gold filing chosen, no chunk)  → wrong_document_filter_bug
+   (rows without filter_status keep plain wrong_document)
 
 at least one chunk belongs to the target filing, but page recall = 0
 → wrong_section_or_chunk
@@ -2021,7 +2046,7 @@ build_failure_analysis(predictions, judgments, top_k):
         ELSE IF no chunks were retrieved:
             record no_chunks_retrieved
         ELSE IF no chunk document matches a target document:
-            record wrong_document
+            record _wrong_document_cause(prediction, target documents)
         ELSE IF page recall is 0:
             record wrong_section_or_chunk
         ELSE IF page recall is between 0 and 1:

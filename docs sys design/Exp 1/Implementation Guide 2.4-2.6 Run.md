@@ -840,7 +840,7 @@ README (drop "Not built yet").
 `_generation_performance_for_subset`; then `build_failure_analysis`'s
 wrong-document branch → `_wrong_document_cause`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   1. `test_report_averages_pre_rerank_and_filter_accuracy`: two shared-store
      rows (`filter_correct` True, False) and one single-store (`None`):
      shared-store `filter_accuracy == 0.5`, `filter_accuracy_sample_size ==
@@ -872,10 +872,10 @@ wrong-document branch → `_wrong_document_cause`.
   9. Workbook: the new labels ("Pre-rerank page MRR", "Filter accuracy",
      "Retrieval cost (USD)") appear in `sharedStrings.xml`.
 
-- [ ] **Step 2: Run them; expect failures** (missing keys, unknown
+- [x] **Step 2: Run them; expect failures** (missing keys, unknown
   `oracle_run_dir` argument, `wrong_document` instead of the split subtype).
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
 
   `report.py`:
 
@@ -979,12 +979,26 @@ wrong-document branch → `_wrong_document_cause`.
   `cli.py`: `report_parser.add_argument("--oracle-run-dir", type=Path)`;
   `write_report(args.run_dir, args.oracle_run_dir)`.
 
-- [ ] **Step 4: Verify** — focused, then full (Verification). No-spend check:
+- [x] **Step 4: Verify** — focused, then full (Verification). No-spend check:
   `uv run sec-rag-benchmark report --run-dir
   results/20260917-012959--financebench--baseline-context-conditions-v1`
   still succeeds and reports the same accuracies as before.
 
-- [ ] **Step 5: Reconcile** guide and FinanceBench guide section 11; README.
+- [x] **Step 5: Reconcile** guide and FinanceBench guide section 11; README.
+
+  **As built (28 Sep).** Code as planned above. Differences from the plan:
+  `filter_accuracy` counts values with `pd.api.types.is_bool`, not
+  `isinstance(value, bool)`, because pandas yields numpy's bool when a column
+  holds only True/False (a shared-store-only run); failure rows also copy
+  `enhancement_status`; the failure sheet's fixed column widths shift for its
+  two new columns; `tests/test_judge.py`'s exact cost-block assertion gains
+  the four empty retrieval-cost fields. Verification: ruff check clean, mypy
+  clean, 292 tests pass, lock and `git diff --check` clean; `ruff format
+  --check` flags only the same two pre-existing documents. No-spend check:
+  the 17 Sep baseline re-reported with identical `answer_accuracy` and
+  `run_status` (oracle 0.914 over 105 scored, long-context 0.872, closed-book
+  0.387), and its `[generation]` snapshot equals today's config, so the
+  borrow will be accepted.
 
 - [ ] **Step 6: User reviews the uncommitted diff.**
 

@@ -368,8 +368,8 @@ An Exp1 run holds only `single_store` and `shared_store`, so its failure
 diagnosis borrows the oracle answers and judgments from the 17 Sep baseline
 run. `--oracle-run-dir` names that folder; it is only read, never written.
 Without it, every incorrect retrieval answer is reported as `missing_oracle`.
-(Not built yet: it lands with
-`docs sys design/Exp 1/Implementation Guide 2.4-2.6 Run.md`.)
+The report refuses the borrow if the run has its own oracle answers or if the
+two runs' `[generation]` settings differ.
 
 ```bash
 uv run sec-rag-benchmark report \
