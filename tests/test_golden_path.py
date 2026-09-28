@@ -1148,6 +1148,27 @@ def test_report_borrows_oracle_for_failure_diagnosis(tmp_path):
     }
 
 
+def test_report_borrows_closed_book_accuracy_for_failure_rows(tmp_path):
+    run_dir = _wrong_filing_run(tmp_path)
+    baseline = _write_report_run(
+        tmp_path / "baseline",
+        ["closed_book", "oracle"],
+        [
+            _report_row("b:q1:oracle", "oracle"),
+            _report_row("b:q1:closed_book", "closed_book"),
+        ],
+        judgments=[_verdict("b:q1:oracle", 1), _verdict("b:q1:closed_book", 0)],
+    )
+
+    report = write_report(run_dir, baseline)
+
+    row = json.loads((run_dir / "failure_analysis.jsonl").read_text())
+    assert row["closed_book_accuracy"] == 0
+    assert {row["eval_mode"] for row in report["answer_accuracy"]["by_condition"]} == {
+        "shared_store"
+    }
+
+
 def test_report_borrowed_oracle_uses_its_manual_review(tmp_path):
     run_dir = _wrong_filing_run(tmp_path)
     baseline = _write_report_run(

@@ -12,6 +12,11 @@ RETRIEVAL_CONDITIONS = {"single_store", "shared_store"}
 METHODOLOGY = {
     "context_limit": "The complete prompt did not fit the model context window.",
     "success": "The retrieval-condition answer was judged correct.",
+    "correct_without_gold_pages": (
+        "The answer was judged correct, but no retrieved page was a gold page: "
+        "it came from memory or from a non-annotated page. The closed-book "
+        "accuracy column tells the two apart."
+    ),
     "oracle_baseline_failed": (
         "The retrieval answer and oracle answer were both incorrect, so "
         "retrieval cannot be isolated as the cause."
@@ -152,6 +157,12 @@ def build_failure_analysis(
         oracle = predictions_by_question_and_condition.get((question_id, "oracle"))
         condition_judgment = judgments.get(prediction["job_id"])
         oracle_judgment = judgments.get(oracle["job_id"]) if oracle else None
+        closed_book = predictions_by_question_and_condition.get(
+            (question_id, "closed_book")
+        )
+        closed_book_judgment = (
+            judgments.get(closed_book["job_id"]) if closed_book else None
+        )
 
         gold_page_pairs = {
             (doc_name, page_index)
@@ -203,6 +214,12 @@ def build_failure_analysis(
             "cognitive_skills": prediction.get("cognitive_skills", []),
             "oracle_accuracy": (
                 oracle_judgment.get("accuracy") if oracle_judgment else None
+            ),
+            # What the model answers with no documents at all: a correct
+            # closed-book answer means memory alone could have produced a
+            # retrieval condition's correct answer.
+            "closed_book_accuracy": (
+                closed_book_judgment.get("accuracy") if closed_book_judgment else None
             ),
             "condition_accuracy": (
                 condition_judgment.get("accuracy") if condition_judgment else None
@@ -259,13 +276,22 @@ def build_failure_analysis(
             )
             continue
         if condition_judgment["accuracy"] == 1:
+            # A correct answer stays a success, so these counts agree with
+            # accuracy. Zero gold-page recall is flagged as a subtype because
+            # the retrieved context did not contain the annotated evidence.
+            if chunk_provenance_is_valid and calculated_page_recall == 0:
+                success_subtype = "correct_without_gold_pages"
+                success_rule = "Judged correct, but no gold page was retrieved."
+            else:
+                success_subtype = None
+                success_rule = "The retrieval-condition answer was judged correct."
             analysis_rows.append(
                 _mark(
                     row,
                     analysis_status="classified",
                     category="success",
-                    subtype=None,
-                    rule="The retrieval-condition answer was judged correct.",
+                    subtype=success_subtype,
+                    rule=success_rule,
                 )
             )
             continue

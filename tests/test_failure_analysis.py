@@ -173,6 +173,36 @@ def test_preserves_nonclassifiable_and_context_limit_outcomes(
     assert result["failure_category"] == expected_category
 
 
+@pytest.mark.parametrize(
+    ("chunks", "expected_subtype"),
+    [
+        (
+            [{"doc_name": "target.pdf", "pages": [9], "rank": 1}],
+            ("correct_without_gold_pages"),
+        ),
+        ([{"doc_name": "target.pdf", "pages": [2, 3], "rank": 1}], None),
+    ],
+)
+def test_correct_answer_without_gold_pages_stays_success_but_is_flagged(
+    chunks, expected_subtype
+):
+    oracle = _prediction("oracle", page_recall=None)
+    closed_book = _prediction("closed_book", page_recall=None)
+    retrieval = _prediction("shared_store", chunks=chunks)
+    judgments = {
+        oracle["job_id"]: _judgment(oracle["job_id"], 1),
+        closed_book["job_id"]: _judgment(closed_book["job_id"], 1),
+        retrieval["job_id"]: _judgment(retrieval["job_id"], 1),
+    }
+
+    [result] = build_failure_analysis([oracle, closed_book, retrieval], judgments)
+
+    assert result["failure_category"] == "success"
+    assert result["failure_subtype"] == expected_subtype
+    assert result["closed_book_accuracy"] == 1
+    assert "correct_without_gold_pages" in METHODOLOGY
+
+
 def test_missing_or_disputed_oracle_is_not_given_a_causal_failure_category():
     retrieval = _prediction(
         "shared_store",

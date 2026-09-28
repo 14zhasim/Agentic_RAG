@@ -63,6 +63,7 @@ FAILURE_DETAIL_COLUMNS = [
     "eval_mode",
     "analysis_status",
     "oracle_accuracy",
+    "closed_book_accuracy",
     "condition_accuracy",
     "target_documents",
     "retrieved_documents",
@@ -127,6 +128,7 @@ LABELS = {
     "financebench_id": "FinanceBench ID",
     "analysis_status": "Analysis status",
     "oracle_accuracy": "Oracle accuracy",
+    "closed_book_accuracy": "Closed-book accuracy",
     "condition_accuracy": "Condition accuracy",
     "target_documents": "Target documents",
     "retrieved_documents": "Retrieved documents",
@@ -428,7 +430,11 @@ def _write_failure_analysis_sheet(
                 value = " | ".join(str(item) for item in value)
             if column == "page_recall":
                 cell_format = formats["percent"]
-            elif column in {"oracle_accuracy", "condition_accuracy"}:
+            elif column in {
+                "oracle_accuracy",
+                "closed_book_accuracy",
+                "condition_accuracy",
+            }:
                 cell_format = formats["integer"]
             elif column in {
                 "classification_rule",
@@ -448,10 +454,10 @@ def _write_failure_analysis_sheet(
             len(FAILURE_DETAIL_COLUMNS) - 1,
         )
     worksheet.freeze_panes(header_row + 1, 0)
-    worksheet.set_column(0, 4, 20)
-    worksheet.set_column(5, 6, 28)
-    worksheet.set_column(7, 12, 22)
-    worksheet.set_column(13, 15, 48)
+    worksheet.set_column(0, 5, 20)
+    worksheet.set_column(6, 7, 28)
+    worksheet.set_column(8, 13, 22)
+    worksheet.set_column(14, 16, 48)
 
 
 def write_report_workbook(

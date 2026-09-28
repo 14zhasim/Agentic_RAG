@@ -486,13 +486,15 @@ def _borrowed_oracle(
     snapshot: dict[str, Any],
     own_predictions: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Read another run's oracle answers and their resolved judgments.
+    """Read another run's oracle and closed-book answers and their judgments.
 
     Build Order 2.6: Exp1 runs only its two retrieval conditions, and the
     17 September baseline already answered oracle at today's settings.
     Failure diagnosis needs an oracle verdict per question, so it borrows
-    that run's. The borrowed run's own manual reviews resolve its disputed
-    judgments, exactly as they would in its own report.
+    that run's. Closed-book answers are borrowed too, so a correct answer
+    with no gold page retrieved can be checked against memory alone. The
+    borrowed run's own manual reviews resolve its disputed judgments,
+    exactly as they would in its own report.
     """
     if any(row.get("eval_mode") == "oracle" for row in own_predictions):
         raise ValueError(
@@ -509,10 +511,15 @@ def _borrowed_oracle(
             f"Oracle run {oracle_run_dir.name} used different generation settings"
         )
 
+    # A run's own closed-book answers take precedence; borrowing a second
+    # set would give one question two closed-book rows.
+    borrowed_conditions = {"oracle"}
+    if not any(row.get("eval_mode") == "closed_book" for row in own_predictions):
+        borrowed_conditions.add("closed_book")
     oracle_rows = [
         row
         for row in _latest_rows_by_job_id(oracle_run_dir / "predictions.jsonl").values()
-        if row.get("eval_mode") == "oracle"
+        if row.get("eval_mode") in borrowed_conditions
     ]
     borrowed_judgments = _resolve_judgments(
         _latest_rows_by_job_id(oracle_run_dir / "judgments.jsonl"),
