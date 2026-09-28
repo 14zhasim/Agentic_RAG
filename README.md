@@ -28,6 +28,7 @@ src/sec_rag/                       the system being evaluated
 ├── ingestion/                     Azure parse run, heading list, inspection report
 ├── chunking/                      page-bounded chunks and chunk reports
 ├── indexing/                      BM25 keyword index and Voyage vectors in Chroma
+├── retrieval/                     query enhancement, hybrid search with RRF, rerank, Exp1 path
 └── cli.py                         sec-rag terminal commands
 src/sec_rag_benchmark/
 ├── config.py                      load and validate benchmark settings
@@ -229,6 +230,31 @@ uv run sec-rag embed --config configs/sec_rag.toml --execute-paid
 Only new or changed chunks are sent, and each batch is saved as it returns,
 so an interrupted run continues where it stopped when rerun. Afterwards the
 no-spend report should show `To embed: 0`.
+
+## Retrieve for one question (Exp1)
+
+Check retrieval for one question before a benchmark run. `--scope` names the
+filing(s) the question may search (single-store: its own filing);
+`--all-filings` searches the whole corpus (shared-store). Without
+`--execute-paid`, only BM25 runs over the raw question: no key, no spend.
+
+```bash
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --all-filings
+```
+
+`--execute-paid` runs Exp1's whole path: GLM's query enhancement
+(OpenRouter), the hybrid search (one Voyage query embedding) and the Voyage
+reranker, a fraction of a penny per question. It prints the chosen filing,
+both queries, the fused and reranked top 10 and the token counts, and needs
+`OPENROUTER_API_KEY` and `VOYAGE_API_KEY` loaded from `.env` as above.
+
+```bash
+uv run sec-rag retrieve --config configs/sec_rag.toml \
+  --question "What is the FY2018 capital expenditure amount (in USD millions) for 3M?" \
+  --all-filings --execute-paid
+```
 
 ## Run a no-spend preflight
 
