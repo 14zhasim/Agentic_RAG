@@ -8,7 +8,16 @@ EOF
 /.worktrees/
 AGENTS.md
 CLAUDE.md
-/results/
+# Run outputs stay local, except the summary workbooks of the reported runs:
+# the baseline (oracle) run, Exp1 and Exp2's full heading-path run.
+/results/*
+!/results/20260917-012959--financebench--baseline-context-conditions-v1/
+!/results/20260928-202531--exp1--full/
+!/results/20260929-172553--exp2--heading-path/
+/results/*/*
+!/results/20260917-012959--financebench--baseline-context-conditions-v1/summary.xlsx
+!/results/20260928-202531--exp1--full/summary.xlsx
+!/results/20260929-172553--exp2--heading-path/summary.xlsx
 /.superpowers/
 # Local offline library documentation (regenerate: bash scripts/fetch_library_docs.sh)
 /docs/
