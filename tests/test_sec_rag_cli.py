@@ -68,10 +68,16 @@ max_output_tokens = 4096
 timeout_seconds = 120.0
 max_retries = 5
 prompt_version = "exp1-query-enhancement-v1"
+reuse_plans_from = ""
 
 [rerank]
 model = "rerank-3-lite"
 usd_per_million_tokens = 0.02
+
+[structure]
+max_depth = 6
+softmax_divisor = 0.05
+weight = 0.0
 """,
         encoding="utf-8",
     )
@@ -296,6 +302,68 @@ def test_embed_command_paid_without_key_is_an_error(
     capsys.readouterr()
 
     exit_code = main(["embed", "--config", str(config_path), "--execute-paid"])
+
+    assert exit_code == 1
+    assert "Error: VOYAGE_API_KEY is not set" in capsys.readouterr().out
+
+
+def _save_one_heading_parse(config_path: Path) -> None:
+    """Save a one-page parse whose first line is a heading, so a chunk has a path."""
+    cache_dir = config_path.parent.parent / "data" / "financebench" / "parsed"
+    cache_dir.mkdir(parents=True)
+    content = "# Revenue\n\nRevenue grew strongly this year."
+    raw = {
+        "content": content,
+        "pages": [{"pageNumber": 1, "spans": [{"offset": 0, "length": len(content)}]}],
+        "paragraphs": [
+            {
+                "content": "Revenue",
+                "role": "title",
+                "spans": [{"offset": 0, "length": 9}],
+                "boundingRegions": [{"pageNumber": 1}],
+            },
+            {
+                "content": "Revenue grew strongly this year.",
+                "spans": [{"offset": 11, "length": 32}],
+                "boundingRegions": [{"pageNumber": 1}],
+            },
+        ],
+        "sections": [{"elements": ["/paragraphs/0", "/paragraphs/1"]}],
+    }
+    (cache_dir / "example_2024_10K.json").write_text(json.dumps(raw), encoding="utf-8")
+
+
+def test_index_structure_reports_without_spending(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """No --execute-paid: counts only, no key needed, nothing sent."""
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _save_one_heading_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(["index-structure", "--config", str(config_path)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Chunks: 1 (1 with a heading path)\n" in output
+    assert "Unique headings: 1\nAlready embedded: 0\nTo embed: 1\n" in output
+    assert "Nothing sent" in output
+
+
+def test_index_structure_paid_without_key_is_an_error(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    config_path = _write_config_with_pdf(tmp_path)
+    _save_one_heading_parse(config_path)
+    main(["chunk", "--config", str(config_path)])
+    capsys.readouterr()
+
+    exit_code = main(
+        ["index-structure", "--config", str(config_path), "--execute-paid"]
+    )
 
     assert exit_code == 1
     assert "Error: VOYAGE_API_KEY is not set" in capsys.readouterr().out

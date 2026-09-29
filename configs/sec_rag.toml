@@ -44,7 +44,13 @@ max_output_tokens = 4096     # reasoning tokens count as output
 timeout_seconds = 120.0
 max_retries = 5
 prompt_version = "exp1-query-enhancement-v1"   # bump when the prompt changes
+reuse_plans_from = ""        # "" = call GLM (Exp1); a run folder = reuse its saved plans
 
 [rerank]
 model = "rerank-3-lite"      # 200M free tokens; the 2.5 line has none
 usd_per_million_tokens = 0.02  # list price, same page; recorded, not billed
+
+[structure]
+max_depth = 6            # chain depth; one more than Fin-STAR's 5 (Build Order 3.1)
+softmax_divisor = 0.05   # T in softmax(chunk·heading / T) (Build Order 3.3)
+weight = 0.0             # 0 = Exp1, Chroma's search; non-zero = the exact scorer

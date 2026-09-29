@@ -234,9 +234,11 @@ def index_config(tmp_path: Path):
     """
     (tmp_path / "pdfs").mkdir()
     (tmp_path / "chunks").mkdir()
+    (tmp_path / "parsed").mkdir()
     config = {
         "corpus": {
             "prepared_dir": str(tmp_path),
+            "parsed_dir": str(tmp_path / "parsed"),
             "chunks_dir": str(tmp_path / "chunks"),
             "indexes_dir": str(tmp_path / "indexes"),
         },
@@ -251,6 +253,8 @@ def index_config(tmp_path: Path):
             "output_dimension": 3,
             "output_dtype": "float",
         },
+        # Exp1's values: weight 0 keeps search on Chroma (Guide 3.1-3.4).
+        "structure": {"max_depth": 6, "softmax_divisor": 0.05, "weight": 0.0},
     }
 
     def add_filing(doc_name: str, texts: list[str] | None, **fields) -> None:

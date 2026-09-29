@@ -52,10 +52,16 @@ max_output_tokens = 4096
 timeout_seconds = 120.0
 max_retries = 5
 prompt_version = "exp1-query-enhancement-v1"
+reuse_plans_from = ""
 
 [rerank]
 model = "rerank-3-lite"
 usd_per_million_tokens = 0.02
+
+[structure]
+max_depth = 6
+softmax_divisor = 0.05
+weight = 0.0
 """
 
 
@@ -241,6 +247,46 @@ def test_voyage_list_price_must_be_a_number_of_at_least_zero(
         load_config(config_path)
 
 
+def test_missing_structure_section_is_refused(tmp_path: Path) -> None:
+    _, config_path = _write(tmp_path, VALID_CONFIG.replace("[structure]", "[other]"))
+
+    with pytest.raises(ValueError, match=r"\[structure\]"):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("setting", "bad_line", "message"),
+    [
+        ("max_depth = 6", "max_depth = 0", "structure.max_depth"),
+        ("max_depth = 6", "max_depth = true", "structure.max_depth"),
+        ("softmax_divisor = 0.05", "softmax_divisor = 0", "structure.softmax_divisor"),
+        ("weight = 0.0", "weight = -1.0", "structure.weight"),
+        ('reuse_plans_from = ""', "reuse_plans_from = 0", "reuse_plans_from"),
+    ],
+)
+def test_invalid_structure_setting_is_refused(
+    tmp_path: Path, setting: str, bad_line: str, message: str
+) -> None:
+    _, config_path = _write(tmp_path, VALID_CONFIG.replace(setting, bad_line))
+
+    with pytest.raises(ValueError, match=message):
+        load_config(config_path)
+
+
+def test_reuse_plans_from_resolves_from_project_root(tmp_path: Path) -> None:
+    """Empty stays empty (call GLM); a run folder becomes an absolute path."""
+    text = VALID_CONFIG.replace(
+        'reuse_plans_from = ""', 'reuse_plans_from = "results/run-a"'
+    )
+    project, config_path = _write(tmp_path, text)
+
+    config = load_config(config_path)
+
+    assert config["query_enhancement"]["reuse_plans_from"] == str(
+        project / "results/run-a"
+    )
+
+
 def test_the_repository_config_loads() -> None:
     """configs/sec_rag.toml itself passes validation."""
     config = load_config(Path(__file__).parent.parent / "configs" / "sec_rag.toml")
@@ -248,3 +294,6 @@ def test_the_repository_config_loads() -> None:
     assert config["query_enhancement"]["reasoning_effort"] == "low"
     assert config["rerank"]["model"] == "rerank-3-lite"
     assert config["retrieval"]["rerank_candidates"] == 50
+    # Exp1's own config keeps Exp1 exactly Exp1 (Guide 3.1-3.4 -> Configuration).
+    assert config["structure"]["weight"] == 0.0
+    assert config["query_enhancement"]["reuse_plans_from"] == ""

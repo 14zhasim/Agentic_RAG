@@ -15,6 +15,7 @@ from .chunking.chunk_files import (
 from .config import load_config
 from .indexing.bm25_index import build_bm25_index
 from .indexing.embed import embed_corpus
+from .indexing.structure import build_structure_index
 from .ingestion.inspect_parse import inspect_parses
 from .ingestion.parse import ParseStateError, parse_corpus
 from .retrieval.exp1 import all_filings, open_exp1, preview_bm25, retrieve_exp1
@@ -43,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     embed_parser = commands.add_parser("embed")
     embed_parser.add_argument("--config", type=Path, required=True)
     embed_parser.add_argument("--execute-paid", action="store_true")
+    structure_parser = commands.add_parser("index-structure")
+    structure_parser.add_argument("--config", type=Path, required=True)
+    structure_parser.add_argument("--execute-paid", action="store_true")
     retrieve_parser = commands.add_parser("retrieve")
     retrieve_parser.add_argument("--config", type=Path, required=True)
     retrieve_parser.add_argument("--question", required=True)
@@ -67,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
                 return _run_index_bm25(args)
             case "embed":
                 return _run_embed(args)
+            case "index-structure":
+                return _run_index_structure(args)
             case "retrieve":
                 return _run_retrieve(args)
             case _:
@@ -161,6 +167,31 @@ def _run_embed(args: argparse.Namespace) -> int:
     if "embedded" in result:
         print(f"Embedded now: {result['embedded']}")
         print(f"Tokens billed: {result['tokens_billed']:,}")
+    return 0
+
+
+def _run_index_structure(args: argparse.Namespace) -> int:
+    """Load settings, attribute heading paths, and print the plan (or build, if paid).
+
+    Without --execute-paid nothing is sent to Voyage; if every heading is
+    already embedded, the structure vectors are still rebuilt, locally.
+    """
+    config = load_config(args.config)
+    result = build_structure_index(config, execute_paid=args.execute_paid)
+    print(f"Filings: {result['filings']}")
+    print(
+        f"Chunks: {result['chunks']} ({result['chunks_with_path']} with a heading path)"
+    )
+    print(f"Unique headings: {result['unique_headings']}")
+    print(f"Already embedded: {result['stored_headings']}")
+    print(f"To embed: {result['to_embed']}")
+    print(f"Estimated tokens: {result['estimated_tokens']:,}")
+    if "structure_rows" in result:
+        print(f"Embedded now: {result['embedded']}")
+        print(f"Tokens billed: {result['tokens_billed']:,}")
+        print(f"Structure vectors saved: {result['structure_rows']}")
+    else:
+        print("Nothing sent: rerun with --execute-paid to embed the missing headings")
     return 0
 
 

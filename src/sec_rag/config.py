@@ -25,6 +25,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     retrieval = config.get("retrieval")
     query_enhancement = config.get("query_enhancement")
     rerank = config.get("rerank")
+    structure = config.get("structure")
     if (
         not isinstance(corpus, dict)
         or not isinstance(parsing, dict)
@@ -34,11 +35,12 @@ def load_config(path: str | Path) -> dict[str, Any]:
         or not isinstance(retrieval, dict)
         or not isinstance(query_enhancement, dict)
         or not isinstance(rerank, dict)
+        or not isinstance(structure, dict)
     ):
         raise ValueError(
             "SEC RAG configuration needs [corpus], [parsing], [chunking], "
-            "[bm25], [embedding], [retrieval], [query_enhancement] and "
-            "[rerank] sections"
+            "[bm25], [embedding], [retrieval], [query_enhancement], "
+            "[rerank] and [structure] sections"
         )
 
     for key in ("prepared_dir", "parsed_dir", "chunks_dir", "indexes_dir"):
@@ -128,6 +130,16 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ValueError(
                 f"query_enhancement.{key} must be a whole number of at least 0"
             )
+    # Implementation Guide 3.1-3.4 -> Configuration: "" means call GLM, as
+    # Exp1 does; a run folder means reuse that run's saved plans (rung B).
+    reuse_plans_from = query_enhancement.get("reuse_plans_from")
+    if not isinstance(reuse_plans_from, str):
+        raise ValueError("query_enhancement.reuse_plans_from must be a string")
+    if reuse_plans_from:
+        plans_path = Path(reuse_plans_from)
+        if not plans_path.is_absolute():
+            plans_path = project_root / plans_path
+        query_enhancement["reuse_plans_from"] = str(plans_path)
     rerank_model = rerank.get("model")
     if not isinstance(rerank_model, str) or not rerank_model:
         raise ValueError("rerank.model must be a non-empty string")
@@ -141,4 +153,21 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ValueError(
                 f"{section_name}.usd_per_million_tokens must be a number of at least 0"
             )
+
+    # Implementation Guide 3.1-3.4 -> Configuration. max_depth and
+    # softmax_divisor shape the saved structure vectors (build settings);
+    # weight only changes how a run scores (0 = Exp1, Chroma's search).
+    max_depth = structure.get("max_depth")
+    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth <= 0:
+        raise ValueError("structure.max_depth must be a positive whole number")
+    divisor = structure.get("softmax_divisor")
+    if (
+        not isinstance(divisor, int | float)
+        or isinstance(divisor, bool)
+        or divisor <= 0
+    ):
+        raise ValueError("structure.softmax_divisor must be a number above 0")
+    weight = structure.get("weight")
+    if not isinstance(weight, int | float) or isinstance(weight, bool) or weight < 0:
+        raise ValueError("structure.weight must be a number of at least 0")
     return config
