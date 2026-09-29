@@ -563,7 +563,7 @@ Checked on the installed `chromadb` 1.5.9 in a throwaway database, 29 Sep
 ## Gate 3 — Slices and tests
 
 Four slices, in order. Slices 1-3 are code, each with its own commit on
-`exp2-structure` (in `.worktrees/exp2-structure`); slice 4 is the run and the
+`exp2-structure` (built in the main checkout, 29 Sep); slice 4 is the run and the
 write-up, and changes no code. Tests use `tests/conftest.py`'s `index_config`
 (a temp corpus with tiny BM25 and Chroma indexes) and fake embedders, so no
 test spends.
@@ -863,6 +863,51 @@ structure_weight=config["structure"]["weight"])`.
 result-affecting, so they go in their own commit:
 `Add the Exp2 heading-path run configs`.
 
+**As built (29 Sep, commits `98e2aa8` and `68eb481`):**
+
+- `search.py`: `_bm25_ranking` → public `bm25_ranking`; `_vector_ranking`
+  split into `embed_query` and `chroma_ranking`; `exact_ranking` added;
+  `search` refuses a negative weight; `SearchIndexes.structure` defaults to
+  None, and `open_search_indexes` opens it only at a non-zero config weight,
+  so a rung B run with no structure build fails before any question.
+  `exact_ranking` raises if called with a weight but no structure collection.
+- Differs from the plan: `embed_query` returns `list[float]` (what Chroma's
+  query takes), not a numpy array; `exact_ranking` converts.
+  `reuse_plans_from` and its validation landed in slice 1's config commit,
+  since `load_config` requires every key it validates.
+- `exp1.py`: `load_saved_plans(run_dir)` adds `reused_from` (the folder
+  name) to each plan; `_saved_plan` picks the condition from the scope
+  (one filing = single-store) and raises if absent; `open_exp1` loads the
+  plans when `reuse_plans_from` is set.
+- Tests as built. `test_search.py`:
+  - `test_search_uses_chroma_at_weight_zero_and_the_scorer_otherwise`, and
+    `test_a_negative_structure_weight_is_refused`, replacing the old refusal
+    test;
+  - `test_exact_ranking_at_weight_zero_ranks_by_cosine`;
+  - `test_structure_lifts_a_chunk_with_a_matching_heading`: the chunk that is
+    last on content alone is first once its parallel structure row counts,
+    rather than the planned "two equally close" chunks, which the fixture
+    doesn't have;
+  - `test_a_chunk_without_a_structure_row_keeps_its_content_score`;
+  - `test_exact_ranking_respects_the_filter`, `test_no_filter_scores_every_chunk`;
+  - `test_a_non_zero_weight_without_the_structure_collection_is_refused`;
+  - `test_open_search_indexes_opens_the_structure_collection_only_above_zero`.
+
+  `test_exp1.py`:
+  - `test_saved_plan_is_used_and_glm_is_not_called`;
+  - `test_the_scope_picks_the_condition_of_the_saved_plan`;
+  - `test_a_question_missing_from_the_saved_plans_is_refused`;
+  - `test_the_configs_structure_weight_reaches_search`;
+  - `test_load_saved_plans_keys_by_question_and_condition`,
+    `test_load_saved_plans_refuses_a_missing_run`.
+
+  `test_exp2_configs.py`: one test per pair, each asserting the exact
+  differing keys and their values.
+- Checked on real data, free: the dry run plans 224 jobs with 0 requests;
+  all 224 saved plans load, keys unique; using chunk `3M_2018_10K:p59:c1`'s
+  own vector as the query, Chroma's top 50 and `exact_ranking` at weight 0
+  agree 50 of 50, and at weight 1 the order changes.
+
 ### Slice 3: the weight-zero check (`sec-rag-benchmark check-structure`)
 
 **Purpose:** prove the scorer at weight 0 reproduces Exp1, and produce A's
@@ -917,22 +962,50 @@ uv run sec-rag-benchmark check-structure --config configs/financebench-exp2.toml
 recall within 0.01 of A's reported pre-rerank recall in each condition. If
 not, stop: the scorer, not the headings, would explain any A vs B gap.
 
+What to look for:
+
+- **Free run (done 29 Sep):** `Rows: 224`, `Estimated query tokens:
+  7,094`, `Nothing sent`.
+- **Paid run:** a few minutes (224 Voyage calls). It prints `Wrote
+  results/<timestamp>--exp2--weight-zero-check`, the mean and minimum
+  top-50 overlap (expect mean ~49.98, min 49 or 50), one line per condition
+  with the rebuilt pre-rerank recall beside A's reported one (they should
+  match to 0.01), precision and MRR, embedding tokens (~7k), and `Passed:
+  True`. On `Passed: False` the command exits 1: stop and report the
+  numbers rather than run B.
+
 **Commit:** `Check the structure scorer at weight zero`.
+
+**As built (29 Sep, commit `c111e05`):** `check_structure` as planned, plus:
+it writes each row to `structure_check_rows.jsonl` as it finishes (a crash
+keeps the rest); the summary carries `passed` and each condition's
+`reported_page_recall`, so the pass rule is computed, not eyeballed; each
+row records `compared` (Chroma's list length) beside its overlap. Tests:
+the four planned, plus `test_the_command_reports_without_spending` and
+`test_a_baseline_without_predictions_is_refused`. They run through the real
+entry point on a copy of `financebench-exp2.toml`, with the loaded sec_rag
+config and Voyage client swapped for the tiny corpus and a fake.
 
 ### Slice 4: rung B's run, report and results (no code)
 
 ```bash
 set -a && source .env && set +a
-uv run sec-rag-benchmark run --config configs/financebench-exp2.toml --limit 5                   # paid smoke: 10 jobs
-uv run sec-rag-benchmark run --config configs/financebench-exp2.toml                             # paid: 224 jobs, ~$0.40
+uv run sec-rag-benchmark run --config configs/financebench-exp2.toml --limit 5                   # paid smoke: 10 jobs, its own folder
+uv run sec-rag-benchmark run --config configs/financebench-exp2.toml                             # paid: 224 jobs, ~$0.40, a new folder <B>
 uv run sec-rag-benchmark judge --config configs/financebench-exp2.toml --run-dir results/<B>    # paid
 uv run sec-rag-benchmark export-manual-review --run-dir results/<B>
 uv run sec-rag-benchmark import-manual-review --run-dir results/<B>                             # after reviewing
 uv run sec-rag-benchmark report --run-dir results/<B> --oracle-run-dir results/20260917-012959--financebench--baseline-context-conditions-v1
 ```
 
-Smoke pass: every row's `search_plan.reused_from` is A's folder, and no
-query-enhancement call appears in OpenRouter's usage.
+The smoke run gets its own folder: a run folder's `config.toml` snapshot
+records the question selection, so the full run can't resume into it.
+Move it to `results/archive/` once checked, as with Exp1's.
+
+Smoke pass: `{'generated': 10, 'did_not_fit': 0, 'skipped': 0, 'failed':
+0}`, and every row's `search_plan.reused_from` is
+`20260928-202531--exp1--full`. `query_enhancement_cost` is A's carried
+cost, not a new call, so it is not the check.
 
 Then record in `Exp 2.md` → Results: A vs B page recall, precision and MRR
 before and after reranking, per condition (A's pre-rerank from the check);

@@ -25,6 +25,7 @@ validated against published labels. HiREC/LOFin support remains deferred.
 ```text
 configs/financebench.toml          editable dataset, generation and run settings
 configs/sec_rag.toml               parser, chunker and index settings for the system being evaluated
+configs/*-exp2.toml                Exp2 rung B: the two files above with only the structure change
 src/sec_rag/                       the system being evaluated
 ├── ingestion/                     Azure parse run, heading list, inspection report
 ├── chunking/                      page-bounded chunks and chunk reports
@@ -36,7 +37,7 @@ src/sec_rag_benchmark/
 ├── dataset/                       preparation and development subsets
 ├── pipeline/                      context construction and generation
 ├── execution/                     preflight, one-job execution and run loop
-├── evaluation/                    metrics, judging and manual review
+├── evaluation/                    metrics, judging, manual review, Exp2 weight-zero check
 ├── reporting/                     aggregation, diagnosis and workbook output
 └── cli.py                         terminal commands and orchestration
 tests/                             no-spend automated tests
@@ -371,6 +372,42 @@ The CLI creates a labelled directory such as
 `results/20260928-143052--exp1--full/` (`--experiment--variant` from
 `[run]`) and
 prints its path. Keep the path if you need to resume or report the run.
+
+## Run Exp2 (structure-aware retrieval)
+
+Exp2's rung B is Exp1 with one change: the semantic score adds each chunk's
+structure vector. Its settings are in `configs/financebench-exp2.toml` and
+`configs/sec_rag-exp2.toml`, copies of Exp1's with only the run label, the
+structure weight (1) and the reused query plans changed. Rung B reuses the
+filing and queries Exp1's full run chose, so it makes no query-enhancement
+calls. Rung A is that Exp1 run, not re-run. Build the structure vectors
+first (above).
+
+Before running B, check that the exact scorer reproduces Exp1 when the
+structure weight is 0. The free report counts the searches; the paid run
+re-embeds Exp1's 224 semantic queries (~7k Voyage tokens, inside the free
+allowance) and exits with status 1 if the check fails:
+
+```bash
+uv run sec-rag-benchmark check-structure --config configs/financebench-exp2.toml \
+  --baseline-run-dir results/20260928-202531--exp1--full
+uv run sec-rag-benchmark check-structure --config configs/financebench-exp2.toml \
+  --baseline-run-dir results/20260928-202531--exp1--full --execute-paid
+```
+
+It writes `results/<timestamp>--exp2--weight-zero-check/`. Then run, judge
+and report B as for Exp1, with the Exp2 config (paid). The smoke run gets
+its own folder, since a folder's snapshot records its question selection:
+
+```bash
+uv run sec-rag-benchmark run --config configs/financebench-exp2.toml --dry-run
+uv run sec-rag-benchmark run --config configs/financebench-exp2.toml --limit 5
+uv run sec-rag-benchmark run --config configs/financebench-exp2.toml
+```
+
+What each command should print, and the pass rule for the check, are in
+`docs sys design/Exp 2/Implementation Guide 3.1-3.4 Structure.md` → Slices
+3 and 4.
 
 ## Resume and report a run
 
