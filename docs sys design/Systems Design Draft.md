@@ -410,8 +410,8 @@ Ingest files
     - cost: measured at 10.1M tokens over 21,039 chunks (Build Order 1.3), inside the 200M free allowance even with several re-chunks
     - label inputs: embed chunks with Voyage `input_type="document"`, questions with `input_type="query"`
     - cache each embedding keyed by model name + hash of chunk text, so re-chunking only re-embeds changed chunks
-    - HARNESS (build with Exp1): prediction row records embedding + rerank cost too, not just the answer model's
-      - DECIDED (28 Sep 2026): token counts plus USD at Voyage's list price ($0.02/1M for both `voyage-4-lite` and `rerank-3-lite`; source: Voyage pricing page, <https://docs.voyageai.com/docs/pricing>, Text Embeddings and Rerankers tables, checked 28 Sep 2026; the embedding price is also in the offline `docs/libraries/voyage/pricing.md` line 19, the rerank price only on the live page), set in `configs/sec_rag.toml`. Our usage is inside the free allowance, so this is list-price cost, not the amount billed
+  - HARNESS (build with Exp1): prediction row records embedding + rerank cost too, not just the answer model's
+    - DECIDED (28 Sep 2026): token counts plus USD at Voyage's list price ($0.02/1M for both `voyage-4-lite` and `rerank-3-lite`; source: Voyage pricing page, <https://docs.voyageai.com/docs/pricing>, Text Embeddings and Rerankers tables, checked 28 Sep 2026; the embedding price is also in the offline `docs/libraries/voyage/pricing.md` line 19, the rerank price only on the live page), set in `configs/sec_rag.toml`. Our usage is inside the free allowance, so this is list-price cost, not the amount billed
 
 
 Retrieve - Elastic search? can think about tech stack later
@@ -419,7 +419,7 @@ Retrieve - Elastic search? can think about tech stack later
 - LLM query enhancement - to what extent? check lesson 7 + claude link on prompting: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview
   - ONE LLM call returning structured JSON: company, year(s), doc_type, keyword query (rephrase shorthand expanded - PPNE → property, plant and equipment; COGS, DPO, FCF, capex), semantic query.
   - Metadata filtering: filenames are `COMPANY_YEAR_TYPE.pdf`, so the LLM supplies all three and we select the filing by filename (not from metadata table columns). Parse from the RIGHT — `JOHNSON_JOHNSON_2022_10K` has an underscore in the company name. Simplest: give it the filename list and have it return a filename. Filter chunks BEFORE search. Let it know whether its desired file exists + was retrieved. Like Claude Code, maybe naively give prompt all available metadata / files they can search from.
-  - DECIDED (27 Sep 2026): model GLM-5.3-flash via OpenRouter, reasoning effort `low`, set in `configs/sec_rag.toml`. Picking a filename from a list and rewriting a question is an easy task; `low` keeps ~224 extra calls (two conditions × 112) fast and cheap. Write-up: query enhancement runs at `low`, answering at `high` — the answer-model invariant is untouched
+  - DECIDED (27 Sep 2026): model GLM-5.3-flash via OpenRouter, reasoning effort `low`, set in `configs/sec_rag.toml`, not a tool call as Z>AI doesnt support strict schema, only 'json mode'. Picking a filename from a list and rewriting a question is an easy task; `low` keeps ~224 extra calls (two conditions × 112) fast and cheap. Write-up: query enhancement runs at `low`, answering at `high` — the answer-model invariant is untouched
   - DECIDED: output JSON is `filename` (one name from the list, or `null` if unsure), `keyword_query`, `semantic_query`. The filename already encodes company, year and doc_type, and a closed list means "3M" vs "3M Company" can't mismatch, so separate company/year/doc_type fields add nothing
   - DECIDED: the SAME call in both retrieval conditions; only the list it's given differs
     - single_store: the list is the one in-scope filing, so the model just returns it; it still writes both queries

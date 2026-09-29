@@ -134,6 +134,9 @@ The table's outputs are illustrative, not results: nothing has run yet.
 - LlamaIndex's Voyage rerank package: a new dependency for one call.
 - Strict JSON schema: needs unpinning the provider, so queries could run on a
   different host from the answer model.
+- A tool call: its arguments are still model-written JSON, enforced only on a
+  provider with `structured_outputs` (strict schema), which Z.AI lacks.
+  Future work on a model and provider that support it.
 
 ### Scope
 
