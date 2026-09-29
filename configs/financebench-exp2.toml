@@ -1,0 +1,55 @@
+[dataset]
+source_dir = "benchmarks/financebench"
+output_dir = "data/financebench"
+document_type = "10k"
+expected_questions = 112
+expected_documents = 64
+
+[generation]
+provider = "openrouter"
+model = "z-ai/glm-5.3-flash"
+prompt_version = "financebench-answer-v1"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"
+allow_fallbacks = false
+context_window_tokens = 1048576
+max_output_tokens = 8192
+token_safety_margin = 1024
+temperature = 0.0
+reasoning_effort = "high"
+timeout_seconds = 180.0
+max_retries = 5
+
+[judge]
+provider = "azure"
+model = "DeepSeek-V4-Flash"
+deployment = "DeepSeek-V4-Flash"
+prompt_version = "financebench-binary-judge-v2"
+temperature = 0.0
+max_output_tokens = 512
+timeout_seconds = 180.0
+max_retries = 5
+
+[judge_validation]
+source_commit = "cc39aeb4afdf33909ee1412188bf89035950c2eb"
+seed = 42
+correct_examples = 15
+incorrect_examples = 10
+refusal_examples = 5
+minimum_agreement = 0.90
+
+[development_subsets]
+seed = 42
+smoke_size = 10
+pattern_size = 50
+
+[run]
+# Exp2 rung B: configs/financebench.toml with the label and the RAG settings
+# file changed, pinned by tests/test_exp2_configs.py. Rung A is Exp1's full
+# run (results/20260928-202531--exp1--full), not re-run.
+experiment = "exp2"
+variant = "heading-path"
+conditions = ["single_store", "shared_store"]
+retrieval_depth = 10
+results_dir = "results"
+sec_rag_config = "configs/sec_rag-exp2.toml"   # structure weight 1, A's saved plans

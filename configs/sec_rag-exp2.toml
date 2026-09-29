@@ -1,0 +1,59 @@
+# Exp2 rung B (heading-path): configs/sec_rag.toml with two settings changed,
+# pinned by tests/test_exp2_configs.py. Everything else must stay Exp1's.
+
+[corpus]
+prepared_dir = "data/financebench"
+parsed_dir = "data/financebench/parsed"
+chunks_dir = "data/financebench/chunks"
+indexes_dir = "data/financebench/indexes"   # bm25/ and chroma/ go here
+expected_documents = 64
+
+[parsing]
+provider = "azure-document-intelligence"
+model_id = "prebuilt-layout"
+output_content_format = "markdown"
+
+[chunking]
+floor_tokens = 250         # a heading cut needs both pieces at least this big
+ceiling_tokens = 1024      # prose over this is halved at a sentence
+overlap_cap_tokens = 100   # most text carried across a page break or halving cut
+
+[bm25]
+token_pattern = '(?u)[^\W\d_]+|\d+'  # runs of letters or runs of digits: FY2018 -> fy, 2018
+stopwords = "en"                     # bm25s's English stopword list
+stemmer = "english"                  # PyStemmer's English stemmer
+
+[embedding]
+model = "voyage-4-lite"
+batch_size = 128           # chunks per Voyage call (limits: 1,000 texts, 1M tokens)
+output_dimension = 1024    # Voyage's default; questions are embedded at the same length
+output_dtype = "float"     # Voyage's default, full precision; Chroma stores floats
+usd_per_million_tokens = 0.02  # list price, docs.voyageai.com/docs/pricing (28 Sep 2026);
+                               # our usage is inside the 200M free allowance
+
+[retrieval]
+candidates_per_search = 50 # BM25 and Chroma each return this many
+rrf_k = 60                 # reciprocal rank fusion constant (Cormack et al., 2009)
+rerank_candidates = 50     # fused chunks handed to the reranker; the final 10 is
+                           # the benchmark's retrieval_depth
+
+[query_enhancement]
+model = "z-ai/glm-5.3-flash"
+base_url = "https://openrouter.ai/api/v1"
+upstream_provider = "z-ai"   # same host as the answer model; no fallbacks
+reasoning_effort = "low"     # an easy task; answering stays at "high"
+temperature = 0.0
+max_output_tokens = 4096     # reasoning tokens count as output
+timeout_seconds = 120.0
+max_retries = 5
+prompt_version = "exp1-query-enhancement-v1"   # bump when the prompt changes
+reuse_plans_from = "results/20260928-202531--exp1--full"   # rung A's plans: same filing and queries
+
+[rerank]
+model = "rerank-3-lite"      # 200M free tokens; the 2.5 line has none
+usd_per_million_tokens = 0.02  # list price, same page; recorded, not billed
+
+[structure]
+max_depth = 6            # chain depth; one more than Fin-STAR's 5 (Build Order 3.1)
+softmax_divisor = 0.05   # T in softmax(chunk·heading / T) (Build Order 3.3)
+weight = 1.0             # rung B: question·chunk + 1 × question·structure
