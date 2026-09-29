@@ -28,7 +28,7 @@ configs/sec_rag.toml               parser, chunker and index settings for the sy
 src/sec_rag/                       the system being evaluated
 ├── ingestion/                     Azure parse run, heading list, inspection report
 ├── chunking/                      page-bounded chunks and chunk reports
-├── indexing/                      BM25 keyword index and Voyage vectors in Chroma
+├── indexing/                      BM25 keyword index, Voyage vectors in Chroma, Exp2 structure vectors
 ├── retrieval/                     query enhancement, hybrid search with RRF, rerank, Exp1 path
 └── cli.py                         sec-rag terminal commands
 src/sec_rag_benchmark/
@@ -231,6 +231,33 @@ uv run sec-rag embed --config configs/sec_rag.toml --execute-paid
 Only new or changed chunks are sent, and each batch is saved as it returns,
 so an interrupted run continues where it stopped when rerun. Afterwards the
 no-spend report should show `To embed: 0`.
+
+## Build structure vectors (Exp2)
+
+Exp2 scores each chunk by its text and by the headings it sits under. This
+gives every chunk a heading path, embeds each unique heading once with
+Voyage, and saves one structure vector per chunk beside the chunk vectors in
+Chroma. The chunk vectors must be embedded first (above). Start with the
+no-spend report: it needs no key and prints how many headings would be
+embedded and the estimated tokens:
+
+```bash
+uv run sec-rag index-structure --config configs/sec_rag.toml
+```
+
+The paid run (about 9,500 headings, ~99k tokens, inside Voyage's free
+allowance) needs `VOYAGE_API_KEY` loaded from `.env` as above:
+
+```bash
+uv run sec-rag index-structure --config configs/sec_rag.toml --execute-paid
+```
+
+As with `embed`, only headings not yet stored are sent, and an interrupted
+run continues when rerun. Once every heading is stored, the command without
+`--execute-paid` is still free but not read-only: it rebuilds the structure
+vectors locally, which is how a change to `[structure]` in
+`configs/sec_rag.toml` is applied. What each output line should read is in
+`docs sys design/Exp 2/Implementation Guide 3.1-3.4 Structure.md` → Slice 1.
 
 ## Retrieve for one question (Exp1)
 

@@ -448,8 +448,10 @@ The whole build. Reads each filing's parse and chunks, attributes paths,
 compares the needed heading texts with the headings collection, reports.
 Without `execute_paid`, stops after the report if any heading is missing.
 Otherwise embeds the missing ones, then rebuilds the structure collection
-from scratch (local, no Voyage call). Returns `{"filings", "chunks",
-"chunks_with_path", "unique_headings", "stored_headings", "to_embed",
+from scratch (local, no Voyage call). So the no-flag command is free but
+not read-only: once every heading is stored, it rewrites the structure
+collection in Chroma, which is how a divisor change is applied. Returns
+`{"filings", "chunks", "chunks_with_path", "unique_headings", "stored_headings", "to_embed",
 "estimated_tokens"}`, plus `"embedded"`, `"tokens_billed"` and
 `"structure_rows"` when it built.
 
@@ -737,12 +739,12 @@ plain average (test 8).
 6. `test_a_chunk_before_any_heading_has_no_path`.
 7. `test_structure_vector_has_length_one_and_favours_the_closest_heading` —
    two headings, one parallel to the chunk: weight > 0.99 at divisor 0.05.
-8. `test_a_large_divisor_approaches_the_plain_average` — divisor 100 → within
+8. `test_a_large_divisor_approaches_the_plain_average` — divisor 1,000 → within
    1e-3 of the normalised mean.
 9. `test_dry_run_reports_and_sends_nothing` — fake embedder never called;
    report counts right.
-10. `test_paid_build_embeds_only_missing_headings` — second build with the
-    same data calls the embedder with nothing.
+10. `test_paid_build_embeds_only_missing_headings` — the fake embedder is
+    not called on the second build.
 11. `test_build_marks_the_collection_complete_with_its_settings`.
 12. `test_open_structure_store_refuses_other_settings_or_an_incomplete_build`.
 13. `test_a_heading_without_a_level_is_refused`.
@@ -754,14 +756,37 @@ Plus `test_sec_rag_config.py`: `[structure]` present and valid; bad
 **Then, on the real corpus:**
 
 ```bash
-uv run sec-rag index-structure --config configs/sec_rag.toml                 # free: expect 64 filings, 9,640 unique headings to embed, ~101k tokens
+uv run sec-rag index-structure --config configs/sec_rag.toml                 # free: headings missing, so report only, writes nothing
 set -a && source .env && set +a
 uv run sec-rag index-structure --config configs/sec_rag.toml --execute-paid  # paid, inside the free allowance
-uv run sec-rag index-structure --config configs/sec_rag.toml                 # free: expect 0 to embed
+uv run sec-rag index-structure --config configs/sec_rag.toml                 # free, but writes: rebuilds the structure collection in Chroma, embeds nothing
 ```
 
-Spot check: print `3M_2018_10K:p59:c1`'s stored `heading_path` and confirm
-it matches the record in Gate 2.
+What to look for:
+
+- **Free run (done 29 Sep):** `Filings: 64`, `Chunks: 21039 (21032 with a
+  heading path)`, `Unique headings: 9493`, `To embed: 9493`, `Estimated
+  tokens: 99,372`, `Nothing sent`. 9,493, not the 9,640 unique texts in the
+  corpus: 147 appear only deeper than 6, so no path uses them. The 7 chunks
+  without a path sit before their filing's first heading.
+- **Paid run (done 29 Sep):** 75 `batch n/75` lines, then `Embedded now:
+  9493`, `Structure vectors saved: 21032`. Tokens billed ~92k, under the
+  99,372 estimate: the estimate counts with cl100k, Voyage with its own
+  tokeniser.
+  If it stops part-way, rerun the same command: finished batches are kept.
+- **Second free run:** `Already embedded: 9493`, `To embed: 0`, `Embedded
+  now: 0`, `Structure vectors saved: 21032`.
+- **Spot check:** `3M_2018_10K:p59:c1`'s stored `heading_path` is the three
+  statement headings in Gate 2's record 1 (the free attribution already
+  gives exactly that list):
+
+```bash
+uv run python -c "
+from sec_rag.config import load_config
+from sec_rag.indexing.structure import open_structure_store
+row = open_structure_store(load_config('configs/sec_rag.toml')).get(ids=['3M_2018_10K:p59:c1'])
+print(row['metadatas'][0]['heading_path'])"
+```
 
 **Commit:** `Build heading paths and structure vectors`.
 
@@ -801,7 +826,7 @@ def exact_ranking(indexes, query_vector, doc_name, structure_weight):
             if chunk_id in structure_by_id:                 # no heading -> content alone
                 scores[i] += structure_weight * (structure_by_id[chunk_id] @ q)
     ranked = sorted(zip(chunk_rows["ids"], scores), key=lambda p: (-p[1], p[0]))
-    return ranked[: config.retrieval.candidates_per_search]
+    return ranked[: indexes.config["retrieval"]["candidates_per_search"]]
 ```
 
 In `search`, the semantic branch becomes: `vector, tokens =
@@ -853,8 +878,9 @@ def check_structure(benchmark_config_path, baseline_run_dir, execute_paid=False)
     rows = latest successful rows of baseline_run_dir/predictions.jsonl
     if not execute_paid:
         return {"rows": len(rows), "estimated_query_tokens": ...}
+    # The Exp2 config has weight 1, so this also opens the structure
+    # collection: the check refuses to run before index-structure is built.
     indexes = open_search_indexes(sec_rag_config, voyage_client())
-    indexes.structure = open_structure_store(sec_rag_config)
     for row in rows:
         plan = row["search_plan"]
         doc_name = row["filter_doc_name"]           # A's filter, as it searched
