@@ -191,7 +191,12 @@ plan reuse, the Exp2 config pair, `sec-rag check-structure`, rung B's run,
 judging and report, and the results in `Exp 2.md`.
 
 Deferred: the heading fix (3.0), the virtual node (rung C), the divisor
-comparison, a scalable index for the no-filing fallback.
+comparison, a scalable index for the no-filing fallback. Two safeguards are
+also deferred and covered by manual checks instead. The first would let the
+free `index-structure` skip its rebuild when the collection is already up
+to date (see the warning in Slice 1). The second would record a fingerprint
+of the chunk IDs in the structure collection and refuse a stale build (see
+the pre-run check in Slice 4).
 
 ### Traceability
 
@@ -762,6 +767,13 @@ uv run sec-rag index-structure --config configs/sec_rag.toml --execute-paid  # p
 uv run sec-rag index-structure --config configs/sec_rag.toml                 # free, but writes: rebuilds the structure collection in Chroma, embeds nothing
 ```
 
+**Never run `index-structure` while an Exp2 run is in progress.** Once every
+heading is stored, the command without `--execute-paid` is not a status
+check: it deletes the structure collection and builds it again. A running
+Exp2 job still holds the deleted collection, so every remaining job would
+fail. They would fail with an error, not score silently without structure.
+Rebuild only between runs, for example after changing `[structure]`.
+
 What to look for:
 
 - **Free run (done 29 Sep):** `Filings: 64`, `Chunks: 21039 (21032 with a
@@ -987,6 +999,27 @@ entry point on a copy of `financebench-exp2.toml`, with the loaded sec_rag
 config and Voyage client swapped for the tiny corpus and a fake.
 
 ### Slice 4: rung B's run, report and results (no code)
+
+Before the run, check that the structure vectors belong to today's chunks.
+Nothing links the two collections: if the chunks were re-chunked or
+re-embedded after the structure build, a chunk whose ID changed would find
+no structure row and be scored on its text alone, silently. This free check
+reads both collections and writes nothing:
+
+```bash
+uv run python -c "
+import chromadb
+c = chromadb.PersistentClient(path='data/financebench/indexes/chroma')
+chunks = set(c.get_collection('chunks_voyage-4-lite_1024').get(include=[])['ids'])
+structure = set(c.get_collection('structure_voyage-4-lite_1024').get(include=[])['ids'])
+print('chunks:', len(chunks), '| structure:', len(structure))
+print('structure rows with no chunk:', len(structure - chunks), '| chunks with no structure:', len(chunks - structure))
+"
+```
+
+Pass (checked 29 Sep): `chunks: 21039 | structure: 21032`, `structure rows
+with no chunk: 0 | chunks with no structure: 7`. The 7 are the chunks that
+sit before their filing's first heading (Slice 1).
 
 ```bash
 set -a && source .env && set +a

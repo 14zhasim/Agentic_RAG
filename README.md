@@ -257,7 +257,9 @@ As with `embed`, only headings not yet stored are sent, and an interrupted
 run continues when rerun. Once every heading is stored, the command without
 `--execute-paid` is still free but not read-only: it rebuilds the structure
 vectors locally, which is how a change to `[structure]` in
-`configs/sec_rag.toml` is applied. What each output line should read is in
+`configs/sec_rag.toml` is applied. It deletes and rebuilds the collection,
+so never run it while an Exp2 run is in progress: every remaining job would
+fail. What each output line should read is in
 `docs sys design/Exp 2/Implementation Guide 3.1-3.4 Structure.md` → Slice 1.
 
 ## Retrieve for one question (Exp1)
