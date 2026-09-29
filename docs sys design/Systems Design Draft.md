@@ -251,10 +251,10 @@ Try record benchmark results for each change. LlamaIndex to orchestrate pipeline
 Tech stack
 
 - LlamaIndex — orchestration + components: chunking and markdown parsing (heading paths), BM25 retrieval (wraps `bm25s`) with metadata filters, semantic retrieval with metadata filters, and the Exp3 agent loop (`max_iterations` + `early_stopping_method="generate"`, so a capped run still answers instead of erroring)
-- we write ourselves: RRF fusion (~10 lines — `QueryFusionRetriever` sends one query string to every retriever, and Exp1 sends BM25 and Chroma different ones; see Retrieve → rrf), the Voyage rerank call (direct `voyageai` client, as for embeddings), Exp2's scorer (~20-line `BaseRetriever` subclass — a weighted sum of two similarity scores per chunk, which RRF can't express because it fuses ranked lists), the Exp3 tool functions, trace logging, and the glue into the benchmark harness
+- we write ourselves: RRF fusion (~10 lines — `QueryFusionRetriever` sends one query string to every retriever, and Exp1 sends BM25 and Chroma different ones; see Retrieve → rrf), the Voyage rerank call (direct `voyageai` client, as for embeddings), Exp2's scorer (a plain function beside Exp1's dense search, not a `BaseRetriever` subclass, since `search.py` calls Chroma directly — a sum of two similarity scores per chunk, which RRF can't express because it fuses ranked lists; see Semantic search → Experiment 2), the Exp3 tool functions, trace logging, and the glue into the benchmark harness
   - trace logging is ours, NOT LlamaIndex's event system: each tool appends what it did + what it returned to a per-question list (~3 lines per tool, and it doesn't break when the framework changes its events)
   - remaining glue for Exp3: turn the framework's "cap reached" signal into our fourth outcome
-- Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll save/load. For Exp2, pull the embeddings out and score in numpy
+- Chroma — vector store + chunk metadata + `where` filtering before search, so we don't hand-roll save/load. For Exp2, pull the filtered filing's chunk and structure vectors out and score them in numpy (Semantic search → Experiment 2)
   - the collection is created with `space: "cosine"` (Chroma's default is squared L2), so Chroma ranks by cosine and returns cosine DISTANCE = 1 − cosine
   - LlamaIndex's `ChromaVectorStore.query` then reports `exp(-distance)` as the "similarity" (`chroma/base.py` line 472), not the cosine: same order, different numbers. Checked on our index, 27 Sep 2026: for 3M 2018, numpy cosines match `1 + ln(score)` to four decimals (e.g. printed 0.7634 = cosine 0.7301)
 - `bm25s` (via LlamaIndex) — keyword index. `BM25Retriever.from_defaults(filters=MetadataFilters(...))` filters before searching; this was a recent addition, so PIN A CURRENT VERSION and test it on our data. Fallback: build the retriever from an already-filtered node list (2 lines)
@@ -310,7 +310,10 @@ Ingest files
       - **The filing's company name, year and filing type**, split from the PDF's filename (`COMPANY_YEAR_TYPE`), not from parsing. Read from the right, because one company name itself contains an underscore: `JOHNSON_JOHNSON_2022_10K` → `JOHNSON_JOHNSON` / `2022` / `10K`. The filename is also what the model picks from when choosing which filing to search, so the chunk metadata and the model's choice use the same name. Checked against FinanceBench's own metadata: the years match for all 64 filings and the company names match apart from punctuation (`COCACOLA` vs "Coca-Cola")
       - **The FinanceBench page number.** FinanceBench's `evidence_page_num` counts from 0; Azure's `pageNumber` counts from 1, so `evidence_page_num = pageNumber - 1`. Never use the page number printed in the footer. Add a test: every page metric depends on this
 
-  -**Deferred** Fix the heading list (built at Build Order Stage 3.0, after Exp1 has results — Exp1 cuts chunks at the raw heading offsets and doesn't need the corrected levels)
+  - **Deferred** Fix the heading list (was Build Order Stage 3.0, after Exp1 has results — Exp1 cuts chunks at the raw heading offsets and doesn't need the corrected levels)
+    - DECIDED (29 Sep 2026): not built. Exp2 uses Azure's raw heading levels, the cut list's item 2 (Build Order → Timeline reality check), to fit the last build day. The pass below is kept as the design for when it returns
+      - what raw levels cost, to state in the write-up: ancestors can be wrong (3M's income statement, balance sheet and cash-flow statement sit at levels 1, 2 and 3, so they stack as if nested, with no `Item 8` or `PART II` above them), the SEC cover heading is the root of most of Parts I-II, and raw depths reach 10, so the depth-6 cap (chunking rule 6) drops the deepest, most specific headings: 543 of the corpus's 20,789 headings (2.6%)
+      - what survives: a chunk's nearest heading is always on its path, since the most recent heading before a chunk is by definition still open, so wrong levels corrupt ancestors, not the local heading
     - Why: on 3M 2018 Azure found all 21 Items, but put them across four different heading levels. As a result 106 of 160 pages have no Item heading above them, including 75 of the 76 financial-statement pages, so their heading paths would be wrong
     - an LLM pass takes the heading rows (offset, text, level, page) plus the file's metadata and returns the same rows corrected, keyed by offset
       - repairs split-word typos — Busines s., ESTIMA TES, Equit y (16 of 295 headings)
@@ -357,12 +360,22 @@ Ingest files
     - its page_num — exactly one page, never a set, because of the hard page boundary
     - doc_name and the file metadata (company, year, filing type), split from the filename by `load_pages`
     - its raw start/end offsets in Azure's `content`, so heading_path can be attributed at Stage 3 without re-chunking
-    - its heading_path — present on every chunk, empty until Stage 3
-  - **6. The heading path (filled in at Build Order Stage 3, for Exp2).** Like FinSTAR, keep the document structure as metadata on each chunk; Azure's sections give the hierarchy, corrected by the heading-fix pass above
+    - its heading_path — saved on the chunk's row in a 'structure collection' table  (Embed chunk → Experiment 2); the original chunk files stay same as in Exp 1
+  - **6. The heading path (filled in at Build Order Stage 3, for Exp2).** Like FinSTAR, keep the document structure alongside each chunk; Azure's sections give the hierarchy, at Azure's raw levels since the heading-fix pass above is deferred
     - attribute headings to chunks by character offset: a heading holds from its own offset until the next heading at the same or higher level starts, and a chunk gets the headings whose range covers it. This replaces the earlier page-range rule (a heading's page range, ties on a page going to the heading covering more of it), which was the fallback for a world without offsets
+      - it is the same stack rule the Stage 0 structure report already applies per page (`build_page_map` in `ingestion/structure_report.py`: close every open heading at the same or a deeper level, then open this one), applied at each chunk's offsets instead of at each page's end. The report's function itself can't be reused: it records a page's path after all of that page's headings, so a chunk at the top of the page would get headings that start below it
     - a chunk covering text under two headings (e.g. a heading cut rejected for being too small) merges the heading paths: shared ancestors once, distinct tails joined — PART I > [Item 2. Properties | Item 3. Legal Proceedings]
       - this works with Exp 2 unchanged, because the structure vector is a softmax-weighted average over a set of headings, not a single path — the weights favour whichever tail matches the chunk's content
-    - depth limit of 5 (Fin-STAR): if a path has more than 5 levels, drop the deepest, so the text is treated as sitting under the deepest surviving heading
+      - DECIDED (29 Sep 2026): so the merged path is stored simply as a set — every heading open anywhere in the chunk's span, each once, in document order (`PART I, Item 2. Properties, Item 3. Legal Proceedings`). The bracketed layout above is only how it reads; the scorer never uses the order
+    - depth limit of 6, one more than Fin-STAR's 5: if a path has more than 6 levels, drop the deepest, so the text is treated as sitting under the deepest surviving heading
+      - why 6 (decided 29 Sep 2026): on raw levels, false top headings such as the SEC cover text take up a level and push the real headings one deeper, so a cap of 5 would cut real fifth-level headings. Azure's levels over the 64 filings (20,789 headings):
+
+        | Level | 0–1 | 2 | 3 | 4 | 5 | 6 | 7 | 8–10 |
+        |---|---|---|---|---|---|---|---|---|
+        | Headings | 2,211 | 4,633 | 4,987 | 4,173 | 2,894 | 1,377 | 367 | 147 |
+
+        A cap of 5 drops 1,891 headings (9%); a cap of 6 drops 514 (2.5%), or 543 counted by chain depth as below
+      - for a merged path, the limit applies to each heading's depth in its own chain (1 = outermost open heading), so `PART I` and both Items above keep depths 1, 2 and 2
     - save the path as a list of headings, top level first. Each heading level is embedded separately and combined at retrieval (see retrieval → Experiment 2 theory), not joined into one string
   - **7. Tools.**
     - LlamaIndex (not LangChain), consistent with the BM25/hybrid/routing choice — for its token counter and sentence detector, both bundled offline in `llama-index-core`. The cutting rules above are our own code: LlamaIndex's `SentenceSplitter` packs sentences up to the size limit and leaves the remainder as a small last piece, breaking the floor
@@ -404,8 +417,15 @@ Ingest files
   - also has first 200m tokens free allowance, then $0.02/1m tokens via their api on voyageai.com
   - cache/store embedding (alongisde each chunk's metadata like year, ticker, report-type, text - so can filter by all or none)
   - Experiment 2:
+  - use Azure raw headings to save time - slight limitation (the cost is stated under Fix the heading list)
   - embed each heading level separately (each unique heading embedded once, reused across chunks)
   - store heading embeddings separately from chunk embeddings, linked by chunk ID via the chunk's heading path, not in metadata.
+  - DECIDED (29 Sep 2026): two new Chroma collections beside the chunk collection, in the same database
+    - **headings**: one row per unique heading text (9,640 over 64 filings, ~101k tokens, free), ID = hash of the text. Keyed by text because headings repeat across chunks, which also makes it the embedding cache
+    - **structure**: one row per chunk, ID = chunk ID, holding its softmax-blended structure vector (i.e. assemble its total multi-level heading, replace with vectors, apply softmax, store heading vector for that chunk), with `doc_name` for the filter and the heading path for inspection
+    - Chroma rather than a numpy `.npz`: one store, the same filter code, and model-named collections so vectors never mix
+  - DECIDED (29 Sep 2026): structure vectors are built once at ingestion, one filing at a time, since they never depend on the query
+    - the divisor and depth limit are therefore build settings: the collection records them, and a run whose config disagrees stops and asks for a rebuild (local numpy, no Voyage call)
   - embedding decisions
     - cost: measured at 10.1M tokens over 21,039 chunks (Build Order 1.3), inside the 200M free allowance even with several re-chunks
     - label inputs: embed chunks with Voyage `input_type="document"`, questions with `input_type="query"`
@@ -437,15 +457,14 @@ Retrieve - Elastic search? can think about tech stack later
     - search: embed user query, cosine similarity query with each document, rank by top-k scores (if too many embeddings, find nearest using database)
     - Experiment 2:
       - Do cosine-similarity with the query, concatenated with itself, and the chunk's embedded concatenated with its section-header's embedding!
-      - normalise both vectors to length 1 before scoring; embed each unique heading once, chunks with no heading - use fallback as chunk score alone. Implementation: maybe subclass Llamaindex's baseretriever
       - both terms must be real cosines: compute cosine(query, chunk) in numpy from the stored vectors (or convert back with cosine = 1 + ln(score)). Never add the score LlamaIndex's Chroma query reports, which is exp(-(1 − cosine)) (Tech stack → Chroma); ranking alone (Exp 1's RRF) is unaffected
       - Theory explanation:
       - Structural injection is computed as follows: given a chunk embedding `H_ci = Embed(c_i) ∈ R^d` and its hierarchical path levels `p_1, ..., p_n` (ancestor headers plus virtual node), each level is independently embedded as `V_j = Embed(p_j)`; relevance scores are computed via dot product `s_j = H_ci · V_j`, then normalised with standard `√d`-scaled softmax, `a_j = exp(s_j/√d) / Σ_k exp(s_k/√d)`, giving `a_j ≥ 0` and `Σ_j a_j = 1`; these weights are used to aggregate the level embeddings into a structural context vector `H_si = Σ_j a_j·V_j`, equivalent to `Attn(Q=H_ci, K=V={V_1,...,V_n})` with `W_Q=W_K=W_V=I` (no learned projections); this is then concatenated — not summed — with the original chunk embedding to form the final index vector `H+_ci = [H_si ; H_ci] ∈ R^{2d}`, preserving the chunk embedding unmodified in its own sub-space; at retrieval time the query embedding `q = Embed(query)` is duplicated to match dimensionality, `q+ = [q ; q] ∈ R^{2d}`, so that the retrieval score decomposes additively as `q+ · H+_ci = (q · H_si) + (q · H_ci)` — a structural-relevance term plus a content-relevance term, computed independently. All embeddings are produced by the same off-the-shelf embedding model with no access to model internals or hidden states required, the vector store collection dimension is set to `2d`, and no training loop, labelled data, or loss function is needed.
       - Exp2 decisions (from review; confirm or strike)
         - Exp2 = Exp1 pipeline with ONE change: the dense score. Parsing, chunks, query enhancement, BM25, RRF, reranker, generation all identical
-        - structure source: Azure Document Intelligence, after the heading-fix pass (answered by the Stage 0 spike). It gives each heading, its nesting level and its start page, which is all the method needs (see chunking → experiment 2 attribution rule)
+        - structure source: Azure Document Intelligence. It gives each heading, its nesting level and its start page, which is all the method needs (see chunking → experiment 2 attribution rule)
         - SLM virtual node DEFERRED (add later)
-        - Fin-STAR constraints: depth ≤ 5 applies now — if the heading path has more than 5 levels, drop the excess (deepest) headings. Discriminativeness only applies to the virtual node, so it comes back when that does
+        - Fin-STAR constraints: the depth limit applies now, at 6 rather than 5 (chunking rule 6 gives why) — if the heading path has more than 6 levels, drop the excess (deepest) headings. Discriminativeness only applies to the virtual node, so it comes back when that does
         - softmax divisor (temperature) is a CONFIG SETTING, starting value 0.05. Try 1 / √d only if time allows
           - why: the √d in the theory text (√1024 = 32) squashes heading-to-chunk similarities (which sit between -1 and 1) towards 0, so every heading level ends up weighted equally and the structure vector becomes a plain average of the heading embeddings
           - how much it matters, measured on synthetic vectors (top 10 of 500 chunks, vs the equal-weights version): divisor 1 returns ~9.8/10 of the same chunks (effectively identical), divisor 0.05 returns ~7.3/10 (a genuinely different system)
@@ -454,6 +473,15 @@ Retrieve - Elastic search? can think about tech stack later
         - framing: training-free approximation of Fin-STAR, not a replication 
         - build order: (A) Exp1 → (B) heading path, no virtual node → (C) path + virtual node (deferred). A vs B alone is a complete Exp2 result
         - report page metrics before reranking too: the reranker only sees chunk text and could wash out a structural gain
+        - DECIDED (29 Sep 2026): how the score is computed and ranked
+          - the query vector `q` is the embedded **semantic query** from query enhancement, as in Exp1's dense search; the original question goes only to the reranker. Both halves of the score use the same `q`
+          - per query: filter to the chosen filing, read that filing's rows from the chunk and structure collections (~330 each, matched by chunk ID), score every one as `q · chunk + q · structure` in numpy, keep the top 50. Chroma stores the vectors but no longer does the search
+          - why not Chroma's nearest 50, then add the structure score: Chroma's search ranks by content alone, so a chunk 70th on content but with the best-matching heading would never be returned, and its structure score never added. Scoring every in-scope chunk can't miss it
+          - why this costs nothing in accuracy: measured 28 Sep 2026 on a copy of our index, over 40 queries, Chroma's search (HNSW, approximate) returns 49.98 of the exact top 50 within one filing and 49.8 of 50 unfiltered, and its `1 − distance` equals numpy's cosine to six decimals (0.858521 vs 0.858522). Voyage's stored vectors are already length 1 (all 21,039 norms 1.000000), so normalising them is a harmless no-op
+        - DECIDED (29 Sep 2026): Exp2 uses Exp1's retrieval path, with `structure_weight` set in config (0 for Exp1, 1 for rung B) and passed to the ONE `search` function to use the new scoring method
+        - DECIDED (29 Sep 2026): rung B reuses Exp1's saved query plans rather than calling query enhancement again, since GLM's output varies between calls and would add noise to the A vs B difference
+        - DECIDED (29 Sep 2026): to check new scoring code works, first run the new code at weight 0, which should give exactly Exp1's ranking: a unit test on fake vectors, then the 224 stored queries against Chroma (expected ~49.98/50 top-50 overlap), and A's pre-rerank metrics come from this scorer
+        - FUTURE WORK: shared-store's no-filing fallback scores all 21k chunks one by one, fine here but too slow at millions. Fix: since the Exp2 score is question-vs-chunk plus question-vs-headings, it equals question-vs-(chunk + headings vector added together), so storing that one combined vector per chunk lets any vector database search the Exp2 score with its normal fast index
   - rrf (say k=60?). issue is are we doing BM25 for chunks too? usually for docs - but need score for individual chunks now, hopefully not too complicated
     - DECIDED (27 Sep 2026): BM25 scores chunks (each chunk is a "document" to `bm25s`), so every chunk gets its own score
     - DECIDED: keyword query → BM25, semantic query → Chroma (query embedded with `input_type="query"`). Each search is filtered at creation and returns its top 50; BM25 results scoring 0 are dropped (padding — chunks sharing no word with the query, Stage 1.5 finding 3)

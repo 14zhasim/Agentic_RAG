@@ -40,7 +40,7 @@ Same models as Experiment 1:
 - **The only architectural change is the dense scorer:**
   - Experiment 1's chunk-embedding-only cosine similarity is replaced by chunk-similarity plus structure-similarity.
   - This can't be expressed as a fused ranked list, so it isn't something RRF can produce.
-    - It's a small (~20-line) custom `BaseRetriever` subclass that computes a weighted sum of two similarity scores per chunk.
+    - It's a small function beside Experiment 1's dense search that adds two similarity scores per chunk, reached through the same retrieval function with its structure weight set to 1 instead of 0.
 
 ## System design
 
@@ -56,13 +56,14 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - Each chunk carries metadata for filtering: filing type, company ticker, financial year, page number.
 - **Extract document structure (NEW).**
   - For every heading in the parsed document, record its text, its nesting level, and its start page.
-    - Azure supplies the heading text and character spans. Its raw levels go through the cached,
-      structurally validated heading-fix pass before attribution. The fix relabels headings only; it
-      never moves a chunk boundary, so the chunks stay identical to Experiment 1's.
+    - Azure supplies the heading text, character spans and levels. Its raw levels are used as they
+      come: the planned heading-fix pass was deferred to fit the build window (see Design
+      decisions). The chunks are identical to Experiment 1's either way, since they were cut at
+      Azure's heading positions, which the fix would never have moved.
 - **Attribute headings to chunks (NEW).**
   - By character offset: each heading holds from its own position until the next heading at the same or higher nesting level starts.
-  - A chunk is given the headings whose range covers it; a chunk covering text under two headings gets both, merged (shared ancestors once, distinct tails joined).
-  - This gives each chunk a heading path — the list of headings from the top level down to the most specific one that applies to it.
+  - A chunk is given the headings whose range covers it; a chunk covering text under two headings gets both, merged (shared ancestors once, distinct tails joined), which is simply the set of every heading open anywhere in the chunk.
+  - This gives each chunk a heading path — the list of headings from the top level down to the most specific one that applies to it, capped at 6 levels.
 
 **Storage**
 - **Chunk embeddings (UNCHANGED).**
@@ -73,12 +74,16 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - Each heading in a chunk's path is embedded on its own — not joined into one string.
   - Each unique heading text is embedded once and reused across every chunk that shares it, rather than re-embedding the same heading per chunk.
 - **Store the heading embeddings (NEW).**
-  - Kept separately from chunk embeddings, keyed by chunk ID — not bundled into the chunk's metadata fields.
+  - Kept separately from chunk embeddings, in their own Chroma collection with one row per unique heading text — not bundled into the chunk's metadata fields. Keyed by the text, so each heading is embedded once, and a rebuild embeds only headings not already stored.
   - Linked to a chunk via its heading path.
+- **Build each chunk's structure vector at ingestion (NEW).**
+  - The structure vector (see Retrieval) depends only on the chunk and its headings, never on the query, so it is computed once when the index is built and stored in a third Chroma collection, one row per chunk, keyed by chunk ID, with the chunk's heading path saved alongside for inspection.
+  - A query then reads only its filtered filing's vectors, rather than loading the whole corpus.
 
 **Retrieval**
 - **Query enhancement (UNCHANGED).**
   - One LLM call returns structured JSON: company, year(s), doc_type, a keyword query, and a semantic query.
+  - Not called again: Experiment 2 reuses the plan Experiment 1's run saved for each question and condition. The model doesn't reproduce its output exactly, so fresh calls would change the chosen filing or queries for some questions and blur the comparison.
 - **Metadata filtering (UNCHANGED).**
   - Filters chunks before search, by filename (`COMPANY_YEAR_TYPE.pdf`).
   - Falls back to unfiltered search if the filter matches no filing.
@@ -93,6 +98,8 @@ Full pipeline, stage by stage. Each bullet is marked **UNCHANGED** (identical to
   - **Structure score (NEW).** Cosine similarity between the query embedding and the chunk's structure vector.
   - **Final dense score (NEW).** Content score + structure score.
     - Chunks with no heading fall back to the content score alone.
+    - The query embedding is the semantic query's, as in Experiment 1.
+  - **Ranking (CHANGED with it).** Every chunk in the filtered filing is scored exactly and the best 50 kept, instead of asking the vector store for its nearest 50 by content alone — those would miss chunks that the structure score lifts from outside the content top 50.
 - **RRF fusion (UNCHANGED).**
   - Combines the BM25 ranked list with the (now structure-aware) dense score ranked list, k=60.
 - **Reranking (UNCHANGED).**
@@ -117,7 +124,8 @@ flowchart TD
     subgraph STORAGE
         A2 --> B1["Embed chunk text — unchanged"] --> B2["Chroma: chunk embeddings + metadata — unchanged"]
         A4 --> B3{{"NEW: embed each unique heading once, per level"}}
-        B3 --> B4{{"NEW: heading embeddings stored separately, keyed by chunk ID (not metadata)"}}
+        B3 --> B4{{"NEW: heading embeddings stored separately, one per heading text (not metadata)"}}
+        B4 --> B5{{"NEW: structure vector per chunk (softmax-weighted average of its heading embeddings, length 1), built at ingestion, keyed by chunk ID"}}
     end
 
     subgraph RETRIEVAL
@@ -126,9 +134,8 @@ flowchart TD
         C1a --> C3["Embed query — unchanged"]
         B2 --> C4["Content score = cosine(query, chunk) — unchanged"]
         C3 --> C4
-        B4 --> C5{{"NEW: softmax-weighted average of heading embeddings → structure vector, normalised to length 1"}}
         C3 --> C6{{"NEW: structure score = cosine(query, structure vector)"}}
-        C5 --> C6
+        B5 --> C6
         C4 --> C7{{"NEW: dense score = content score + structure score"}}
         C6 --> C7
         C2 --> D1["RRF fusion — unchanged"]
@@ -171,17 +178,22 @@ flowchart TD
 - **Structure source: Azure, decided by the Stage 0 spike.**
   - Azure found all 21 Item headings in 3M 2018, nested sections to depth 8 and populated every
     section span. PageIndex was rejected because a second paid parse was unnecessary.
-  - Azure's raw levels are not used unchanged: the same Item series appeared across four levels, so
-    Stage 3.0 corrects heading text and levels once per filing before attributing paths by character
-    offset. Chunk boundaries were already cut at the raw heading positions in Stage 1.3 and are not
-    changed by the fix.
+  - Azure's raw levels are used unchanged — a stated limitation. A heading-fix pass (Stage 3.0) was
+    designed to correct them, since the same Item series appeared across four levels, but was
+    deferred to fit the build window. What it costs: some ancestors are wrong (3M's three financial
+    statements stack as if nested, with no `Item 8` above them), the SEC cover heading is the root of
+    most of Parts I-II, and raw depths reach 10, so the depth limit below drops the deepest headings
+    (2.6% of all headings sit deeper than 6). What survives: a chunk's nearest heading is always
+    on its path, so wrong levels corrupt ancestors, not the local heading. Chunk boundaries are
+    unaffected either way.
 - **HiChunk cut.**
   - HiChunk's chunk-point predictor needs a fine-tuned model run over vLLM, which needs a GPU. Not used here.
 - **SLM virtual node deferred.**
   - Fin-STAR's virtual node (a small model generating an extra synthetic heading from the chunk's own content) is not implemented in this experiment.
   - It's added later if time allows.
-- **Fin-STAR depth limit of 5, applied now.**
-  - If a chunk's heading path has more than 5 levels, the excess is dropped by removing the deepest headings.
+- **Depth limit of 6, applied now — one more than Fin-STAR's 5.**
+  - If a chunk's heading path has more than 6 levels, the excess is dropped by removing the deepest headings.
+  - Why 6: on Azure's raw levels, false top headings such as the SEC cover text take up a level, pushing the real headings one deeper. A cap of 5 would drop 9% of the corpus's headings, including real fifth-level ones; a cap of 6 drops 2.6%.
   - (Fin-STAR's other constraint, discriminativeness, only applies to the virtual node, so it doesn't apply until that's added.)
 - **Softmax divisor (temperature) is a config setting, starting value 0.05.**
   - This departs from the √d used in the theory above, and it's worth explaining why.
@@ -193,8 +205,14 @@ flowchart TD
   - So 0.05 is the starting default because it's the setting that actually makes the weighting do something.
 - **Normalise the structure vector to length 1.**
   - An average of several length-1 vectors is shorter than 1, so this normalisation has to happen explicitly before the structure score is computed.
-- **Heading embeddings are stored separately, keyed by chunk ID — not in metadata.**
-  - They're linked to a chunk via its heading path, not bundled into the chunk's metadata fields.
+- **Heading embeddings are stored separately, one per unique heading text — not in metadata.**
+  - They're linked to a chunk via its heading path, not bundled into the chunk's metadata fields. Keying by text rather than chunk ID stores each shared heading once (9,640 across the 64 filings, instead of ~100k mostly duplicate copies).
+- **Structure vectors are built at ingestion and stored per chunk.**
+  - They don't depend on the query, so building them once means a query reads only its filing's vectors. The softmax divisor and depth limit therefore become build settings; changing either means rebuilding the structure vectors (cheap: no embedding calls, since the headings are stored).
+- **Every in-scope chunk is scored exactly, rather than by the vector store's approximate search.**
+  - The vector store's nearest-neighbour search ranks by content alone, so it can't be asked for the top 50 by the combined score. Scoring the ~330 chunks of the filtered filing directly is cheap and exact.
+  - Checked against the vector store on our index: its approximate search recovers 49.98 of the exact top 50 within a filing, and its similarities match exact cosines to six decimals, so the switch changes essentially nothing on its own. The weight-zero check below measures this on the real queries.
+  - Not scaled for production: a query that falls back to no filing scores every chunk. At much larger corpora, storing chunk + structure as one vector would let an approximate index search the combined score directly (future work).
 - **Chunks with no heading fall back to the chunk score alone.**
   - There's no structure term to add if there's no heading path, so the content score is used unchanged.
 
@@ -206,6 +224,7 @@ flowchart TD
   - The reranker only sees chunk text (not the structure score).
   - So if Experiment 2's structural gain shows up in the pre-rerank ranking but gets washed out by the reranker afterwards, that's an important finding in itself.
   - It would be invisible if only post-rerank metrics were reported.
+- **Query-enhancement cost is not re-incurred.** Because B reuses A's saved query plans, B's run makes no query-enhancement calls; report its cost as A's, carried over, so per-question totals stay comparable.
 
 ## Baseline and ablations
 
@@ -216,6 +235,10 @@ Build ladder:
 - **(C) Path + virtual node** — Fin-STAR's SLM-generated synthetic heading added into the path. Deferred.
 
 A vs. B alone is a complete Experiment 2 result.
+
+- **A** is Experiment 1's full run (224 jobs: 112 questions × single-store and shared-store), not re-run.
+- **B** is labelled experiment `exp2`, variant `heading-path`: the same 224 jobs, judged, reusing A's query plans, so the dense score is the only difference.
+- **Weight-zero check, before trusting B.** Run the new scorer with the structure weight at 0 and compare it with A's ranking over the 224 stored semantic queries: it should agree on about 49.98 of the top 50 (the vector store's approximation, not a bug). The same weight-0 ranking gives A's pre-rerank page metrics computed with B's code, so the pre-rerank A vs. B comparison differs in exactly one number.
 
 Optional extra: a divisor comparison, comparing the softmax divisor of 1 (≈ equal-weight averaging) against 0.05 (the selective default), to show how much the weighting choice itself changes retrieval — not a required part of the main result.
 

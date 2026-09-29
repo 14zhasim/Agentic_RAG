@@ -36,7 +36,7 @@ day**; everything after it is writing.
 | Block | Dates | What must be true at the end |
 |---|---|---|
 | Build Exp1 | Sun 27 Sep | Stages 1.5, 1.6 and 2 done: Exp1 built, run on single-store and shared-store, judged, reported, results in `Exp 1.md` |
-| Build Exp2 | Mon 28 Sep | Stage 3 at its minimum: A vs B runs with pre-rerank page metrics, results in `Exp 2.md`. **Last coding day** |
+| Build Exp2 | Mon 28 Sep, slipped to Tue 29 Sep | Stage 3 at its minimum: A vs B runs with pre-rerank page metrics, results in `Exp 2.md`. **Last coding day.** Exp1's full run finished Mon evening, so Exp2 is built Tue evening, with cut 2 below taken |
 | Write | Tue 29 Sep – Sun 4 Oct | Complete draft covering Exp1 and Exp2; weekdays are job days, so most of it falls Fri 2 – Sun 4 Oct. No new build work |
 | Submit | Mon 5 Oct | Final submission — CONFIRM against the formal extension |
 
@@ -46,7 +46,7 @@ What gives if a day runs out, in this order (each becomes a stated limitation):
    the main Exp1 run is judged and written up
 2. Exp2's heading fix (3.0): use Azure's raw heading levels instead. Costly: on 3M 2018 raw levels
    leave 106 of 160 pages with no Item-level ancestor, so Exp2 runs on weaker structure and the
-   write-up must say so
+   write-up must say so. **TAKEN, 29 Sep 2026** (see 3.0)
 3. Exp2 judged answers: report A vs B on page metrics alone (Stage 3's minimum result)
 4. Exp3: designed, not built — already expected (Stage 4)
 
@@ -211,7 +211,8 @@ These invalidate answers generated at the old settings, so they come before spen
   - OpenAI SDK via OpenRouter — answer generation (already pinned, with provider routing).
     LlamaIndex components don't call the model, so nothing clashes
   - pandas + pytest — reporting and tests (already in place)
-- we write ourselves: Exp2's scorer (~20-line `BaseRetriever` subclass — a weighted sum of two
+- we write ourselves: Exp2's scorer (a plain function in `search.py`, not a `BaseRetriever`
+  subclass, as decided at 3.3 — a sum of two
   similarity scores per chunk, which RRF can't express because it fuses ranked lists), the Exp3 tool
   functions, trace logging, and the glue into the benchmark harness
 - storage constraint that keeps Elasticsearch cheap later: chunks + embeddings are saved as plain
@@ -426,8 +427,8 @@ levels.
       present, so use them
     - a chunk containing text under two headings merges them (see the merge rule above), rather than
       picking one
-  - Fin-STAR constraint: depth ≤ 5 — if the heading path has more than 5 levels, drop the excess
-    (deepest) headings, keeping the outermost five
+  - depth ≤ 6 (one more than Fin-STAR's 5; see Stage 3.1) — if the heading path has more than 6
+    levels, drop the excess (deepest) headings, keeping the outermost six
     - verified safe on 3M 2018: 52 of 160 pages have paths deeper than five, and keeping the first
       five loses the Item-level anchor on ZERO of them
   - save the path as a list of headings, top level first. Each level is embedded separately at Stage
@@ -705,7 +706,13 @@ this is still a dissertation.**
 **Goal:** Exp1 with ONE change — the dense score. Parsing, chunks, query enhancement, BM25, RRF,
 reranker and generation stay identical, so any difference is attributable to structure.
 
-## 3.0 Fix the heading list (moved from 1.3)
+## 3.0 Fix the heading list (moved from 1.3) — DEFERRED, not built
+
+**Decided 29 Sep 2026: not built.** Exp2 runs on Azure's raw heading levels (cut 2 in the Timeline
+reality check). The cost, for the write-up, is in `Systems Design Draft.md` → Fix the heading list:
+wrong ancestors, the SEC cover heading as root of most of Parts I-II, and raw depths up to 10, so
+the depth-6 cap drops 2.6% of headings, the deepest. A chunk's nearest heading is always right. The
+design below is kept for when the pass returns.
 
 Moved here because Exp1 ignores headings: building this before Exp1 has results would put a new
 LLM pass in front of the dissertation's spine. It must run before 3.1, which attributes the fixed
@@ -738,14 +745,20 @@ answers live.
 
 ## 3.1 Heading path per chunk
 
-- save the chunk's heading path (list of headings, top level first) as metadata on the chunk
+- save the chunk's heading path (list of headings, top level first) on the chunk's row in the
+  structure collection (3.2), not in the chunk files, which stay byte-identical to Exp1's
   - each heading level is embedded separately and combined at retrieval, not joined into one string
-- attribute headings to chunks: from each heading's start page, compute its page range (ends where
-  the next heading at the same or higher level starts); a chunk gets the headings whose range
-  covers its page
-  - if two headings start on the same page, attribute the one covering more of that page
-- Fin-STAR constraint: depth ≤ 5 applies now — if the heading path has more than 5 levels, drop the
-  excess (deepest) headings
+- attribute headings to chunks by character offset (Draft → chunking rule 6): a heading holds from
+  its own offset until the next heading at the same or higher level starts; a chunk gets every
+  heading open anywhere in its span
+  - the same stack rule as `build_page_map` in the Stage 0 structure report, applied at chunk
+    offsets instead of page ends
+  - a chunk under two headings gets both, stored as a set in document order (the scorer averages
+    over a set, so the "shared ancestors once, tails joined" layout needs no special handling)
+  - replaces the earlier page-range rule, written before chunks recorded offsets
+- depth ≤ 6 applies now, one more than Fin-STAR's 5 (decided 29 Sep 2026: false top headings on
+  raw levels push real ones one deeper; Draft → chunking rule 6 has the level counts) — if the
+  heading path has more than 6 levels, drop the excess (deepest) headings
   - discriminativeness only applies to the virtual node, so it comes back when that does
 - SLM virtual node DEFERRED — the method, for when it returns
   - Fin-STAR: for chunk `ci` and hierarchical path `hi`, use an SLM `Gθ` to generate a virtual node
@@ -766,6 +779,17 @@ answers live.
 - embed each heading level separately; each unique heading embedded once, reused across chunks
 - store heading embeddings separately from chunk embeddings, linked by chunk ID via the chunk's
   heading path, not in metadata
+- decided 29 Sep 2026 (Draft → Embed chunk → Experiment 2): two new Chroma collections beside the
+  chunk collection
+  - **headings**: one row per unique heading text (9,640, ~101k tokens, free allowance), ID = hash
+    of the text, so it is also the embedding cache: a rebuild embeds only new headings
+  - **structure**: one row per chunk, ID = chunk ID, holding its structure vector (3.3), with
+    `doc_name` and the heading path as metadata
+- one build command, per filing, at ingestion (dry-run by default; paid only for new headings):
+  attribute paths (3.1) → embed missing headings → compute and save each chunk's structure vector
+  - built at ingestion so a run reads only the filtered filing's rows and never loads the whole
+    corpus; the divisor and depth limit become build settings, recorded on the structure
+    collection, and a run whose config disagrees stops and asks for a rebuild (local, no Voyage)
 
 ## 3.3 The scorer
 
@@ -788,8 +812,15 @@ answers live.
     LlamaIndex's Chroma query reports: it is `exp(-distance)` = `exp(-(1 − cosine))`
     (`chroma/base.py` line 472), which ranks the same but can't be added to a cosine. Checked on our
     index, 27 Sep 2026: printed 0.7634 = cosine 0.7301 (cosine = 1 + ln(score))
-  - implementation: subclass LlamaIndex's `BaseRetriever` (~20 lines) — RRF can't express this,
-    because it fuses ranked lists rather than scoring chunks
+  - implementation (decided 29 Sep 2026): a plain function beside Exp1's dense search in
+    `search.py`, not a `BaseRetriever` subclass, since `search.py` calls Chroma directly. RRF can't
+    express this, because it fuses ranked lists rather than scoring chunks
+  - `q` is the embedded semantic query from query enhancement, the same vector Exp1's dense search
+    uses
+  - exact, not Chroma's search: filter to the filing, read its ~330 chunk and structure rows, score
+    every one, keep the top 50. Taking Chroma's content-only top 50 and then adding structure would
+    never see a chunk that structure lifts from outside it. Measured: Chroma returns 49.98 of the
+    exact top 50 within a filing, and its cosines match numpy's to six decimals
 - softmax divisor (temperature `T`) is a CONFIG SETTING, starting value 0.05; try the theory's
   √d-scaling only if time allows
   - the √d in the theory text (√1024 = 32) squashes heading-to-chunk similarities (between -1 and 1)
@@ -803,8 +834,19 @@ answers live.
 ## 3.4 Verify, then run
 
 - **check the weight-zero case reproduces Exp1 exactly** before trusting any gain
+  - decided 29 Sep 2026: run the scorer itself at weight 0 (routing weight 0 back to Chroma would
+    make the check trivially true). A unit test on fake vectors, then real data against Chroma over
+    the 224 stored semantic queries (query embeddings only, free allowance): report top-50 overlap
+    (expected ~49.98/50, Chroma's approximation) and A's pre-rerank page metrics computed this way,
+    so pre-rerank A vs B is identical code with one number changed
 - report page metrics before reranking too: the reranker only sees chunk text and could wash out a
   structural gain
+- the plug (decided 29 Sep 2026): Exp1's retrieval path unchanged, with the structure weight a
+  config setting (0 = Exp1, 1 = rung B) passed to the ONE `search` function
+- rung B reuses the query plans saved by Exp1's full run (filing, keyword query, semantic query),
+  so the dense score is the only difference: fresh GLM calls would vary for some questions
+- runs: A = Exp1's full run (`results/20260928-202531--exp1--full`), not re-run. B = experiment
+  `exp2`, variant `heading-path`, single-store and shared-store, 224 jobs, judged (~$0.40)
 - build order: (A) Exp1 → (B) heading path, no virtual node → (C) path + virtual node (deferred)
 - framing: training-free approximation of Fin-STAR, not a replication
 
