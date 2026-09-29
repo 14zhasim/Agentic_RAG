@@ -10,6 +10,7 @@ from .dataset.financebench import DataError, prepare, validate
 from .evaluation.judge import judge_run
 from .evaluation.judge_validation import validate_judge
 from .evaluation.manual_review import export_manual_review, import_manual_review
+from .evaluation.structure_check import check_structure
 from .execution.preflight import dry_run
 from .execution.runner import run_benchmark
 from .reporting.report import write_report
@@ -47,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     export_review_parser.add_argument("--overwrite", action="store_true")
     import_review_parser = commands.add_parser("import-manual-review")
     import_review_parser.add_argument("--run-dir", type=Path, required=True)
+    check_parser = commands.add_parser("check-structure")
+    check_parser.add_argument("--config", type=Path, required=True)
+    check_parser.add_argument("--baseline-run-dir", type=Path, required=True)
+    check_parser.add_argument("--execute-paid", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -134,6 +139,36 @@ def main(argv: list[str] | None = None) -> int:
             case "import-manual-review":
                 result = import_manual_review(args.run_dir)
                 print(f"Imported manual review: {result}")
+
+            case "check-structure":
+                # Exp2's weight-zero check (Build Order 3.4). Without
+                # --execute-paid it only counts; nothing is sent.
+                result = check_structure(
+                    args.config, args.baseline_run_dir, execute_paid=args.execute_paid
+                )
+                if "passed" not in result:
+                    print(f"Rows: {result['rows']}")
+                    print(
+                        f"Estimated query tokens: {result['estimated_query_tokens']:,}"
+                    )
+                    print("Nothing sent: rerun with --execute-paid to run the check")
+                    return 0
+                print(f"Wrote {result['out_dir']}")
+                print(
+                    f"Top-50 overlap: mean {result['mean_top50_overlap']:.2f}, "
+                    f"min {result['min_top50_overlap']}"
+                )
+                for condition, metrics in result["pre_rerank"].items():
+                    print(
+                        f"{condition}: pre-rerank recall {metrics['page_recall']:.3f} "
+                        f"(A reported {metrics['reported_page_recall']:.3f}), "
+                        f"precision {metrics['page_precision']:.3f}, "
+                        f"MRR {metrics['page_mrr']:.3f}"
+                    )
+                print(f"Embedding tokens: {result['embedding_tokens']:,}")
+                print(f"Passed: {result['passed']}")
+                if not result["passed"]:
+                    return 1
 
         return 0
     except (OSError, ValueError, RuntimeError, DataError) as error:
