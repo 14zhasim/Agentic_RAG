@@ -8,6 +8,11 @@ Every ranking here has the same shape: a list of (chunk_id, score) pairs,
 best first, higher score = better match. Only chunk IDs leave this module;
 turning an ID into its text, filing and page is `exp1`'s job, because BM25's
 stored text has its HTML stripped (Stage 1.5 finding 6).
+
+Exp2 changes one step: with a non-zero `structure_weight`, the semantic
+ranking comes from `exact_ranking` (content + weight x structure, every
+chunk in scope scored) instead of Chroma's nearest neighbours. BM25 and RRF
+are untouched (Build Order 3.3).
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import bm25s
+import numpy as np
 import Stemmer
 from llama_index.core.vector_stores import (
     FilterOperator,
@@ -28,18 +34,22 @@ from llama_index.retrievers.bm25 import BM25Retriever
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from ..indexing.embed import open_chunk_store
+from ..indexing.structure import open_structure_store
 
 METHODS = ("bm25", "semantic", "hybrid")
 
 
 @dataclass
 class SearchIndexes:
-    """The two searchable indexes, loaded once, plus what searching them needs."""
+    """The searchable indexes, loaded once, plus what searching them needs."""
 
     bm25: bm25s.BM25  # the Stage 1.5 keyword index
     store: ChromaVectorStore  # the Stage 1.6 vector store
     voyage: Any  # voyageai.Client to embed the semantic query; None = BM25 only
     config: dict[str, Any]  # the loaded configs/sec_rag.toml
+    # Exp2's structure collection (indexing/structure.py); None when the
+    # config's structure weight is 0, as in Exp1, which never reads it.
+    structure: Any = None
 
 
 def search(
@@ -61,27 +71,33 @@ def search(
 
     Two queries rather than one, because hybrid sends different text to each
     search (Draft -> Retrieve: keyword query -> BM25, semantic -> Chroma).
-    `structure_weight` is Exp2's hook (Build Order 2.2, "Exp2 hook"): at 0
-    this is exactly Exp1; Stage 3.3 gives it meaning.
+
+    `structure_weight` is Exp2's one change (Build Order 3.3). At 0 the
+    semantic ranking is Chroma's nearest chunks, exactly Exp1. Above 0 it is
+    `exact_ranking`: every chunk in scope scored as question·chunk +
+    weight × question·structure. BM25 and RRF are the same either way.
     """
-    if structure_weight != 0.0:
-        raise NotImplementedError("structure_weight is Exp2 (Build Order 3.3)")
     if method not in METHODS:
         raise ValueError(f"unknown method {method!r}: expected one of {METHODS}")
+    if structure_weight < 0:
+        raise ValueError(f"structure_weight must be at least 0, got {structure_weight}")
 
     embedding_tokens = 0
     rankings: list[list[tuple[str, float]]] = []  # one list per search that ran
 
     # BM25 runs for "bm25" and "hybrid".
     if method in ("bm25", "hybrid"):
-        rankings.append(_bm25_ranking(indexes, keyword_query, doc_name))
+        rankings.append(bm25_ranking(indexes, keyword_query, doc_name))
 
-    # Chroma runs for "semantic" and "hybrid".
+    # The semantic search runs for "semantic" and "hybrid".
     if method in ("semantic", "hybrid"):
-        vector_ranking, embedding_tokens = _vector_ranking(
-            indexes, semantic_query, doc_name
-        )
-        rankings.append(vector_ranking)
+        query_vector, embedding_tokens = embed_query(indexes, semantic_query)
+        if structure_weight == 0.0:
+            rankings.append(chroma_ranking(indexes, query_vector, doc_name))
+        else:
+            rankings.append(
+                exact_ranking(indexes, query_vector, doc_name, structure_weight)
+            )
 
     # Only "hybrid" has two lists to merge; otherwise return the one list.
     if method == "hybrid":
@@ -94,7 +110,7 @@ def search(
     return {"ranked": ranked[:top_k], "embedding_tokens": embedding_tokens}
 
 
-def _bm25_ranking(
+def bm25_ranking(
     indexes: SearchIndexes, query: str, doc_name: str | None
 ) -> list[tuple[str, float]]:
     """BM25's best chunks for the keyword query, inside the filter.
@@ -132,49 +148,124 @@ def _bm25_ranking(
     return ranking
 
 
-def _vector_ranking(
-    indexes: SearchIndexes, query: str, doc_name: str | None
-) -> tuple[list[tuple[str, float]], int]:
-    """Chroma's nearest chunks to the semantic query, inside the filter.
+def embed_query(indexes: SearchIndexes, text: str) -> tuple[list[float], int]:
+    """Turn the semantic query into a vector: one paid Voyage call.
 
-    Returns the ranking - [(chunk_id, similarity), ...], best first - and
-    the tokens Voyage billed for embedding the query (the question's
-    embedding cost, recorded per Build Order 2.5).
-
-    Sorted because Chroma returns nearest first and ChromaVectorStore.query
-    keeps that order (chroma/base.py lines 445-480); test_search.py pins it.
-    The similarity is exp(-distance), not the cosine (chroma/base.py line
-    472) - fine here, since only the order is used (Draft -> Tech stack ->
-    Chroma). Exp2 must compute real cosines.
+    Returns the vector and the tokens Voyage billed (the question's
+    embedding cost, recorded per Build Order 2.5). Split out of the Chroma
+    search so the weight-zero check can send one vector to both rankings.
     """
     if indexes.voyage is None:
         raise ValueError("semantic search needs a Voyage client to embed the query")
     settings = indexes.config["embedding"]
-    # Step 1 - turn the semantic query into a vector (one paid Voyage call).
     # input_type="query" pairs with the chunks' "document" embeddings
     # (docs/libraries/voyage/embeddings.md lines 60-82); model and length
     # must match what the chunks were stored with.
     embedded = indexes.voyage.embed(
-        [query],
+        [text],
         model=settings["model"],
         input_type="query",
         truncation=False,
         output_dimension=settings["output_dimension"],
         output_dtype=settings["output_dtype"],
     )
-    # Step 2 - ask Chroma for the nearest chunk vectors, inside the filter.
+    vector: list[float] = embedded.embeddings[0]
+    return vector, embedded.total_tokens
+
+
+def chroma_ranking(
+    indexes: SearchIndexes, query_vector: list[float], doc_name: str | None
+) -> list[tuple[str, float]]:
+    """Chroma's nearest chunks to the query vector, inside the filter: Exp1's semantic search.
+
+    Returns [(chunk_id, similarity), ...], best first, at most
+    candidates_per_search. Sorted because Chroma returns nearest first and
+    ChromaVectorStore.query keeps that order (chroma/base.py lines
+    445-480); test_search.py pins it. The similarity is exp(-distance), not
+    the cosine (chroma/base.py line 472) - fine here, since only the order
+    is used (Draft -> Tech stack -> Chroma). exact_ranking computes real
+    cosines.
+    """
     # Chroma applies the where-filter before finding neighbours.
     found = indexes.store.query(
         VectorStoreQuery(
-            query_embedding=embedded.embeddings[0],
+            query_embedding=query_vector,
             similarity_top_k=indexes.config["retrieval"]["candidates_per_search"],
             filters=_doc_filter(doc_name),
         )
     )
     ids = found.ids or []
     similarities = found.similarities or []
-    ranking = list(zip(ids, similarities, strict=True))
-    return ranking, embedded.total_tokens
+    return list(zip(ids, similarities, strict=True))
+
+
+def exact_ranking(
+    indexes: SearchIndexes,
+    query_vector: list[float],
+    doc_name: str | None,
+    structure_weight: float,
+) -> list[tuple[str, float]]:
+    """Score every chunk in scope as q·chunk + weight × q·structure; return the best (Build Order 3.3).
+
+    Exact rather than Chroma's nearest 50: a chunk that structure lifts
+    from outside the content-only top 50 would otherwise never be scored.
+    Within one filing that is ~330 rows; with no filter (shared-store,
+    invalid reply) all 21,039, still a single matrix product.
+
+    Every vector is scaled to length 1 first, so each dot product is a real
+    cosine - unlike Chroma's exp(-distance), which ranks the same but can't
+    be added to another score. A chunk with no structure row (7 in the
+    corpus, before their filing's first heading) keeps its content score.
+    At weight 0 this ranks exactly as Chroma would, bar Chroma's
+    approximation: the weight-zero check (Slice 3) measures that.
+
+    Returns [(chunk_id, score), ...], best first, ties broken by chunk ID,
+    at most candidates_per_search.
+    """
+    where = {"doc_name": doc_name} if doc_name is not None else None
+    query = np.asarray(query_vector, dtype=np.float64)
+    query = query / np.linalg.norm(query)
+
+    # get(where=..., include=["embeddings"]) returns every matching row's
+    # vector as one numpy array, rows in the order of "ids" (checked on
+    # chromadb 1.5.9; .claude/skills/chroma-local/querying/python.md).
+    # store.client is the raw collection (chroma/base.py lines 366-369).
+    chunk_rows = indexes.store.client.get(where=where, include=["embeddings"])
+    chunk_ids: list[str] = chunk_rows["ids"]
+    if not chunk_ids:
+        return []
+    chunk_vectors = _unit_rows(chunk_rows["embeddings"])
+    scores = chunk_vectors @ query  # content: question · chunk
+
+    if structure_weight != 0.0:
+        if indexes.structure is None:
+            raise ValueError(
+                "structure_weight is not 0 but the structure collection is not "
+                "open: set [structure] weight in the config"
+            )
+        structure_rows = indexes.structure.get(where=where, include=["embeddings"])
+        if structure_rows["ids"]:
+            structure_scores = _unit_rows(structure_rows["embeddings"]) @ query
+            structure_by_id = dict(
+                zip(structure_rows["ids"], structure_scores, strict=True)
+            )
+            for position, chunk_id in enumerate(chunk_ids):
+                # No structure row -> no heading above it -> content alone.
+                if chunk_id in structure_by_id:
+                    scores[position] += structure_weight * structure_by_id[chunk_id]
+
+    ranked = sorted(
+        zip(chunk_ids, (float(score) for score in scores), strict=True),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+    return ranked[: indexes.config["retrieval"]["candidates_per_search"]]
+
+
+def _unit_rows(vectors: Any) -> np.ndarray:
+    """Scale each row to length 1, so a dot product with a unit query is a cosine."""
+    matrix = np.asarray(vectors, dtype=np.float64)
+    result: np.ndarray = matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
+    return result
 
 
 def _doc_filter(doc_name: str | None) -> MetadataFilters | None:
@@ -224,6 +315,10 @@ def open_search_indexes(config: dict[str, Any], voyage: Any) -> SearchIndexes:
     check), where no key is needed. BM25 is loaded with bm25s directly, as
     load_bm25_index does, because each search builds its own filtered
     BM25Retriever from the raw index (finding 5).
+
+    With a non-zero [structure] weight, the structure collection is opened
+    too; open_structure_store refuses a missing, unfinished or stale build,
+    so a rung B run fails here, before any question is spent.
     """
     bm25_dir = Path(config["corpus"]["indexes_dir"]) / "bm25"
     if not bm25_dir.is_dir():
@@ -231,6 +326,13 @@ def open_search_indexes(config: dict[str, Any], voyage: Any) -> SearchIndexes:
     # bm25s README, "save/load": load_corpus=True brings back the node
     # records (with doc_name metadata), which the filter and results need.
     bm25 = bm25s.BM25.load(str(bm25_dir), load_corpus=True)
+    structure = None
+    if config["structure"]["weight"] != 0:
+        structure = open_structure_store(config)
     return SearchIndexes(
-        bm25=bm25, store=open_chunk_store(config), voyage=voyage, config=config
+        bm25=bm25,
+        store=open_chunk_store(config),
+        voyage=voyage,
+        config=config,
+        structure=structure,
     )

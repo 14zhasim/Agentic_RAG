@@ -18,6 +18,7 @@ from sec_rag.retrieval.exp1 import (
     Exp1Resources,
     _choose_filter,
     load_chunk_lookup,
+    load_saved_plans,
     retrieve_exp1,
 )
 from sec_rag.retrieval.search import open_search_indexes
@@ -226,6 +227,108 @@ def test_an_invalid_reply_still_retrieves_over_the_whole_scope(
     assert bundle["filter_doc_name"] is None
     assert bundle["filter_status"] == "fallback"
     assert bundle["chunks"]
+
+
+# --- reusing rung A's saved plans (Exp2 rung B) --------------------------------
+
+
+class FailingOpenRouter:
+    """Fails if GLM is called: rung B must reuse the saved plan instead."""
+
+    def __init__(self) -> None:
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs) -> SimpleNamespace:
+        raise AssertionError("GLM was called although a saved plan exists")
+
+
+def _saved_plan(filename: str | None) -> dict:
+    return {
+        **_reply(filename),
+        "enhancement_status": "ok",
+        "call": {"cost": 0.0004, "reply_text": "{...}"},
+        "reused_from": "run-a",
+    }
+
+
+def test_saved_plan_is_used_and_glm_is_not_called(make_resources) -> None:
+    resources, _voyage = make_resources(None)
+    resources.openrouter = FailingOpenRouter()
+    resources.saved_plans = {(QUESTION, "shared_store"): _saved_plan("AAA_2020_10K")}
+
+    bundle = retrieve_exp1(QUESTION, BOTH, 3, resources)
+
+    assert bundle["search_plan"] == _saved_plan("AAA_2020_10K")
+    assert bundle["filter_doc_name"] == "AAA_2020_10K"
+
+
+def test_the_scope_picks_the_condition_of_the_saved_plan(make_resources) -> None:
+    """A one-filing scope is single-store; its plan, not shared-store's, is used."""
+    resources, _voyage = make_resources(None)
+    resources.openrouter = FailingOpenRouter()
+    resources.saved_plans = {
+        (QUESTION, "single_store"): _saved_plan("BBB_2020_10K"),
+        (QUESTION, "shared_store"): _saved_plan("AAA_2020_10K"),
+    }
+
+    bundle = retrieve_exp1(QUESTION, ("BBB_2020_10K",), 3, resources)
+
+    assert bundle["filter_doc_name"] == "BBB_2020_10K"
+
+
+def test_a_question_missing_from_the_saved_plans_is_refused(make_resources) -> None:
+    resources, _voyage = make_resources(None)
+    resources.saved_plans = {}
+
+    with pytest.raises(ValueError, match="no saved plan"):
+        retrieve_exp1(QUESTION, BOTH, 3, resources)
+
+
+def test_the_configs_structure_weight_reaches_search(make_resources) -> None:
+    """Weight 1 without a structure collection fails inside exact_ranking: it was passed."""
+    resources, _voyage = make_resources(_reply("AAA_2020_10K"))
+    resources.config["structure"]["weight"] = 1.0
+
+    with pytest.raises(ValueError, match="structure collection"):
+        retrieve_exp1(QUESTION, BOTH, 3, resources)
+
+
+def test_load_saved_plans_keys_by_question_and_condition(tmp_path) -> None:
+    """The latest successful row per job wins; each plan records where it came from."""
+    run_dir = tmp_path / "run-a"
+    run_dir.mkdir()
+    rows = [
+        {"job_id": "k:q1:single_store", "status": "error"},
+        {
+            "job_id": "k:q1:single_store",
+            "status": "success",
+            "question": "Q1",
+            "eval_mode": "single_store",
+            "search_plan": {"filename": "AAA_2020_10K"},
+        },
+        {
+            "job_id": "k:q1:shared_store",
+            "status": "success",
+            "question": "Q1",
+            "eval_mode": "shared_store",
+            "search_plan": {"filename": None},
+        },
+    ]
+    (run_dir / "predictions.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+    plans = load_saved_plans(run_dir)
+
+    assert plans == {
+        ("Q1", "single_store"): {"filename": "AAA_2020_10K", "reused_from": "run-a"},
+        ("Q1", "shared_store"): {"filename": None, "reused_from": "run-a"},
+    }
+
+
+def test_load_saved_plans_refuses_a_missing_run(tmp_path) -> None:
+    with pytest.raises(ValueError, match="no predictions"):
+        load_saved_plans(tmp_path / "missing")
 
 
 # --- _choose_filter -------------------------------------------------------------

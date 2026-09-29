@@ -15,9 +15,11 @@ benchmark).
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import voyageai
@@ -38,6 +40,9 @@ class Exp1Resources:
     openrouter: Any  # openai.OpenAI client for the query-enhancement call
     voyage: Any  # voyageai.Client for reranking (search embeds with the same one)
     config: dict[str, Any]  # the loaded configs/sec_rag.toml
+    # Exp2 rung B: (question, condition) -> the plan a finished run saved,
+    # reused instead of calling GLM (load_saved_plans). None = call GLM.
+    saved_plans: dict[tuple[str, str], dict[str, Any]] | None = None
 
 
 def retrieve_exp1(
@@ -60,11 +65,19 @@ def retrieve_exp1(
        reranker's own effect can be measured (Build Order 2.5).
     5. `rerank` reorders the 50 against the original question and keeps
        `top_k`: these are the chunks the answer model reads.
+
+    Exp2 rung B changes two inputs, nothing else (Build Order 3.4): step 1
+    reuses the plan rung A saved for this question and condition, so both
+    rungs search with the same filing and queries; step 3 passes the
+    config's structure weight to `search` (0 = Exp1).
     """
     started = time.perf_counter()
     config = resources.config
 
-    plan = enhance_query(question, list(scope), config, resources.openrouter)
+    if resources.saved_plans is not None:
+        plan = _saved_plan(question, scope, resources.saved_plans)
+    else:
+        plan = enhance_query(question, list(scope), config, resources.openrouter)
     filter_doc_name, filter_status = _choose_filter(
         plan["filename"], scope, resources.chunks
     )
@@ -76,6 +89,7 @@ def retrieve_exp1(
         doc_name=filter_doc_name,
         top_k=config["retrieval"]["rerank_candidates"],
         indexes=resources.indexes,
+        structure_weight=config["structure"]["weight"],
     )
     fused = _to_chunks(found["ranked"], resources.chunks)
 
@@ -117,6 +131,56 @@ def retrieve_exp1(
         },
         "latency_seconds": time.perf_counter() - started,
     }
+
+
+def _saved_plan(
+    question: str,
+    scope: tuple[str, ...],
+    saved_plans: dict[tuple[str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    """The plan rung A saved for this question in this condition.
+
+    The benchmark gives single-store a one-filing scope and shared-store
+    every filing (sec_rag_benchmark/pipeline/conditions.py), so the scope
+    says which condition asked. A missing plan is an error, not a fresh GLM
+    call: that call could choose differently and break "one change only".
+    """
+    condition = "single_store" if len(scope) == 1 else "shared_store"
+    plan = saved_plans.get((question, condition))
+    if plan is None:
+        raise ValueError(
+            f"no saved plan for this question in {condition}: {question!r}"
+        )
+    return plan
+
+
+def load_saved_plans(run_dir: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """(question, condition) -> search plan, from a finished run's predictions.jsonl.
+
+    Takes each job's latest successful row: a resumed run appends rather
+    than rewrites, so an earlier failed row may precede it. Each plan is
+    returned as saved - filing, both queries, status and A's GLM `call`,
+    whose cost job.py then records on rung B's row too (Exp 2.md ->
+    Metrics, "carried over") - plus `reused_from`, the run folder's name.
+    Raises ValueError if the file is missing or two jobs share a key.
+    """
+    path = run_dir / "predictions.jsonl"
+    if not path.is_file():
+        raise ValueError(f"no predictions to reuse plans from: {path}")
+    latest: dict[str, dict[str, Any]] = {}  # job_id -> its latest successful row
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line:
+            continue
+        row = json.loads(line)
+        if row["status"] == "success":
+            latest[row["job_id"]] = row
+    plans: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in latest.values():
+        key = (row["question"], row["eval_mode"])
+        if key in plans:
+            raise ValueError(f"two saved plans for {key}")
+        plans[key] = {**row["search_plan"], "reused_from": run_dir.name}
+    return plans
 
 
 def _choose_filter(
@@ -215,15 +279,20 @@ def open_exp1(config: dict[str, Any]) -> Exp1Resources:
 
     This is the paid path: it reads OPENROUTER_API_KEY and VOYAGE_API_KEY
     and raises RuntimeError if either is missing. Nothing is spent until
-    retrieve_exp1 is called.
+    retrieve_exp1 is called. With `reuse_plans_from` set (rung B), the
+    saved plans are loaded here, so a missing run folder fails before any
+    question runs.
     """
     voyage = voyage_client()
+    reuse_from = config["query_enhancement"]["reuse_plans_from"]
+    saved_plans = load_saved_plans(Path(reuse_from)) if reuse_from else None
     return Exp1Resources(
         indexes=open_search_indexes(config, voyage),
         chunks=load_chunk_lookup(config),
         openrouter=openrouter_client(config),
         voyage=voyage,
         config=config,
+        saved_plans=saved_plans,
     )
 
 

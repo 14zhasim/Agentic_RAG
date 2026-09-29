@@ -7,13 +7,18 @@ Voyage client embeds the question, so no test can spend.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+import chromadb
+import numpy as np
 import pytest
 
 from sec_rag.indexing.bm25_index import build_bm25_index
 from sec_rag.indexing.embed import embed_corpus
 from sec_rag.retrieval.search import (
+    chroma_ranking,
+    exact_ranking,
     open_search_indexes,
     reciprocal_rank_fusion,
     search,
@@ -130,10 +135,34 @@ def test_top_k_cuts_the_list(indexes) -> None:
     assert len(result["ranked"]) == 2
 
 
-def test_structure_weight_is_refused_until_exp2(indexes) -> None:
+def test_search_uses_chroma_at_weight_zero_and_the_scorer_otherwise(indexes) -> None:
+    """Weight 0 is Exp1 exactly (Chroma); above 0 the semantic list is exact_ranking's."""
+    search_indexes, _ = indexes
+    search_indexes.structure = _structure_store(search_indexes, {})
+    vector = _vector("capex")
+
+    at_zero = search(
+        "", "capex", method="semantic", doc_name=None, top_k=50, indexes=search_indexes
+    )
+    at_one = search(
+        "",
+        "capex",
+        method="semantic",
+        doc_name=None,
+        top_k=50,
+        indexes=search_indexes,
+        structure_weight=1.0,
+    )
+
+    assert at_zero["ranked"] == chroma_ranking(search_indexes, vector, None)
+    assert at_one["ranked"] == exact_ranking(search_indexes, vector, None, 1.0)
+    assert at_one["embedding_tokens"] == 7
+
+
+def test_a_negative_structure_weight_is_refused(indexes) -> None:
     search_indexes, _ = indexes
 
-    with pytest.raises(NotImplementedError, match="Exp2"):
+    with pytest.raises(ValueError, match="at least 0"):
         search(
             "q",
             "q",
@@ -141,7 +170,7 @@ def test_structure_weight_is_refused_until_exp2(indexes) -> None:
             doc_name=None,
             top_k=10,
             indexes=search_indexes,
-            structure_weight=0.5,
+            structure_weight=-1.0,
         )
 
 
@@ -237,6 +266,141 @@ def test_semantic_embeds_as_a_query_and_respects_the_filter(indexes) -> None:
     assert voyage.calls[0]["texts"] == ["How much was capital expenditure?"]
     assert voyage.calls[0]["input_type"] == "query"
     assert voyage.calls[0]["truncation"] is False
+
+
+# --- exact_ranking: Exp2's scorer -----------------------------------------------
+
+
+def _structure_store(search_indexes, vectors: dict[str, list[float]]):
+    """A structure collection holding the given (chunk ID -> vector) rows."""
+    client = chromadb.PersistentClient(
+        path=str(Path(search_indexes.config["corpus"]["indexes_dir"]) / "chroma")
+    )
+    collection = client.get_or_create_collection(
+        "structure_test", configuration={"hnsw": {"space": "cosine"}}
+    )
+    if vectors:
+        collection.upsert(
+            ids=list(vectors),
+            embeddings=np.array(list(vectors.values())),
+            metadatas=[{"doc_name": chunk_id.split(":")[0]} for chunk_id in vectors],
+        )
+    return collection
+
+
+def _cosines(search_indexes, query: list[float], doc_name=None) -> dict[str, float]:
+    """numpy's question·chunk cosine for every stored chunk (optionally one filing's)."""
+    where = {"doc_name": doc_name} if doc_name else None
+    rows = search_indexes.store.client.get(where=where, include=["embeddings"])
+    q = np.array(query) / np.linalg.norm(query)
+    return {
+        chunk_id: float(np.array(vector) @ q / np.linalg.norm(vector))
+        for chunk_id, vector in zip(rows["ids"], rows["embeddings"], strict=True)
+    }
+
+
+def test_exact_ranking_at_weight_zero_ranks_by_cosine(indexes) -> None:
+    search_indexes, _ = indexes
+    query = _vector("How much was capital expenditure?")
+
+    ranked = exact_ranking(search_indexes, query, None, 0.0)
+
+    expected = sorted(
+        _cosines(search_indexes, query).items(), key=lambda pair: (-pair[1], pair[0])
+    )
+    assert [chunk_id for chunk_id, _ in ranked] == [
+        chunk_id for chunk_id, _ in expected
+    ]
+    assert _scores(ranked) == pytest.approx(_scores(expected))
+
+
+def test_structure_lifts_a_chunk_with_a_matching_heading(indexes) -> None:
+    """score = q·chunk + weight × q·structure; a structure row parallel to q lifts its chunk."""
+    search_indexes, _ = indexes
+    query = [0.0, 0.0, 1.0]
+    aaa = [f"AAA_2020_10K:p0:c{n}" for n in range(3)]
+    # Stored chunk vectors are [1, len(text), 0.5], so against q = [0, 0, 1]
+    # the shortest text scores highest on content and c1 (the longest) last.
+    search_indexes.structure = _structure_store(
+        search_indexes,
+        {
+            aaa[0]: [1.0, 0.0, 0.0],  # q·structure = 0
+            aaa[1]: [0.0, 0.0, 1.0],  # q·structure = 1
+            aaa[2]: [1.0, 0.0, 0.0],
+        },
+    )
+    content = _cosines(search_indexes, query, "AAA_2020_10K")
+
+    at_zero = exact_ranking(search_indexes, query, "AAA_2020_10K", 0.0)
+    at_one = exact_ranking(search_indexes, query, "AAA_2020_10K", 1.0)
+
+    scores = dict(at_one)
+    assert scores[aaa[1]] == pytest.approx(content[aaa[1]] + 1.0)
+    assert scores[aaa[0]] == pytest.approx(content[aaa[0]])
+    assert at_zero[-1][0] == aaa[1]  # last on content alone
+    assert at_one[0][0] == aaa[1]  # first once its heading counts
+
+
+def test_a_chunk_without_a_structure_row_keeps_its_content_score(indexes) -> None:
+    search_indexes, _ = indexes
+    query = [0.0, 0.0, 1.0]
+    search_indexes.structure = _structure_store(
+        search_indexes, {"AAA_2020_10K:p0:c0": [0.0, 0.0, 1.0]}
+    )
+    content = _cosines(search_indexes, query)
+
+    scores = dict(exact_ranking(search_indexes, query, None, 1.0))
+
+    assert scores["AAA_2020_10K:p0:c1"] == pytest.approx(content["AAA_2020_10K:p0:c1"])
+    assert scores["AAA_2020_10K:p0:c0"] == pytest.approx(
+        content["AAA_2020_10K:p0:c0"] + 1.0
+    )
+
+
+def test_exact_ranking_respects_the_filter(indexes) -> None:
+    search_indexes, _ = indexes
+    search_indexes.structure = _structure_store(
+        search_indexes, {"BBB_2020_10K:p0:c0": [0.0, 0.0, 1.0]}
+    )
+
+    ranked = exact_ranking(search_indexes, [0.0, 0.0, 1.0], "AAA_2020_10K", 1.0)
+
+    assert sorted(chunk_id for chunk_id, _ in ranked) == [
+        f"AAA_2020_10K:p0:c{n}" for n in range(3)
+    ]
+
+
+def test_no_filter_scores_every_chunk(indexes) -> None:
+    """Shared-store with no chosen filing searches all chunks, as Exp1 does."""
+    search_indexes, _ = indexes
+
+    ranked = exact_ranking(search_indexes, [1.0, 1.0, 1.0], None, 0.0)
+
+    assert len(ranked) == len(AAA_TEXTS) + len(BBB_TEXTS)
+
+
+def test_a_non_zero_weight_without_the_structure_collection_is_refused(
+    indexes,
+) -> None:
+    search_indexes, _ = indexes
+
+    with pytest.raises(ValueError, match="structure collection"):
+        exact_ranking(search_indexes, [1.0, 1.0, 1.0], None, 1.0)
+
+
+def test_open_search_indexes_opens_the_structure_collection_only_above_zero(
+    index_config,
+) -> None:
+    """Exp1 (weight 0) never needs it built; rung B fails before any question."""
+    config, add_filing = index_config
+    config["retrieval"] = {"candidates_per_search": 50, "rrf_k": 60}
+    add_filing("AAA_2020_10K", AAA_TEXTS)
+    build_bm25_index(config)
+
+    assert open_search_indexes(config, None).structure is None
+    config["structure"]["weight"] = 1.0
+    with pytest.raises(ValueError, match="index-structure"):
+        open_search_indexes(config, None)
 
 
 # --- reciprocal rank fusion ---------------------------------------------------
