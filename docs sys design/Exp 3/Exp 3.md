@@ -1,4 +1,21 @@
-# Experiment 3 — Agents: LLMs autonomously using tools in a loop
+# Experiment 3 — Agents: LLMs autonomously using tools in a loop (future work)
+
+## Status: future work — a proposed design, not built
+
+- **Decided 1 Oct 2026:** the dissertation reports three experiments, and this is not one of them.
+  - Experiment 0: the answer model alone (`Exp 0/Exp 0.md`).
+  - Experiment 1: RAG (`Exp 1/Exp 1.md`).
+  - Experiment 2: structure-aware RAG (`Exp 2/Exp 2.md`).
+  - Agentic retrieval is presented as future work, and everything below is a proposal.
+- **Why:** agentic techniques are already established.
+  - ReAct-style reasoning-and-acting loops, iterative and recursive retrieval, and calculator tools all exist.
+  - So the dissertation's contribution is the retrieval underneath them.
+  - An agent's search tool here is Experiment 1's own `search` function with agent-chosen arguments, so a better retriever (Experiment 2) is precisely what an agent would call. Improving that retriever comes first.
+- **What exists:** only the harness plug (Build Order Stage 2.0).
+  - It hands the whole question to a pipeline that returns answer + final chunks + trace + usage, and Experiments 1 and 2 already run as one-round pipelines behind it.
+  - No tools, loop, trace logging or cap-reached outcome have been built.
+- **Why the design is kept in full:** so the experiment can be built later without re-deciding it, on the same invariants (same retriever, same query-enhancement prompt, same model and answer prompt).
+- Where the text below says "Experiment 3 does", read "Experiment 3 would do".
 
 ## Experiment
 
@@ -49,7 +66,7 @@ Experiment 3 reuses Experiment 1's whole pipeline up to generation — parsing, 
 - Document-level metadata (company, doc_type, doc_period) comes from `financebench_document_information.jsonl`, not from parsing.
 - Chunk within page boundaries: every chunk belongs to exactly one page (identical to Experiment 1's chunks).
   - reason: keeps page-based retrieval metrics (recall, precision, MRR) exact.
-- Tables are their own chunks; an oversized table is split by rows, repeating the header row. Everything else goes to a 1,024-token recursive/sentence splitter (token count, not character count).
+- Tables and figures are their own chunks, never split. Prose is cut at Azure's raw heading positions, with a floor of ~250 and a ceiling of 1,024 tokens (token count, not character count); see `Exp 1.md` → System design.
 - Each chunk carries metadata for filtering: filing type, company ticker, financial year, page number.
 - Nothing here changes for Exp3 — same parser, same chunker, same metadata fields, feeding the same store.
 
@@ -213,14 +230,12 @@ Ablation ladder:
 
 ## Results
 
-_(placeholder — no results yet)_
+None: Experiment 3 is future work and has not been run. If built, it would report the following against Experiment 1's full run (`results/20260928-202531--exp1--full`) as rung A:
 
-### Page recall / precision / MRR
+- page recall / precision / MRR on the final retrieval
+- answer accuracy
+- average *k*, iterations used and cap-reached counts
+- the ablation comparison (A vs B vs C)
+- the failure-mode breakdown, from the per-question traces
 
-### Answer accuracy
-
-### Average k, iterations used, cap-reached counts
-
-### Ablation comparison (A vs B vs C)
-
-### Failure-mode breakdown
+Experiment 1's failure analysis bounds what an agent could gain on FinanceBench. Retry-on-wrong-filing (rung B) targets the 2 of 112 shared-store questions where query enhancement chose the wrong filing. Most of the other wrong answers are also wrong under the oracle, so a retrieval loop cannot fix them. See `Exp 1.md` → Results.

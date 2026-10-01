@@ -241,6 +241,7 @@ Deferred
 - 3 experiments writeup (make sure to specify baseline/ablation)
 - worry about agentic tooling later: research papers (+ Claude Opus chat), bootdev agent course
 - not including LoFin benchmark yet
+- Exp3 as a whole: agentic retrieval is future work, designed but not built (see Experiment 3 - Agents; Build Order Stage 4)
 - Exp3: query decomposition into sub-questions + FinSTAR symbolic logic topology (∩ / \ / aggregation). Pays off on multi-document questions = LOFin, which is deferred; every FinanceBench question sits inside one filing
 - Exp3: "fetch whole page" tool (PDFTriage pattern) — pull the full page, or the next one, once a promising chunk is found. Targets tables split across pages
 
@@ -532,12 +533,16 @@ Generate answer
   - fix `metrics.cognitive_skills()`: it substring-matches and returns "unspecified" instead of the rule in Benchmark.md, so segment counts (57/36/21/14) won't reproduce
   - label each run with its experiment + ablation variant (e.g. experiment `exp3`, variant `a-single-pass`): set in config, snapshotted into the run's `config.toml`, and carried into `summary.json` / `summary.csv`
 
-Experiment 3 - Agents: LLMs autonomously using tools in a loop
+Experiment 3 - Agents: LLMs autonomously using tools in a loop — FUTURE WORK (decided 1 Oct 2026)
 https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 this makes case for letting agents intelligently navigate files, THEN load its contents into context.
 
+- STATUS: future work, designed but not built (Build Order Stage 4). The dissertation reports Exp 0 (the answer model alone), Exp1 (RAG) and Exp2 (structure-aware RAG), and presents this section as a proposal
+  - why: agentic techniques — ReAct-style tool loops, iterative retrieval, calculator tools — are already established, so the dissertation's contribution is the retrieval underneath them. An agent's search tool is Exp1's `search` function with agent-chosen arguments, so a better retriever (Exp2) is what an agent would call
+  - what exists: only the Stage 2.0 harness plug (pipeline returns answer + final chunks + trace + usage); no tools, loop or trace
+  - the design below is kept in full, so the stage can be built later without re-deciding it
 
-- Exp3 decisions (from review; confirm or strike)
+- Exp3 proposed design (settled in review; not built)
   - FINAL TOOL SET: fixed one-off steps first, loop after
     1. (one-off) give the agent the list of available filings → it chooses metadata filters
     2. (one-off) first search, choosing retrieval method (BM25 / semantic / hybrid) + its own queries for each of them
@@ -559,7 +564,8 @@ this makes case for letting agents intelligently navigate files, THEN load its c
   - loop caps: max iterations (start at 5) + max tool calls; hitting the cap is a FOURTH outcome alongside success / error / `did_not_fit` — skipped on resume, excluded from the accuracy denominator, counted in reports, so n stays constant across experiments. Checkpoint after each question
     - tell the model its budget in the prompt, and how many iterations remain each turn, so it can answer with what it has instead of being cut off mid-search
   - reasoning effort: raise from `low` to `high` for ALL conditions and experiments. GLM-5.3-Flash exposes `low`, `high`, `max` only — there is no `medium`. If Exp3 uses `max`, that is a deviation to justify in the write-up, or run it as an ablation
-  - ablation ladder: (A) Exp1 single pass → (B) + retry when retrieval is empty/wrong filing → (C) + calculator/verification. A vs B alone is a result
+  - ablation ladder, proposed: (A) Exp1 single pass → (B) + retry when retrieval is empty/wrong filing → (C) + calculator/verification. A vs B alone would be a result
+  - first step when it is built: verify GLM-5.3-flash emits well-formed tool calls on ~5 questions; if not, a stronger agent model breaks "same model everywhere" and must be stated
 
 
 Later

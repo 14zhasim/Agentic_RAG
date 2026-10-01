@@ -5,7 +5,8 @@ What gets built, in what order, with the requirements for each stage carried ove
 
 - `Benchmark.md` — benchmark requirements
 - `Systems Design Draft.md` — the pipeline: what and how
-- `Exp 1/`, `Exp 2/`, `Exp 3/` — each experiment's description and architecture
+- `Exp 0/`, `Exp 1/`, `Exp 2/`, `Exp 3/` — each experiment's description and architecture (Exp 0
+  is the benchmark's baseline run and needed no build stage; Exp 3 is future work)
 - this file — what and how, **in order**, with what to stub and what to cut
 
 ## The rule that keeps this cheap
@@ -29,16 +30,23 @@ experiment arrives.
 
 ## Timeline reality check
 
-Revised 27 Sep 2026. The 18 Sep plan (build 18-21 Sep, write 25-27 Sep) slipped: on 27 Sep
-Stages 0-1.3 are done (parsed, chunked) and no experiment has run. **Mon 28 Sep is the last coding
-day**; everything after it is writing.
+Revised 1 Oct 2026. **The build is closed: Exp1 and Exp2 are done and the writing block has
+started.** No new build work from here. The dissertation reports three experiments: Exp 0 (the
+answer model alone: the benchmark's closed-book, oracle and long-context run of 17 Sep,
+`Exp 0/Exp 0.md`), Exp1 (RAG) and Exp2 (structure-aware RAG). Agentic retrieval (Exp3, Stage 4)
+is future work.
+
+Earlier revision, 27 Sep: the 18 Sep plan (build 18-21 Sep, write 25-27 Sep) slipped. On 27 Sep
+Stages 0-1.3 were done (parsed, chunked) and no experiment had run, and Mon 28 Sep was set as the
+last coding day.
 
 | Block | Dates | What must be true at the end |
 |---|---|---|
-| Build Exp1 | Sun 27 Sep | Stages 1.5, 1.6 and 2 done: Exp1 built, run on single-store and shared-store, judged, reported, results in `Exp 1.md` |
-| Build Exp2 | Mon 28 Sep, slipped to Tue 29 Sep | Stage 3 at its minimum: A vs B runs with pre-rerank page metrics, results in `Exp 2.md`. **Last coding day.** Exp1's full run finished Mon evening, so Exp2 is built Tue evening, with cut 2 below taken |
-| Write | Tue 29 Sep – Sun 4 Oct | Complete draft covering Exp1 and Exp2; weekdays are job days, so most of it falls Fri 2 – Sun 4 Oct. No new build work |
-| Submit | Mon 5 Oct | Final submission — CONFIRM against the formal extension |
+| Exp 0 | Thu 17 Sep | DONE. Closed-book, oracle and long-context run, judged, adjudicated; results in `Exp 0.md` |
+| Build Exp1 | Sun 27 Sep – Mon 28 Sep | DONE. Stages 1.5, 1.6 and 2: Exp1 run on single-store and shared-store, judged, reported, results in `Exp 1.md`. Ablations not run (cut 1) |
+| Build Exp2 | Tue 29 Sep | DONE. Stage 3 at its minimum plus judged answers: A vs B with pre-rerank page metrics, results in `Exp 2.md`, cut 2 taken |
+| Write | Tue 29 Sep – Sun 4 Oct | IN PROGRESS. Draft to the supervisor Fri 2 Oct evening; complete draft covering Exp 0, Exp1 and Exp2 by Sun 4 Oct. Weekdays are job days. No new build work |
+| Submit | Mon 5 Oct, 4pm | Final submission; aim to submit earlier, since Mon is a job day |
 
 What gives if a day runs out, in this order (each becomes a stated limitation):
 
@@ -48,7 +56,7 @@ What gives if a day runs out, in this order (each becomes a stated limitation):
    leave 106 of 160 pages with no Item-level ancestor, so Exp2 runs on weaker structure and the
    write-up must say so. **TAKEN, 29 Sep 2026** (see 3.0)
 3. Exp2 judged answers: report A vs B on page metrics alone (Stage 3's minimum result)
-4. Exp3: designed, not built — already expected (Stage 4)
+4. Exp3: designed, not built. **TAKEN, 1 Oct 2026**: agentic retrieval is future work (Stage 4)
 
 Earlier plan, kept for the record: build Fri 18 – Mon 21 Sep (Stages 0-3), write Fri 25 – Sun 27
 Sep, finish Fri 2 – Sun 4 Oct, submit Mon 5 Oct.
@@ -59,8 +67,9 @@ libraries.
 
 - Stages 0-2 are non-negotiable: they produce Exp1, the dissertation's spine
 - Stage 3 (Exp2) is the most likely novel contribution — protect it
-- Stage 4 (Exp3) now sits **below writing** in priority. A designed-but-not-run Exp3 chapter is an
-  acceptable outcome and the cut list already anticipates it. An unfinished dissertation is not
+- Stage 4 (Exp3) sat **below writing** in priority, and is now future work: a designed-but-not-run
+  Exp3 is described as a proposal in the dissertation. An unfinished dissertation was never an
+  acceptable outcome
 - every stage has a **minimum result**: hitting the minimum on all three beats finishing one
 
 ### Scope freeze
@@ -856,7 +865,14 @@ answers live.
 
 ---
 
-# Stage 4 — Experiment 3 (a day or more)
+# Stage 4 — Experiment 3 (a day or more) — FUTURE WORK, not built
+
+**Status (1 Oct 2026):** future work. The build closed after Stage 3, and the dissertation reports
+this stage as a proposed design (`Exp 3/Exp 3.md`). Agentic techniques (ReAct-style tool loops,
+iterative retrieval, calculator tools) are already established; this dissertation's contribution
+is the retrieval underneath them, measured in Exp1 and Exp2. Everything below is the design as
+settled, kept in full so the stage can be built later without re-deciding it. Only the Stage 2.0
+plug exists.
 
 **Goal:** the agent loop, on top of Exp1's retrieval, so the difference is attributable to the loop.
 
@@ -954,7 +970,7 @@ Cut from the bottom up. None of these invalidate the work; each becomes a stated
 
 1. Exp3 rung C (calculator and verification)
 2. The softmax divisor comparison in Exp2
-3. Exp3 entirely — describe the design, report Exp1 and Exp2
+3. Exp3 entirely — describe the design, report Exp1 and Exp2. **TAKEN, 1 Oct 2026** (Stage 4)
 4. Judged retrieval metrics (context recall/precision/faithfulness) — already written up as a
    methodology limitation
 5. Bootstrap confidence intervals — but then make no "A beats B" claim
