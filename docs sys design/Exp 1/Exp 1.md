@@ -252,41 +252,70 @@ flowchart TB
 
 ## Results
 
-*Placeholder — to be filled in once benchmark runs are complete. Do not populate with invented numbers.*
+Runs (each folder's `summary.xlsx` is committed):
+
+- Experiment 1: `results/20260928-202531--exp1--full`, 224 jobs (112 questions × single-store and shared-store), all successful.
+- Baseline conditions (closed-book, oracle, long-context): `results/20260917-012959--financebench--baseline-context-conditions-v1`, 336 jobs.
+- Judging: 209 of Experiment 1's 224 answers were settled by the judge (both passes agreed); the 15 where the passes disagreed were adjudicated by hand under the rule in `Benchmark.md`.
 
 **Overall (Experiment 1 vs. baseline, per condition)**
 
-| Condition | Page recall | Page precision | Page MRR (pre-rerank) | Page MRR (post-rerank) | Filter accuracy | Answer accuracy | Token cost | Latency | n |
+Page metrics are after reranking unless marked pre-rerank. Cost is per answer: generation, plus retrieval (query enhancement, embedding and reranking) for the two retrieval conditions. Latency is the answer call, plus retrieval where there is one.
+
+| Condition | Page recall (pre-rerank) | Page precision (pre-rerank) | Page MRR (pre-rerank) | Page MRR (post-rerank) | Filter accuracy | Answer accuracy | Cost per answer | Latency | n |
 |---|---|---|---|---|---|---|---|---|---|
-| closed-book | — | — | — | — | — | | | | |
-| oracle | — | — | — | — | — | | | | |
-| long-context (baseline) | — | — | — | — | — | | | | |
-| single-store | | | | | — | | | | |
-| shared-store | | | | | | | | | |
+| closed-book | — | — | — | — | — | 41.1% (46/112) | $0.0003 | 7.7 s | 112 |
+| oracle | — | — | — | — | — | 91.1% (102/112) | $0.0003 | 4.2 s | 112 |
+| long-context (baseline) | — | — | — | — | — | 85.7% (96/112) | $0.0152 | 8.3 s | 112 |
+| single-store | 0.957 (0.854) | 0.144 (0.128) | 0.537 | 0.783 | — | 90.2% (101/112) | $0.0022 | 9.1 s + 3.8 s | 112 |
+| shared-store | 0.942 (0.793) | 0.142 (0.122) | 0.533 | 0.766 | 98.2% (110/112) | 86.6% (97/112) | $0.0015 | 9.5 s + 3.8 s | 112 |
 
-**Segmented by generation method** (n per segment: metrics-generated 50, domain-relevant 48, novel-generated 14)
+What this shows:
+
+- **The target is met.** Both retrieval conditions match or beat the long-context baseline (90.2% and 86.6% against 85.7%) while sending the model 10 chunks instead of the whole filing, at about a seventh to a tenth of the cost per answer. Single-store comes within one question of the oracle ceiling (101 against 102).
+- **Retrieval nearly always finds the evidence.** After reranking, a gold page is among the 10 chunks for 95.7% of single-store and 94.2% of shared-store questions.
+- **The reranker does most of the ranking work.** It lifts recall from 0.854 to 0.957 (single-store) and 0.793 to 0.942 (shared-store), and MRR from about 0.53 to about 0.78: the gold page moves from typically second or third to typically first.
+- **Precision is low by construction.** Most questions have one gold page, and the answer model always receives 10 chunks, so about 0.1-0.2 is the ceiling rather than a weakness.
+- **Finding the right filing is nearly solved.** Query enhancement chose the gold filing for 110 of 112 shared-store questions. The two misses (`financebench_id_02981`, `financebench_id_06247`) are the only shared-store failures caused by the wrong document.
+- **Retrieval is slower.** The query-enhancement call accounts for most of the 3.8 s retrieval time.
+
+**Where the wrong answers come from** (failure analysis against the oracle run)
+
+| | single-store | shared-store |
+|---|---|---|
+| Wrong answers | 11 | 15 |
+| Oracle also wrong (the model fails even with the right pages) | 7 | 7 |
+| Gold pages retrieved, answer still wrong | 4 | 6 |
+| Wrong filing chosen | 0 | 2 |
+| Correct answers with no gold page retrieved | 4 | 4 |
+
+Most errors are not retrieval errors: in 7 of 11 single-store and 7 of 15 shared-store failures, the model is also wrong when handed the exact gold pages. Four answers per condition are correct without any gold page, from the model's own knowledge or from a page the annotators did not mark.
+
+**Segmented by generation method** (single-store / shared-store; page metrics after reranking)
 
 | Segment | n | Page recall | Page precision | Page MRR | Answer accuracy |
 |---|---|---|---|---|---|
-| metrics-generated | 50 | | | | |
-| domain-relevant | 48 | | | | |
-| novel-generated | 14 | | | | |
+| metrics-generated | 50 | 1.000 / 0.960 | 0.171 / 0.163 | 0.937 / 0.897 | 94.0% / 86.0% |
+| domain-relevant | 48 | 0.910 / 0.917 | 0.124 / 0.127 | 0.606 / 0.606 | 83.3% / 85.4% |
+| novel-generated | 14 | 0.964 / 0.964 | 0.117 / 0.120 | 0.845 / 0.845 | 100% / 92.9% |
 
-**Segmented by cognitive skill** (n per segment: numerical reasoning 57, information extraction 36, logical reasoning 21, unlabelled 14 — segments sum to 128, not 112, since 16 questions carry more than one skill)
+Domain-relevant questions are the hardest to retrieve for: their gold page ranks first much less often (MRR 0.61 against 0.94 for metrics-generated). They are generic questions ("is this company capital-intensive?") whose wording matches many sections.
+
+**Segmented by cognitive skill** (single-store / shared-store; page metrics after reranking; segments sum to 128, not 112, since 16 questions carry more than one skill)
 
 | Segment | n | Page recall | Page precision | Page MRR | Answer accuracy |
 |---|---|---|---|---|---|
-| Numerical reasoning | 57 | | | | |
-| Information extraction | 36 | | | | |
-| Logical reasoning | 21 | | | | |
-| unlabelled | 14 | | | | |
+| Numerical reasoning | 57 | 1.000 / 0.965 | 0.169 / 0.163 | 0.836 / 0.801 | 91.2% / 86.0% |
+| Information extraction | 36 | 0.944 / 0.944 | 0.117 / 0.117 | 0.729 / 0.729 | 91.7% / 91.7% |
+| Logical reasoning | 21 | 0.841 / 0.857 | 0.126 / 0.133 | 0.556 / 0.556 | 71.4% / 76.2% |
+| unlabelled | 14 | 0.964 / 0.964 | 0.117 / 0.120 | 0.845 / 0.845 | 100% / 92.9% |
 
-**Ablations** (shared-store condition, full pipeline vs. each ablation)
+Logical reasoning is the weakest segment, but mostly because of the model rather than retrieval: the oracle, with perfect pages, also scores 71.4% (15/21) there.
 
-| Variant | Page recall | Page precision | Page MRR | Filter accuracy | Answer accuracy |
-|---|---|---|---|---|---|
-| Full pipeline | | | | | |
-| BM25 only | | | | — | |
-| Semantic only | | | | — | |
-| No reranker | | | | | |
-| No query enhancement | | | | | |
+**Ablations** — not run. They were the first cut in the revised timeline (`Build Order.md` → Timeline reality check), so the contribution of each component is not measured separately. The pre- and post-rerank columns above give the reranker's effect on retrieval, but not on answer accuracy.
+
+**Limitations of these results**
+
+- One run per condition. The answer model is re-run for every job, so a repeat run would change some answers even with identical retrieval; Experiment 2's comparison puts this at roughly 18 of 224 answers changing verdict (see `Exp 2.md` → Results).
+- Human review covers only the answers where the two judge passes disagreed. An answer both passes got wrong, or both got right, is never checked by hand.
+- FinanceBench's working-capital gold answers use inconsistent definitions: Corning's uses operating items, while American Water Works' uses total current items, although its justification lists operating items. The adjudication rule accepts any standard, stated definition that reaches the gold's conclusion.

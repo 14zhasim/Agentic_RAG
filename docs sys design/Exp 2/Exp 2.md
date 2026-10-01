@@ -244,25 +244,81 @@ Optional extra: a divisor comparison, comparing the softmax divisor of 1 (≈ eq
 
 ## Results
 
-*(placeholder — no results yet)*
+Runs (each folder's `summary.xlsx` is committed where marked):
+
+- **A:** Experiment 1's full run, `results/20260928-202531--exp1--full` (committed).
+- **B:** `results/20260929-172553--exp2--heading-path` (committed): 224 jobs, all successful, every one reusing A's saved query plan. Structure weight 1, softmax divisor 0.05, depth limit 6, Azure's raw heading levels.
+- **Weight-zero check:** `results/20260929-170731--exp2--weight-zero-check`.
+- Judging: 206 of B's 224 answers were settled by the judge; the 18 disputed ones were adjudicated by hand under the same rule as A's.
+
+### Weight-zero check (before trusting B)
+
+At weight 0 the new scorer should reproduce A. It did:
+
+- **Top-50 overlap with the vector store: mean 49.70 of 50, minimum 43.** Below 50 only because the vector store's search is approximate. The shortfall clusters in a few filings (Ulta Beauty 2023, Verizon, Johnson & Johnson), and none of the 33 searches below 50 changed its pre-rerank recall.
+- **A's pre-rerank recall rebuilt with the scorer:** single-store 0.854, identical to A's report; shared-store 0.784 against A's 0.793. The gap is one question (`financebench_id_01964`), where the gold chunk sat 9th of 10, only 0.0001 in fusion score ahead of the 10th. Re-embedding the query came back very slightly different and pushed it to 11th. Re-running that one search reproduced A exactly, so the scorer is not the cause.
+- So pre-rerank differences between A and B of about one question per condition (about 0.009 recall) are within this re-embedding noise. B is compared with A's rebuilt numbers below, so both come from the same code.
 
 ### A vs. B (headline result)
 
-- Page recall:
-- Page precision:
-- Page MRR:
-- Answer accuracy:
+| | single-store A | single-store B | shared-store A | shared-store B |
+|---|---|---|---|---|
+| Page recall, pre-rerank | 0.854 | 0.841 | 0.784 | 0.814 |
+| Page precision, pre-rerank | 0.128 | 0.129 | 0.121 | 0.128 |
+| **Page MRR, pre-rerank** | **0.536** | **0.614** | **0.530** | **0.627** |
+| Page recall, post-rerank | 0.957 | 0.960 | 0.942 | 0.942 |
+| Page precision, post-rerank | 0.144 | 0.147 | 0.142 | 0.145 |
+| Page MRR, post-rerank | 0.783 | 0.783 | 0.766 | 0.765 |
+| Filter accuracy | — | — | 98.2% | 98.2% |
+| Answer accuracy | 90.2% (101/112) | 91.1% (102/112) | 86.6% (97/112) | 87.5% (98/112) |
+| Cost per answer | $0.0022 | $0.0021 | $0.0015 | $0.0016 |
+
+Pre-rerank A figures are from the weight-zero check; post-rerank A figures are from A's report.
+
+- **The structure term ranks gold pages higher before reranking.** Pre-rerank MRR rises by 0.078 (single-store) and 0.097 (shared-store). It improved for 36 and 38 questions and worsened for 17 and 16, so the gain is broad rather than driven by a few questions.
+- **It mostly reorders rather than finds new pages.** Pre-rerank recall moves by less than 0.03 either way: down 0.013 in single-store (3 questions better, 5 worse) and up 0.030 in shared-store (8 better, 3 worse). Only the shared-store gain is clearly larger than the one-question noise above.
+- **The gain is largest where headings describe the content well.** Per segment (A from its own report, so within the noise above), pre-rerank MRR for metrics-generated questions (financial-statement line items, under headings such as "Consolidated Statements of Cash Flows") rises from 0.556 to 0.707 single-store and 0.548 to 0.676 shared-store. Numerical-reasoning questions rise from 0.540 to 0.648 single-store. For domain-relevant questions (single-store 0.495 to 0.516) and logical-reasoning questions (0.502 to 0.507) it barely moves: their answers sit under generic headings.
+- **Answer accuracy does not change measurably.** B is one question ahead in each condition, but that is noise, as the next section shows.
 
 ### Pre- vs. post-reranking
 
-- Page metrics before reranking:
-- Page metrics after reranking:
+The reranker erases the structural gain completely.
+
+- Post-rerank MRR is unchanged: no question improved in either condition, and one worsened in shared-store. Post-rerank recall differs by at most 0.003.
+- The reason is where the reranker sits. It receives the fused top 50 and re-orders them by chunk text alone. The structure term mostly moves chunks around *inside* that 50 (A and B share 7.6 of their pre-rerank top 10 on average), so the reranker gets nearly the same candidates and puts them back in the same order. After reranking, A and B share 9.2 (single-store) and 9.1 (shared-store) of their final 10 chunks.
+- This is the finding the pre-rerank metrics were required for. On post-rerank metrics alone, B would look like it did nothing.
+- So structure helps a pipeline that has no reranker, or one that passes fewer candidates to it. Neither was run: that needs Experiment 1's no-reranker ablation, which was cut.
+
+**Why answer accuracy moved by one question.** 18 of the 224 jobs changed verdict between A and B (10 up, 8 down). In all 18, post-rerank recall is the same in A and B: 17 found a gold page both times and one missed it both times. So none of these changes come from retrieval. They come from two other sources:
+
+- **The answer model regenerates.** Every job calls the model again, so the same context can produce a differently worded answer that the judge grades differently.
+- **Human review is uneven between runs.** Only answers where the two judge passes disagree reach a human. In 9 of the 18 flips, one run's answer was reviewed by hand and the other's was settled by the judge. For example, American Water Works' dividends (`financebench_id_05718`): both judge passes marked A's answers wrong, so nobody reviewed them, while B's went to review and were marked correct. That favours B by one question per condition. The reverse happens for AmEx's operating margin (`financebench_id_00723`, single-store), which favours A by one.
+
+So answer accuracy cannot separate A from B at this sample size. The retrieval metrics are the result.
+
+**Cost and latency.** Cost is unchanged. B makes no query-enhancement calls; it carries A's cost for them so the totals compare. The exact scorer adds no paid call. B's retrieval took 0.9 s against A's 3.8 s, but only because the query-enhancement call was skipped, not because scoring is faster.
 
 ### Divisor comparison (optional extra)
 
-- Divisor = 1:
-- Divisor = 0.05:
+Not run: optional, and outside the build window. Only divisor 0.05 was measured.
 
 ### Failure-mode notes
 
--
+| | single-store A | single-store B | shared-store A | shared-store B |
+|---|---|---|---|---|
+| Wrong answers | 11 | 10 | 15 | 14 |
+| Oracle also wrong | 7 | 8 | 7 | 7 |
+| Gold pages retrieved, answer still wrong | 4 | 2 | 6 | 4 |
+| Wrong filing chosen | 0 | 0 | 2 | 2 |
+| Right filing, no gold page retrieved | 0 | 0 | 0 | 1 |
+| Correct with no gold page retrieved | 4 | 4 | 4 | 3 |
+
+- The two wrong-filing failures are the same questions in A and B (`financebench_id_02981`, `financebench_id_06247`), since B reuses A's filter choices.
+- B's one right-filing, no-gold-page failure is AmEx's geographies (`financebench_id_01028`, shared-store). Neither A nor B retrieved a gold page for it; A's answer was judged correct by hand as borderline, and B's was judged wrong.
+- Every other difference between the columns falls within the answer-level noise described above.
+
+### Limitations
+
+- Azure's raw heading levels are used, since the heading fix was cut. Some ancestors are therefore wrong (see Design decisions), which can only weaken the structure term.
+- One run each for A and B, one weight (1) and one divisor (0.05).
+- Nothing in the code ties the structure vectors to the chunk vectors they were built from. A free check before B's run confirmed they matched: all 21,032 structure rows belong to existing chunks, and the 7 chunks without one sit before their filing's first heading (`Implementation Guide 3.1-3.4 Structure.md` → Slice 4).
