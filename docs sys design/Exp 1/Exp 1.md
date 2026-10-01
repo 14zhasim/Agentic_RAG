@@ -10,12 +10,12 @@
 - **What it must do:** retrieve the pages that actually contain the answer.
   - Out of a store that may hold one filing or every filing in the benchmark.
   - Hand a generation model only that retrieved context — not the whole filing.
-- **Baseline it is tested against:** a direct LLM API call, full context window, no RAG.
-- **Target:** match or beat LLM-in-context-window performance while not being limited by context window size.
+- **Measured against the Exp 0 conditions** (`Exp 0/Exp 0.md`): closed-book (the floor), oracle (the ceiling) and long-context, a direct LLM API call with the whole filing and no RAG.
+- **Target:** match or beat Exp 0's long-context performance while not being limited by context window size.
 - **Role in the wider project:** Experiment 1 is the shared spine.
   - Experiment 2 changes only the dense-retrieval score (structure-aware embeddings).
-  - Experiment 3 changes only the retrieval step into an agent loop (query planning, retries, a calculator tool).
-  - Everything else — parsing, chunking, query enhancement, BM25, fusion, reranking, generation — stays identical across all three, so that any difference in results can be attributed to the one thing that changed.
+  - Agentic retrieval (Experiment 3, future work: `Exp 3/Exp 3.md`) would change only the retrieval step into an agent loop (query planning, retries, a calculator tool).
+  - Everything else — parsing, chunking, query enhancement, BM25, fusion, reranking, generation — stays identical, so that any difference in results can be attributed to the one thing that changed.
 
 ## Data
 
@@ -53,8 +53,8 @@ FinanceBench (Islam et al., 2023), restricted to the 10-K subset:
 
 ## Models / architecture
 
-- **Baseline:** a direct LLM API call, full context window (the whole filing, or as much as fits), no retrieval.
-  - This is the FinanceBench "long-context" condition and is what Experiment 1's target is measured against.
+- **Exp 0 conditions:** a direct LLM API call with no retrieval: closed-book, oracle, and long-context (the whole filing, or as much as fits).
+  - Long-context is what Experiment 1's target is measured against; the oracle is its ceiling.
 - **Pipeline tiers** (Experiment 1's architecture):
   1. **Ingestion**
      - parse each filing PDF
@@ -217,7 +217,7 @@ flowchart TB
 | Fall back to unfiltered search when the chosen filter matches no filing | Prevents a wrong or overly narrow filter from silently returning nothing — the system still attempts to answer rather than failing closed. |
 | Retrieval is one function taking arguments (query, retrieval method, metadata filters, top_k) rather than a hardcoded pipeline | Experiment 1 calls it once with fixed arguments; Experiment 3's agent search tool is the *same* function, with the agent choosing those arguments at runtime. Writing retrieval as a hardcoded pipeline would mean writing it twice. |
 | Query-enhancement prompt lives in one place, called by both Experiment 1 and Experiment 3 | Experiment 1 calls it once up front; Experiment 3's agent does the same job across its own first two steps. Keeping it in one place stops the two experiments quietly diverging on this piece. |
-| Same generation model, settings, and prompt across every condition and experiment | Isolates retrieval as the only variable — GLM-5.3-flash via OpenRouter is used identically in the baseline, Experiment 1, Experiment 2, and Experiment 3. |
+| Same generation model, settings, and prompt across every condition and experiment | Isolates retrieval as the only variable — GLM-5.3-flash via OpenRouter is used identically in the Exp 0 conditions, Experiment 1 and Experiment 2, and would be in the future-work Experiment 3. |
 
 ## Metrics
 
@@ -233,7 +233,7 @@ flowchart TB
 - **Token cost** and **latency** — recorded per answer.
   - Fields: requested model, returned model, serving provider, token usage, latency, and cost.
   - This also covers embedding and reranking cost, not just the generation model's.
-- **FinanceBench's five context conditions** — each isolates a different point of possible failure:
+- **FinanceBench's five context conditions** — each isolates a different point of possible failure. The first three are the Exp 0 conditions (`Exp 0/Exp 0.md`); Experiment 1 runs the last two:
   - **closed-book** — no context given; measures what the model already knows from its own parameters, with no filing at all.
   - **oracle** — the exact correct pages are handed to the model directly; measures the reasoning ceiling if retrieval were perfect.
   - **long-context** — the full filing(s) are stuffed directly into the model's context window; tests RAG against simply using a large context window.
@@ -242,7 +242,7 @@ flowchart TB
 
 ## Baseline and ablations
 
-- **Baseline:** direct LLM API call, full context window, no RAG (the long-context condition above, run without any retrieval step).
+- **Baseline: the Exp 0 conditions** — closed-book, oracle and long-context, the direct LLM API call with no RAG (`Exp 0/Exp 0.md`). Long-context is the target; the oracle is the ceiling.
 - **Ablations on the Experiment 1 pipeline** (each removes or swaps exactly one component so its individual contribution can be measured):
   - BM25 only — drop semantic search and fusion, keep query enhancement and reranking.
   - Semantic only — drop BM25 and fusion, keep query enhancement and reranking.
@@ -255,24 +255,24 @@ flowchart TB
 Runs (each folder's `summary.xlsx` is committed):
 
 - Experiment 1: `results/20260928-202531--exp1--full`, 224 jobs (112 questions × single-store and shared-store), all successful.
-- Baseline conditions (closed-book, oracle, long-context): `results/20260917-012959--financebench--baseline-context-conditions-v1`, 336 jobs.
+- Exp 0 conditions (closed-book, oracle, long-context): `results/20260917-012959--financebench--baseline-context-conditions-v1`, 336 jobs (`Exp 0/Exp 0.md`).
 - Judging: 209 of Experiment 1's 224 answers were settled by the judge (both passes agreed); the 15 where the passes disagreed were adjudicated by hand under the rule in `Benchmark.md`.
 
-**Overall (Experiment 1 vs. baseline, per condition)**
+**Overall (Experiment 1 vs. the Exp 0 conditions)**
 
 Page metrics are after reranking unless marked pre-rerank. Cost is per answer: generation, plus retrieval (query enhancement, embedding and reranking) for the two retrieval conditions. Latency is the answer call, plus retrieval where there is one.
 
 | Condition | Page recall (pre-rerank) | Page precision (pre-rerank) | Page MRR (pre-rerank) | Page MRR (post-rerank) | Filter accuracy | Answer accuracy | Cost per answer | Latency | n |
 |---|---|---|---|---|---|---|---|---|---|
-| closed-book | — | — | — | — | — | 41.1% (46/112) | $0.0003 | 7.7 s | 112 |
-| oracle | — | — | — | — | — | 91.1% (102/112) | $0.0003 | 4.2 s | 112 |
-| long-context (baseline) | — | — | — | — | — | 85.7% (96/112) | $0.0152 | 8.3 s | 112 |
+| closed-book (Exp 0) | — | — | — | — | — | 41.1% (46/112) | $0.0003 | 7.7 s | 112 |
+| oracle (Exp 0) | — | — | — | — | — | 91.1% (102/112) | $0.0003 | 4.2 s | 112 |
+| long-context (Exp 0, target) | — | — | — | — | — | 85.7% (96/112) | $0.0152 | 8.3 s | 112 |
 | single-store | 0.957 (0.854) | 0.144 (0.128) | 0.537 | 0.783 | — | 90.2% (101/112) | $0.0022 | 9.1 s + 3.8 s | 112 |
 | shared-store | 0.942 (0.793) | 0.142 (0.122) | 0.533 | 0.766 | 98.2% (110/112) | 86.6% (97/112) | $0.0015 | 9.5 s + 3.8 s | 112 |
 
 What this shows:
 
-- **The target is met.** Both retrieval conditions match or beat the long-context baseline (90.2% and 86.6% against 85.7%) while sending the model 10 chunks instead of the whole filing, at about a seventh to a tenth of the cost per answer. Single-store comes within one question of the oracle ceiling (101 against 102).
+- **The target is met.** Both retrieval conditions match or beat Exp 0's long-context condition (90.2% and 86.6% against 85.7%) while sending the model 10 chunks instead of the whole filing, at about a seventh to a tenth of the cost per answer. Single-store comes within one question of the oracle ceiling (101 against 102).
 - **Retrieval nearly always finds the evidence.** After reranking, a gold page is among the 10 chunks for 95.7% of single-store and 94.2% of shared-store questions.
 - **The reranker does most of the ranking work.** It lifts recall from 0.854 to 0.957 (single-store) and 0.793 to 0.942 (shared-store), and MRR from about 0.53 to about 0.78: the gold page moves from typically second or third to typically first.
 - **Precision is low by construction.** Most questions have one gold page, and the answer model always receives 10 chunks, so about 0.1-0.2 is the ceiling rather than a weakness.
