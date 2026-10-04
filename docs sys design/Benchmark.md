@@ -1,5 +1,3 @@
-> **Experiment 0.** The benchmark's baseline run, the closed-book, oracle and long-context conditions run on 17 Sep 2026 (`results/20260917-012959--financebench--baseline-context-conditions-v1`), is the dissertation's Experiment 0: the answer model's performance with no retrieval. Its write-up and results are in `Exp 0/Exp 0.md`. This document stays the benchmark's requirements and is shared by Experiments 0, 1 and 2. The run's code labels (`financebench` / `baseline-context-conditions-v1`) are unchanged.
-
 ## Pipeline failure modes
 
 Create an evaluation pipeline where every benchmark question can be inspected:
